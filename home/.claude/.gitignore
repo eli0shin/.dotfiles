@@ -5,7 +5,6 @@
 !.gitignore
 !CLAUDE.md
 !README.md
-!settings.json
 !settings.example.json
 !scripts/
 !scripts/*.sh
@@ -13,5 +12,3 @@
 !hooks/*.sh
 !agents/
 !agents/**
-!skills/
-!skills/**

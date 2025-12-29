@@ -7,6 +7,18 @@ set -euo pipefail
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 PACKAGES_DIR="$DOTFILES_DIR/packages"
 
+# Managed symlink directories
+SYMLINKS=(
+    "$HOME/.config/nvim"
+    "$HOME/.config/fish"
+    "$HOME/.config/tmux"
+    "$HOME/.config/ghostty"
+    "$HOME/.config/git"
+    "$HOME/.config/omf"
+    "$HOME/.config/opencode"
+    "$HOME/.claude"
+)
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -64,26 +76,7 @@ cmd_stow() {
 
     cd "$DOTFILES_DIR"
 
-    # Backup existing files if they're not symlinks
-    local targets=(
-        "$HOME/.config/nvim"
-        "$HOME/.config/fish"
-        "$HOME/.config/tmux"
-        "$HOME/.config/ghostty"
-        "$HOME/.config/opencode"
-        "$HOME/.config/git"
-        "$HOME/.config/omf"
-        "$HOME/.claude"
-    )
-
-    for target in "${targets[@]}"; do
-        if [[ -e "$target" && ! -L "$target" ]]; then
-            warn "Backing up existing $target to ${target}.bak"
-            mv "$target" "${target}.bak"
-        fi
-    done
-
-    # Use stow to create symlinks
+    # Create directory symlinks from $HOME to dotfiles
     stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
 
     success "Dotfiles stowed successfully"
@@ -166,15 +159,8 @@ cmd_doctor() {
 
     # Check symlinks
     info "Checking symlinks..."
-    local symlinks=(
-        "$HOME/.config/nvim"
-        "$HOME/.config/fish"
-        "$HOME/.config/tmux"
-        "$HOME/.config/ghostty"
-        "$HOME/.claude"
-    )
 
-    for link in "${symlinks[@]}"; do
+    for link in "${SYMLINKS[@]}"; do
         if [[ -L "$link" ]]; then
             success "Symlink OK: $link"
         elif [[ -e "$link" ]]; then
@@ -202,34 +188,71 @@ cmd_package() {
     local subcmd="${1:-}"
     shift || true
 
+    # Parse --personal flag
+    local profile=""
+    local args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --personal) profile=".personal" ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+    local brewfile="$PACKAGES_DIR/Brewfile$profile"
+
     case "$subcmd" in
         add)
-            local pkg="$1"
+            local pkg="${args[0]:-}"
             if [[ -z "$pkg" ]]; then
-                error "Usage: dot package add <package>"
+                error "Usage: dot package add <package> [--personal]"
                 return 1
             fi
-            info "Adding $pkg to Brewfile..."
-            echo "brew \"$pkg\"" >> "$PACKAGES_DIR/Brewfile"
-            brew install "$pkg"
+
+            # Detect package type
+            local pkg_type="brew"
+            if brew info --cask "$pkg" &>/dev/null; then
+                pkg_type="cask"
+            fi
+
+            info "Adding $pkg ($pkg_type) to $(basename "$brewfile")..."
+            echo "$pkg_type \"$pkg\"" >> "$brewfile"
+
+            if [[ "$pkg_type" == "cask" ]]; then
+                brew install --cask "$pkg"
+            else
+                brew install "$pkg"
+            fi
             success "Added $pkg"
             ;;
         remove)
-            local pkg="$1"
+            local pkg="${args[0]:-}"
             if [[ -z "$pkg" ]]; then
-                error "Usage: dot package remove <package>"
+                error "Usage: dot package remove <package> [--personal]"
                 return 1
             fi
-            info "Removing $pkg from Brewfile..."
-            sed -i '' "/brew \"$pkg\"/d" "$PACKAGES_DIR/Brewfile"
-            brew uninstall "$pkg" || warn "Package not installed"
+            info "Removing $pkg from $(basename "$brewfile")..."
+            sed -i '' "/\"$pkg\"/d" "$brewfile"
+            brew uninstall "$pkg" 2>/dev/null || brew uninstall --cask "$pkg" 2>/dev/null || warn "Package not installed"
             success "Removed $pkg"
             ;;
+        install)
+            if [[ -n "$profile" ]]; then
+                info "Installing from $(basename "$brewfile")..."
+                brew bundle --file="$brewfile"
+            elif [[ "${args[0]:-}" == "--all" ]]; then
+                info "Installing from all Brewfiles..."
+                brew bundle --file="$PACKAGES_DIR/Brewfile"
+                [[ -f "$PACKAGES_DIR/Brewfile.personal" ]] && brew bundle --file="$PACKAGES_DIR/Brewfile.personal"
+            else
+                info "Installing from Brewfile..."
+                brew bundle --file="$PACKAGES_DIR/Brewfile"
+            fi
+            success "Installation complete"
+            ;;
         list)
-            cat "$PACKAGES_DIR/Brewfile"
+            cat "$brewfile"
             ;;
         *)
-            error "Usage: dot package <add|remove|list> [package]"
+            error "Usage: dot package <add|remove|install|list> [package] [--personal]"
             return 1
             ;;
     esac
@@ -267,9 +290,12 @@ Commands:
   doctor            Check installation health
   edit              Open dotfiles in editor
   package <subcmd>  Manage Brewfile packages
-    add <pkg>       Add package to Brewfile
+    add <pkg>       Add package (auto-detects brew/cask)
     remove <pkg>    Remove package from Brewfile
+    install         Install from Brewfile
+    install --all   Install from all Brewfiles
     list            List packages in Brewfile
+    (add --personal to target Brewfile.personal)
   link              Install dot to /usr/local/bin
   unlink            Remove dot from /usr/local/bin
   help              Show this help message

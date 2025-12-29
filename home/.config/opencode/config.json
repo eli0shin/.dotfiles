@@ -4,29 +4,7 @@
   "autoshare": false,
   "autoupdate": true,
   "agent": {
-    "precise": {
-      "temperature": 0
-    },
-    "low": {
-      "temperature": 0.4
-    },
     "build": {
-      "temperature": 0.6
-    },
-    "high": {
-      "temperature": 1
-    },
-    "think": {
-      "thinking": {
-        "type": "enabled",
-        "budgetTokens": 6000
-      }
-    },
-    "think-hard": {
-      "thinking": {
-        "type": "enabled",
-        "budgetTokens": 18000
-      }
     },
     "ultrathink": {
       "thinking": {

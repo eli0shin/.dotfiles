@@ -1,0 +1,28 @@
+# Personal packages - not for work computers
+# Install with: brew bundle --file=Brewfile.personal
+
+mas "CrystalFetch", id: 6454431289
+mas "Developer", id: 640199958
+mas "Grocery", id: 1195676848
+mas "iMovie", id: 408981434
+mas "Keynote", id: 409183694
+mas "Microsoft Excel", id: 462058435
+mas "Microsoft OneNote", id: 784801555
+mas "Microsoft Outlook", id: 985367838
+mas "Microsoft PowerPoint", id: 462062816
+mas "Microsoft Word", id: 462054704
+mas "Mini Motorways", id: 1456188526
+mas "OneDrive", id: 823766827
+mas "Pages", id: 409201541
+mas "Perplexity", id: 6714467650
+mas "Prime Video", id: 545519333
+mas "Vimlike", id: 1584519802
+mas "WhatsApp", id: 310633997
+mas "Xcode", id: 497799835
+
+go "github.com/air-verse/air"
+go "github.com/go-delve/delve/cmd/dlv"
+go "golang.org/x/tools/cmd/goimports"
+go "golang.org/x/tools/gopls"
+go "honnef.co/go/tools/cmd/staticcheck"
+go "github.com/a-h/templ/cmd/templ"
