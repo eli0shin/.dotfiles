@@ -1,0 +1,45 @@
+# Auth and secrets
+**/local_vars.fish
+**/local_functions/
+**/*-local.lua
+**/*-local.*
+**/.credentials.json
+**/auth.json
+**/.env
+**/.env.*
+
+# State and cache
+**/lazy-lock.json
+**/node_modules/
+**/bun.lockb
+**/bun.lock
+**/package-lock.json
+**/fish_variables
+**/.aider*
+**/.goose/
+**/.vectorcode/
+**/spell/
+**/startup_logs/
+
+# Claude state (keep config, exclude state)
+home/.claude/plugins/
+home/.claude/projects/
+home/.claude/todos/
+home/.claude/plans/
+home/.claude/shell-snapshots/
+home/.claude/file-history/
+home/.claude/debug/
+home/.claude/downloads/
+home/.claude/session-env/
+home/.claude/history.jsonl
+home/.claude/stats-cache.json
+home/.claude/statsig/
+home/.claude/output-styles/
+home/.claude/.claude/
+home/.claude/settings.local.json
+
+# OS files
+.DS_Store
+*.swp
+*.swo
+*~

@@ -1,0 +1,17 @@
+# Ignore everything by default
+*
+
+# Explicitly include specific files
+!.gitignore
+!CLAUDE.md
+!README.md
+!settings.json
+!settings.example.json
+!scripts/
+!scripts/*.sh
+!hooks/
+!hooks/*.sh
+!agents/
+!agents/**
+!skills/
+!skills/**

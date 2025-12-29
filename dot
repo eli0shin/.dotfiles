@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Dotfiles management CLI
+# Inspired by dmmulroy/.dotfiles
+
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
+PACKAGES_DIR="$DOTFILES_DIR/packages"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging helpers
+info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Check if command exists
+has() { command -v "$1" &>/dev/null; }
+
+# =============================================================================
+# Commands
+# =============================================================================
+
+cmd_init() {
+    info "Initializing dotfiles..."
+
+    # Install Homebrew if needed
+    if ! has brew; then
+        info "Installing Homebrew..."
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    else
+        success "Homebrew already installed"
+    fi
+
+    # Install stow if needed
+    if ! has stow; then
+        info "Installing GNU Stow..."
+        brew install stow
+    else
+        success "GNU Stow already installed"
+    fi
+
+    # Install packages
+    if [[ -f "$PACKAGES_DIR/Brewfile" ]]; then
+        info "Installing packages from Brewfile..."
+        brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some packages failed to install"
+    fi
+
+    # Stow dotfiles
+    cmd_stow
+
+    success "Initialization complete!"
+}
+
+cmd_stow() {
+    info "Stowing dotfiles..."
+
+    cd "$DOTFILES_DIR"
+
+    # Backup existing files if they're not symlinks
+    local targets=(
+        "$HOME/.config/nvim"
+        "$HOME/.config/fish"
+        "$HOME/.config/tmux"
+        "$HOME/.config/ghostty"
+        "$HOME/.config/opencode"
+        "$HOME/.config/git"
+        "$HOME/.config/omf"
+        "$HOME/.claude"
+    )
+
+    for target in "${targets[@]}"; do
+        if [[ -e "$target" && ! -L "$target" ]]; then
+            warn "Backing up existing $target to ${target}.bak"
+            mv "$target" "${target}.bak"
+        fi
+    done
+
+    # Use stow to create symlinks
+    stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
+
+    success "Dotfiles stowed successfully"
+}
+
+cmd_unstow() {
+    info "Unstowing dotfiles..."
+    cd "$DOTFILES_DIR"
+    stow -v --delete --target="$HOME" --dir="$DOTFILES_DIR" home
+    success "Dotfiles unstowed"
+}
+
+cmd_update() {
+    info "Updating dotfiles..."
+
+    cd "$DOTFILES_DIR"
+
+    # Pull latest changes
+    if git diff-index --quiet HEAD --; then
+        git pull --rebase
+    else
+        warn "Local changes detected, stashing..."
+        git stash
+        git pull --rebase
+        git stash pop
+    fi
+
+    # Update packages if requested
+    if [[ "${1:-}" == "--packages" ]]; then
+        info "Updating Homebrew packages..."
+        brew update && brew upgrade
+    fi
+
+    # Re-stow
+    cmd_stow
+
+    success "Update complete"
+}
+
+cmd_doctor() {
+    info "Running diagnostics..."
+    local issues=0
+
+    # Check Homebrew
+    if has brew; then
+        success "Homebrew: installed"
+    else
+        error "Homebrew: not installed"
+        ((issues++))
+    fi
+
+    # Check Stow
+    if has stow; then
+        success "GNU Stow: installed"
+    else
+        error "GNU Stow: not installed"
+        ((issues++))
+    fi
+
+    # Check Fish
+    if has fish; then
+        success "Fish shell: installed"
+    else
+        warn "Fish shell: not installed"
+    fi
+
+    # Check Neovim
+    if has nvim; then
+        success "Neovim: installed"
+    else
+        warn "Neovim: not installed"
+    fi
+
+    # Check tmux
+    if has tmux; then
+        success "tmux: installed"
+    else
+        warn "tmux: not installed"
+    fi
+
+    # Check symlinks
+    info "Checking symlinks..."
+    local symlinks=(
+        "$HOME/.config/nvim"
+        "$HOME/.config/fish"
+        "$HOME/.config/tmux"
+        "$HOME/.config/ghostty"
+        "$HOME/.claude"
+    )
+
+    for link in "${symlinks[@]}"; do
+        if [[ -L "$link" ]]; then
+            success "Symlink OK: $link"
+        elif [[ -e "$link" ]]; then
+            warn "Not a symlink: $link"
+        else
+            warn "Missing: $link"
+        fi
+    done
+
+    if [[ $issues -eq 0 ]]; then
+        success "All checks passed!"
+    else
+        error "$issues issue(s) found"
+        return 1
+    fi
+}
+
+cmd_edit() {
+    local editor="${EDITOR:-nvim}"
+    cd "$DOTFILES_DIR"
+    $editor .
+}
+
+cmd_package() {
+    local subcmd="${1:-}"
+    shift || true
+
+    case "$subcmd" in
+        add)
+            local pkg="$1"
+            if [[ -z "$pkg" ]]; then
+                error "Usage: dot package add <package>"
+                return 1
+            fi
+            info "Adding $pkg to Brewfile..."
+            echo "brew \"$pkg\"" >> "$PACKAGES_DIR/Brewfile"
+            brew install "$pkg"
+            success "Added $pkg"
+            ;;
+        remove)
+            local pkg="$1"
+            if [[ -z "$pkg" ]]; then
+                error "Usage: dot package remove <package>"
+                return 1
+            fi
+            info "Removing $pkg from Brewfile..."
+            sed -i '' "/brew \"$pkg\"/d" "$PACKAGES_DIR/Brewfile"
+            brew uninstall "$pkg" || warn "Package not installed"
+            success "Removed $pkg"
+            ;;
+        list)
+            cat "$PACKAGES_DIR/Brewfile"
+            ;;
+        *)
+            error "Usage: dot package <add|remove|list> [package]"
+            return 1
+            ;;
+    esac
+}
+
+cmd_link() {
+    info "Installing dot command globally..."
+    local link_path="/usr/local/bin/dot"
+
+    if [[ -L "$link_path" ]]; then
+        warn "Link already exists at $link_path"
+    else
+        sudo ln -sf "$DOTFILES_DIR/dot" "$link_path"
+        success "Linked dot to $link_path"
+    fi
+}
+
+cmd_unlink() {
+    info "Removing global dot command..."
+    sudo rm -f /usr/local/bin/dot
+    success "Unlinked dot"
+}
+
+cmd_help() {
+    cat << EOF
+dot - Dotfiles management CLI
+
+Usage: dot <command> [options]
+
+Commands:
+  init              Full setup: brew, packages, stow
+  stow              Create symlinks using GNU Stow
+  unstow            Remove symlinks
+  update [--packages]  Pull repo, optionally update packages, re-stow
+  doctor            Check installation health
+  edit              Open dotfiles in editor
+  package <subcmd>  Manage Brewfile packages
+    add <pkg>       Add package to Brewfile
+    remove <pkg>    Remove package from Brewfile
+    list            List packages in Brewfile
+  link              Install dot to /usr/local/bin
+  unlink            Remove dot from /usr/local/bin
+  help              Show this help message
+
+Environment:
+  DOTFILES_DIR      Override dotfiles directory (default: ~/.dotfiles)
+  EDITOR            Editor for 'dot edit' command (default: nvim)
+EOF
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+
+    case "$cmd" in
+        init)    cmd_init "$@" ;;
+        stow)    cmd_stow "$@" ;;
+        unstow)  cmd_unstow "$@" ;;
+        update)  cmd_update "$@" ;;
+        doctor)  cmd_doctor "$@" ;;
+        edit)    cmd_edit "$@" ;;
+        package) cmd_package "$@" ;;
+        link)    cmd_link "$@" ;;
+        unlink)  cmd_unlink "$@" ;;
+        help|--help|-h) cmd_help ;;
+        *)
+            error "Unknown command: $cmd"
+            cmd_help
+            return 1
+            ;;
+    esac
+}
+
+main "$@"

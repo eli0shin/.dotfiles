@@ -1,0 +1,6 @@
+local_vars.fish
+local_functions/
+*.pysave
+.aider.*
+.aider*
+python-3.13.fish
