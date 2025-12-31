@@ -50,3 +50,5 @@ home/.claude/settings.local.json
 *.swp
 *.swo
 *~
+
+fishd.tmp*
