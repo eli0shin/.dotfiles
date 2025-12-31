@@ -6,6 +6,7 @@ set -euo pipefail
 
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 PACKAGES_DIR="$DOTFILES_DIR/packages"
+SCRIPTS_DIR="$DOTFILES_DIR/scripts"
 
 # Managed symlink directories
 SYMLINKS=(
@@ -65,16 +66,36 @@ cmd_init() {
         brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some packages failed to install"
     fi
 
-    # Stow dotfiles
+    # Install git hooks
+    _install_git_hooks
+
+    # Merge configs and stow dotfiles
+    cmd_merge || warn "Config merge had issues"
     cmd_stow
 
     success "Initialization complete!"
+}
+
+_install_git_hooks() {
+    local hooks_dir="$DOTFILES_DIR/.git/hooks"
+    local hook_script="$SCRIPTS_DIR/git-hook-merge.sh"
+
+    for hook in post-checkout post-merge; do
+        local hook_path="$hooks_dir/$hook"
+        if [[ ! -L "$hook_path" ]] || [[ "$(readlink "$hook_path")" != "$hook_script" ]]; then
+            ln -sf "$hook_script" "$hook_path"
+            info "Installed $hook hook"
+        fi
+    done
 }
 
 cmd_stow() {
     info "Stowing dotfiles..."
 
     cd "$DOTFILES_DIR"
+
+    # Merge configs before stowing
+    cmd_merge 2>/dev/null || true
 
     # Create directory symlinks from $HOME to dotfiles
     stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
@@ -110,7 +131,8 @@ cmd_update() {
         brew update && brew upgrade
     fi
 
-    # Re-stow
+    # Merge configs and re-stow
+    cmd_merge || warn "Config merge had issues"
     cmd_stow
 
     success "Update complete"
@@ -125,7 +147,7 @@ cmd_doctor() {
         success "Homebrew: installed"
     else
         error "Homebrew: not installed"
-        ((issues++))
+        issues=$((issues + 1))
     fi
 
     # Check Stow
@@ -133,7 +155,7 @@ cmd_doctor() {
         success "GNU Stow: installed"
     else
         error "GNU Stow: not installed"
-        ((issues++))
+        issues=$((issues + 1))
     fi
 
     # Check Fish
@@ -169,6 +191,36 @@ cmd_doctor() {
             warn "Missing: $link"
         fi
     done
+
+    # Check config merging
+    info "Checking config merging..."
+    local profile_file="$DOTFILES_DIR/.dotprofile"
+    if [[ -f "$profile_file" ]]; then
+        local profile
+        profile=$(cat "$profile_file" | tr -d '[:space:]')
+        if [[ "$profile" == "work" || "$profile" == "personal" ]]; then
+            success "Profile: $profile"
+        else
+            warn "Invalid profile value: $profile (should be 'work' or 'personal')"
+        fi
+    else
+        warn "No .dotprofile found (run 'echo work > $profile_file' or 'echo personal > $profile_file')"
+    fi
+
+    # Check for base files without generated output
+    local base_files
+    base_files=$(find "$DOTFILES_DIR/home" -name "*.base.json" -type f 2>/dev/null || true)
+    if [[ -n "$base_files" ]]; then
+        while IFS= read -r base_file; do
+            local name="${base_file%.base.json}"
+            if [[ -f "${name}.json" ]]; then
+                success "Generated: ${name}.json"
+            else
+                warn "Missing generated: ${name}.json (run 'dot merge')"
+                issues=$((issues + 1))
+            fi
+        done <<< "$base_files"
+    fi
 
     if [[ $issues -eq 0 ]]; then
         success "All checks passed!"
@@ -276,6 +328,46 @@ cmd_unlink() {
     success "Unlinked dot"
 }
 
+cmd_merge() {
+    info "Merging config files..."
+
+    local profile_file="$DOTFILES_DIR/.dotprofile"
+
+    # Check profile exists
+    if [[ ! -f "$profile_file" ]]; then
+        warn "No profile set. Create $profile_file with 'work' or 'personal'"
+    else
+        info "Profile: $(cat "$profile_file")"
+    fi
+
+    # Find all *.base.json files in home/
+    local base_files
+    base_files=$(find "$DOTFILES_DIR/home" -name "*.base.json" -type f 2>/dev/null || true)
+
+    if [[ -z "$base_files" ]]; then
+        info "No config files to merge (no *.base.json files found)"
+        return 0
+    fi
+
+    local count=0
+    local errors=0
+
+    while IFS= read -r base_file; do
+        if "$SCRIPTS_DIR/merge-config.sh" "$base_file"; then
+            count=$((count + 1))
+        else
+            errors=$((errors + 1))
+        fi
+    done <<< "$base_files"
+
+    if [[ $errors -eq 0 ]]; then
+        success "Merged $count config file(s)"
+    else
+        error "Completed with $errors error(s)"
+        return 1
+    fi
+}
+
 cmd_help() {
     cat << EOF
 dot - Dotfiles management CLI
@@ -296,6 +388,7 @@ Commands:
     install --all   Install from all Brewfiles
     list            List packages in Brewfile
     (add --personal to target Brewfile.personal)
+  merge             Merge config files (*.base.json -> *.json)
   link              Install dot to /usr/local/bin
   unlink            Remove dot from /usr/local/bin
   help              Show this help message
@@ -322,6 +415,7 @@ main() {
         doctor)  cmd_doctor "$@" ;;
         edit)    cmd_edit "$@" ;;
         package) cmd_package "$@" ;;
+        merge)   cmd_merge "$@" ;;
         link)    cmd_link "$@" ;;
         unlink)  cmd_unlink "$@" ;;
         help|--help|-h) cmd_help ;;

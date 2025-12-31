@@ -21,6 +21,13 @@
 **/spell/
 **/startup_logs/
 
+# Profile selection (machine-specific)
+.dotprofile
+
+# Generated config files (created by dot merge)
+home/.claude/settings.json
+home/.config/opencode/config.json
+
 # Claude state (keep config, exclude state)
 home/.claude/plugins/
 home/.claude/projects/

@@ -5,6 +5,9 @@
 !.gitignore
 !CLAUDE.md
 !README.md
+!settings.base.json
+!settings.work.json
+!settings.personal.json
 !settings.example.json
 !scripts/
 !scripts/*.sh
