@@ -1,0 +1,46 @@
+[
+  {
+    "command": "uv",
+    "install": "curl -LsSf https://astral.sh/uv/install.sh | sh"
+  },
+  {
+    "command": "rustup",
+    "install": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  },
+  {
+    "command": "claude",
+    "install": "curl -fsSL https://claude.ai/install.sh | sh"
+  },
+  {
+    "command": "opencode",
+    "install": "curl -fsSL https://opencode.ai/install | bash"
+  },
+  {
+    "command": "bun",
+    "install": "curl -fsSL https://bun.sh/install | bash"
+  },
+  {
+    "command": "goose",
+    "install": "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash"
+  },
+  {
+    "command": "coderabbit",
+    "install": "curl -fsSL https://cli.coderabbit.ai/install.sh | sh"
+  },
+  {
+    "command": "droid",
+    "install": "curl -fsSL https://app.factory.ai/cli | sh"
+  },
+  {
+    "command": "toad",
+    "install": "curl -fsSL batrachian.ai/install | sh"
+  },
+  {
+    "command": "aider",
+    "install": "uv tool install aider-chat"
+  },
+  {
+    "command": "deno",
+    "install": "curl -fsSL https://deno.land/install.sh | sh"
+  }
+]

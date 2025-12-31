@@ -37,6 +37,109 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 has() { command -v "$1" &>/dev/null; }
 
 # =============================================================================
+# Bash Package Helpers
+# =============================================================================
+
+BASH_PACKAGES_FILE="$PACKAGES_DIR/bash-packages.json"
+BASH_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/bash-packages.personal.json"
+
+_ensure_bash_packages_file() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        echo "[]" > "$file"
+    fi
+}
+
+_bash_package_exists() {
+    local pkg="$1"
+    local file="$2"
+    _ensure_bash_packages_file "$file"
+    jq -e --arg cmd "$pkg" 'any(.[]; .command == $cmd)' "$file" >/dev/null 2>&1
+}
+
+_add_bash_package() {
+    local pkg="$1"
+    local install_script="$2"
+    local file="$3"
+    _ensure_bash_packages_file "$file"
+    local tmp
+    tmp=$(jq --arg cmd "$pkg" --arg inst "$install_script" \
+        '. + [{"command": $cmd, "install": $inst}]' "$file")
+    echo "$tmp" > "$file"
+}
+
+_remove_bash_package() {
+    local pkg="$1"
+    local file="$2"
+    _ensure_bash_packages_file "$file"
+    local tmp
+    tmp=$(jq --arg cmd "$pkg" 'map(select(.command != $cmd))' "$file")
+    echo "$tmp" > "$file"
+}
+
+_get_profile() {
+    local profile_file="$DOTFILES_DIR/.dotprofile"
+    if [[ -f "$profile_file" ]]; then
+        cat "$profile_file" | tr -d '[:space:]'
+    else
+        echo ""
+    fi
+}
+
+_install_bash_packages() {
+    info "Installing bash packages..."
+
+    local profile
+    profile=$(_get_profile)
+
+    _process_bash_packages_file "$BASH_PACKAGES_FILE"
+
+    if [[ "$profile" == "personal" ]]; then
+        if [[ -f "$BASH_PACKAGES_PERSONAL_FILE" ]]; then
+            _process_bash_packages_file "$BASH_PACKAGES_PERSONAL_FILE"
+        fi
+    fi
+}
+
+_process_bash_packages_file() {
+    local file="$1"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    local count
+    count=$(jq 'length' "$file")
+
+    if [[ "$count" -eq 0 ]]; then
+        return 0
+    fi
+
+    info "Processing $(basename "$file")..."
+
+    local packages
+    packages=$(jq -c '.[]' "$file")
+
+    while IFS= read -r pkg_json; do
+        local cmd install_script
+        cmd=$(echo "$pkg_json" | jq -r '.command')
+        install_script=$(echo "$pkg_json" | jq -r '.install')
+
+        if has "$cmd"; then
+            success "$cmd already installed"
+        else
+            info "Installing $cmd..."
+            echo "  Running: $install_script"
+            if eval "$install_script"; then
+                success "Installed $cmd"
+            else
+                warn "Failed to install $cmd (continuing...)"
+            fi
+        fi
+    done <<< "$packages"
+}
+
+# =============================================================================
 # Commands
 # =============================================================================
 
@@ -60,11 +163,14 @@ cmd_init() {
         success "GNU Stow already installed"
     fi
 
-    # Install packages
+    # Install brew packages
     if [[ -f "$PACKAGES_DIR/Brewfile" ]]; then
         info "Installing packages from Brewfile..."
         brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some packages failed to install"
     fi
+
+    # Install bash packages
+    _install_bash_packages
 
     # Install git hooks
     _install_git_hooks
@@ -241,39 +347,72 @@ cmd_package() {
     shift || true
 
     # Parse --personal flag
-    local profile=""
+    local personal=false
     local args=()
     for arg in "$@"; do
         case "$arg" in
-            --personal) profile=".personal" ;;
+            --personal) personal=true ;;
             *) args+=("$arg") ;;
         esac
     done
-    local brewfile="$PACKAGES_DIR/Brewfile$profile"
+
+    local brewfile bash_pkg_file
+    if [[ "$personal" == true ]]; then
+        brewfile="$PACKAGES_DIR/Brewfile.personal"
+        bash_pkg_file="$BASH_PACKAGES_PERSONAL_FILE"
+    else
+        brewfile="$PACKAGES_DIR/Brewfile"
+        bash_pkg_file="$BASH_PACKAGES_FILE"
+    fi
 
     case "$subcmd" in
         add)
             local pkg="${args[0]:-}"
+            local install_script="${args[1]:-}"
+
             if [[ -z "$pkg" ]]; then
                 error "Usage: dot package add <package> [--personal]"
+                error "       dot package add <name> \"<install-script>\" [--personal]"
                 return 1
             fi
 
-            # Detect package type
-            local pkg_type="brew"
-            if brew info --cask "$pkg" &>/dev/null; then
-                pkg_type="cask"
-            fi
+            # Two args = bash package, one arg = brew package
+            if [[ -n "$install_script" ]]; then
+                _ensure_bash_packages_file "$bash_pkg_file"
 
-            info "Adding $pkg ($pkg_type) to $(basename "$brewfile")..."
-            echo "$pkg_type \"$pkg\"" >> "$brewfile"
+                if _bash_package_exists "$pkg" "$bash_pkg_file"; then
+                    error "Package '$pkg' already exists in $(basename "$bash_pkg_file")"
+                    return 1
+                fi
 
-            if [[ "$pkg_type" == "cask" ]]; then
-                brew install --cask "$pkg"
+                info "Adding bash package '$pkg' to $(basename "$bash_pkg_file")..."
+                _add_bash_package "$pkg" "$install_script" "$bash_pkg_file"
+
+                if ! has "$pkg"; then
+                    info "Installing $pkg..."
+                    echo "  Running: $install_script"
+                    eval "$install_script" || warn "Installation may have failed"
+                else
+                    success "$pkg is already installed"
+                fi
+                success "Added bash package: $pkg"
             else
-                brew install "$pkg"
+                # Brew package (existing behavior)
+                local pkg_type="brew"
+                if brew info --cask "$pkg" &>/dev/null; then
+                    pkg_type="cask"
+                fi
+
+                info "Adding $pkg ($pkg_type) to $(basename "$brewfile")..."
+                echo "$pkg_type \"$pkg\"" >> "$brewfile"
+
+                if [[ "$pkg_type" == "cask" ]]; then
+                    brew install --cask "$pkg"
+                else
+                    brew install "$pkg"
+                fi
+                success "Added $pkg"
             fi
-            success "Added $pkg"
             ;;
         remove)
             local pkg="${args[0]:-}"
@@ -281,13 +420,28 @@ cmd_package() {
                 error "Usage: dot package remove <package> [--personal]"
                 return 1
             fi
-            info "Removing $pkg from $(basename "$brewfile")..."
-            sed -i '' "/\"$pkg\"/d" "$brewfile"
-            brew uninstall "$pkg" 2>/dev/null || brew uninstall --cask "$pkg" 2>/dev/null || warn "Package not installed"
-            success "Removed $pkg"
+
+            # Check bash packages first (both files)
+            if _bash_package_exists "$pkg" "$BASH_PACKAGES_FILE"; then
+                info "Removing bash package '$pkg' from bash-packages.json..."
+                _remove_bash_package "$pkg" "$BASH_PACKAGES_FILE"
+                success "Removed bash package: $pkg"
+                info "Note: The command '$pkg' remains installed on your system"
+            elif _bash_package_exists "$pkg" "$BASH_PACKAGES_PERSONAL_FILE"; then
+                info "Removing bash package '$pkg' from bash-packages.personal.json..."
+                _remove_bash_package "$pkg" "$BASH_PACKAGES_PERSONAL_FILE"
+                success "Removed bash package: $pkg"
+                info "Note: The command '$pkg' remains installed on your system"
+            else
+                # Brew package removal
+                info "Removing $pkg from $(basename "$brewfile")..."
+                sed -i '' "/\"$pkg\"/d" "$brewfile"
+                brew uninstall "$pkg" 2>/dev/null || brew uninstall --cask "$pkg" 2>/dev/null || warn "Package not installed"
+                success "Removed $pkg"
+            fi
             ;;
         install)
-            if [[ -n "$profile" ]]; then
+            if [[ "$personal" == true ]]; then
                 info "Installing from $(basename "$brewfile")..."
                 brew bundle --file="$brewfile"
             elif [[ "${args[0]:-}" == "--all" ]]; then
@@ -298,10 +452,49 @@ cmd_package() {
                 info "Installing from Brewfile..."
                 brew bundle --file="$PACKAGES_DIR/Brewfile"
             fi
+
+            echo ""
+            _install_bash_packages
+
             success "Installation complete"
             ;;
         list)
-            cat "$brewfile"
+            echo -e "${BLUE}=== Brew Packages ===${NC}"
+            if [[ -f "$brewfile" ]]; then
+                cat "$brewfile"
+            else
+                echo "(none)"
+            fi
+
+            echo ""
+            echo -e "${BLUE}=== Bash Packages ===${NC}"
+            _ensure_bash_packages_file "$BASH_PACKAGES_FILE"
+
+            local has_packages=false
+
+            if [[ -f "$BASH_PACKAGES_FILE" ]]; then
+                local count
+                count=$(jq 'length' "$BASH_PACKAGES_FILE")
+                if [[ "$count" -gt 0 ]]; then
+                    has_packages=true
+                    echo "Core (bash-packages.json):"
+                    jq -r '.[] | "  \(.command): \(.install)"' "$BASH_PACKAGES_FILE"
+                fi
+            fi
+
+            if [[ -f "$BASH_PACKAGES_PERSONAL_FILE" ]]; then
+                local count
+                count=$(jq 'length' "$BASH_PACKAGES_PERSONAL_FILE")
+                if [[ "$count" -gt 0 ]]; then
+                    has_packages=true
+                    echo "Personal (bash-packages.personal.json):"
+                    jq -r '.[] | "  \(.command): \(.install)"' "$BASH_PACKAGES_PERSONAL_FILE"
+                fi
+            fi
+
+            if [[ "$has_packages" == false ]]; then
+                echo "(none)"
+            fi
             ;;
         *)
             error "Usage: dot package <add|remove|install|list> [package] [--personal]"
@@ -381,13 +574,14 @@ Commands:
   update [--packages]  Pull repo, optionally update packages, re-stow
   doctor            Check installation health
   edit              Open dotfiles in editor
-  package <subcmd>  Manage Brewfile packages
-    add <pkg>       Add package (auto-detects brew/cask)
-    remove <pkg>    Remove package from Brewfile
-    install         Install from Brewfile
-    install --all   Install from all Brewfiles
-    list            List packages in Brewfile
-    (add --personal to target Brewfile.personal)
+  package <subcmd>  Manage packages (brew and bash)
+    add <pkg>               Add brew package (auto-detects brew/cask)
+    add <name> "<script>"   Add bash package with install script
+    remove <pkg>            Remove package (checks bash first, then brew)
+    install                 Install from Brewfile + bash-packages.json
+    install --all           Install from all package files
+    list                    List all packages
+    (add --personal to target personal files)
   merge             Merge config files (*.base.json -> *.json)
   link              Install dot to /usr/local/bin
   unlink            Remove dot from /usr/local/bin
