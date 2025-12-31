@@ -3,6 +3,9 @@ fish_add_path --path /usr/local/go/bin
 fish_add_path --path "$HOME/.local/bin/"
 fish_add_path --path "$HOME/.bun/bin"
 
+# Disable fish welcome message
+set fish_greeting
+
 # Add local_functions to fish function path for lazy loading
 set -p fish_function_path ~/.config/fish/local_functions
 
