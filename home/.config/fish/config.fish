@@ -10,6 +10,7 @@ set fish_greeting
 set -p fish_function_path ~/.config/fish/local_functions
 
 alias code "/Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code"
+alias tmux "tmux -u"
 
 set -g -x NVM_DIR $HOME/.nvm
 set -gx NOOP_MODEL_API_KEY "*"
