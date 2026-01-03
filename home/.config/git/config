@@ -1,0 +1,52 @@
+[branch]
+	sort = -committerdate
+
+[column]
+	ui = auto
+
+[core]
+	editor = nvim
+	pager = delta
+	fsmonitor = true
+
+[delta]
+	navigate = true
+	side-by-side = true
+	line-numbers = true
+
+[diff]
+	colorMoved = default
+
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+
+[interactive]
+	diffFilter = delta --color-only
+
+[push]
+	autoSetupRemote = true
+
+[fetch]
+	prune = true
+	writeCommitGraph = true
+
+[init]
+	defaultBranch = main
+
+[merge]
+	conflictstyle = diff3
+
+[pull]
+	rebase = true
+
+[rebase]
+	updateRefs = true
+
+[rerere]
+	enabled = true
+
+[include]
+	path = ~/.config/git/config.local

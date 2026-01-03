@@ -28,6 +28,9 @@
 home/.claude/settings.json
 home/.config/opencode/config.json
 
+# Local config overrides
+home/.config/git/config.local
+
 # Claude state (keep config, exclude state)
 home/.claude/plugins/
 home/.claude/projects/
