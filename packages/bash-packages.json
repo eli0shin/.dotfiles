@@ -42,5 +42,9 @@
   {
     "command": "deno",
     "install": "curl -fsSL https://deno.land/install.sh | sh"
+  },
+  {
+    "command": "repos",
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/repos/main/install.sh | bash"
   }
 ]

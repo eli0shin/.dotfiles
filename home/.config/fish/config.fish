@@ -53,3 +53,6 @@ set fish_cursor_visual block
 set local_vars ~/.config/fish/local_vars.fish
 
 test -r $local_vars; and source $local_vars
+
+# repos CLI work command
+repos init --print | source
