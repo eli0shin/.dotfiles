@@ -7,6 +7,7 @@ set -euo pipefail
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 PACKAGES_DIR="$DOTFILES_DIR/packages"
 SCRIPTS_DIR="$DOTFILES_DIR/scripts"
+BACKUP_DIR="$HOME/.dotfiles-backup"
 
 # Managed symlink directories
 SYMLINKS=(
@@ -561,6 +562,86 @@ cmd_merge() {
     fi
 }
 
+cmd_backup() {
+    info "Backing up existing configs to $BACKUP_DIR..."
+
+    mkdir -p "$BACKUP_DIR"
+
+    local backed_up=0
+
+    for path in "${SYMLINKS[@]}"; do
+        if [[ -L "$path" ]]; then
+            # Already a symlink (managed by stow), skip
+            info "Skipping $path (already a symlink)"
+        elif [[ -e "$path" ]]; then
+            # Real file/directory exists, back it up
+            local rel_path="${path#$HOME/}"
+            local backup_path="$BACKUP_DIR/$rel_path"
+            local backup_parent
+            backup_parent=$(dirname "$backup_path")
+
+            mkdir -p "$backup_parent"
+            rm -rf "$backup_path"  # Remove old backup if exists
+            cp -a "$path" "$backup_path"
+            success "Backed up: $path"
+            backed_up=$((backed_up + 1))
+        else
+            info "Skipping $path (does not exist)"
+        fi
+    done
+
+    if [[ $backed_up -eq 0 ]]; then
+        info "Nothing to backup (all paths are symlinks or don't exist)"
+    else
+        success "Backed up $backed_up directory(ies) to $BACKUP_DIR"
+    fi
+}
+
+cmd_restore() {
+    if [[ "${1:-}" == "--list" ]]; then
+        info "Backup contents in $BACKUP_DIR:"
+        if [[ -d "$BACKUP_DIR" ]]; then
+            find "$BACKUP_DIR" -mindepth 1 -maxdepth 2 -type d | while read -r dir; do
+                echo "  ${dir#$BACKUP_DIR/}"
+            done
+        else
+            warn "No backup directory found"
+        fi
+        return 0
+    fi
+
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        error "No backup found at $BACKUP_DIR"
+        error "Run 'dot backup' first to create a backup"
+        return 1
+    fi
+
+    info "Restoring configs from $BACKUP_DIR..."
+
+    # Unstow first to remove symlinks
+    cmd_unstow 2>/dev/null || true
+
+    local restored=0
+
+    for path in "${SYMLINKS[@]}"; do
+        local rel_path="${path#$HOME/}"
+        local backup_path="$BACKUP_DIR/$rel_path"
+
+        if [[ -e "$backup_path" ]]; then
+            rm -rf "$path"  # Remove existing (symlink or dir)
+            cp -a "$backup_path" "$path"
+            success "Restored: $path"
+            restored=$((restored + 1))
+        fi
+    done
+
+    if [[ $restored -eq 0 ]]; then
+        warn "No matching backups found to restore"
+    else
+        success "Restored $restored directory(ies)"
+    fi
+}
+
 cmd_help() {
     cat << EOF
 dot - Dotfiles management CLI
@@ -583,6 +664,8 @@ Commands:
     list                    List all packages
     (add --personal to target personal files)
   merge             Merge config files (*.base.json -> *.json)
+  backup            Backup existing configs before stow
+  restore [--list]  Restore configs from backup
   link              Install dot to /usr/local/bin
   unlink            Remove dot from /usr/local/bin
   help              Show this help message
@@ -610,6 +693,8 @@ main() {
         edit)    cmd_edit "$@" ;;
         package) cmd_package "$@" ;;
         merge)   cmd_merge "$@" ;;
+        backup)  cmd_backup "$@" ;;
+        restore) cmd_restore "$@" ;;
         link)    cmd_link "$@" ;;
         unlink)  cmd_unlink "$@" ;;
         help|--help|-h) cmd_help ;;
