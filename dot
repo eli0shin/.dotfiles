@@ -204,10 +204,25 @@ cmd_stow() {
     # Merge configs before stowing
     cmd_merge 2>/dev/null || true
 
+    # Remove nested .git directories (excluding marketplaces)
+    _clean_nested_git
+
     # Create directory symlinks from $HOME to dotfiles
     stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
 
     success "Dotfiles stowed successfully"
+}
+
+_clean_nested_git() {
+    # Remove .git directories only at the root of stow-managed directories
+    for link in "${SYMLINKS[@]}"; do
+        local rel_path="${link#$HOME/}"
+        local git_dir="$DOTFILES_DIR/home/$rel_path/.git"
+        if [[ -d "$git_dir" ]]; then
+            rm -rf "$git_dir"
+            info "Removed nested .git: home/$rel_path/.git"
+        fi
+    done
 }
 
 cmd_unstow() {

@@ -10,6 +10,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.1.6"
+    "@opencode-ai/plugin": "1.1.8"
   }
 }
