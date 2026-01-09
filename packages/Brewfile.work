@@ -1,0 +1,10 @@
+brew "gettext"
+brew "cairo"
+brew "create-dmg"
+brew "giflib"
+brew "git-trim"
+brew "jpeg"
+brew "pkgconf"
+brew "pyenv"
+mas "Perplexity", id: 6714467650
+go "golang.org/x/tools/gopls"

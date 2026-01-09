@@ -1,1 +1,68 @@
-{}
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "provider": {
+    "anthropic": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Anthropic(Enterprise)",
+      "options": {
+        "baseURL": "{env:ANTHROPIC_BASE_URL}",
+        "headers": {
+          "Authorization": "Bearer {env:ANTHROPIC_AUTH_TOKEN}"
+        }
+      },
+      "models": {}
+    },
+    "paypal": {
+      "npm": "@paypalcorp/ai-gateway-ai-sdk",
+      "name": "PayPal",
+      "models": {
+        "gpt-5": {
+          "name": "GPT-5",
+        },
+        "gpt-5-mini": {
+          "name": "GPT 5-mini"
+        },
+        "gpt-5-nano": {
+          "name": "GPT 5-nano"
+        },
+        "o4-mini": {
+          "name": "o4-mini"
+        },
+        "gpt-4o": {
+          "name": "GPT 4o"
+        },
+        "gpt-4o-mini": {
+          "name": "GPT 4o-mini"
+        },
+        "gpt-4.1": {
+          "name": "GPT 4.1"
+        },
+        "gpt-4.1-mini": {
+          "name": "GPT 4.1-mini"
+        },
+        "gpt-4.1-nano": {
+          "name": "GPT 4.1-nano"
+        },
+        "gemini-2.0-flash": {
+          "name": "2.0 Flash"
+        },
+        "gemini-2.5-flash": {
+          "name": "2.5 Flash"
+        },
+        "gemini-2.5-pro": {
+          "name": "2.5 Pro"
+        },
+        "gemini-3-pro-preview": {
+          "name": "2.5 Pro"
+        }
+      }
+    }
+  },
+  "disabled_providers": [
+    "openai",
+    "gemini",
+    "opencode",
+    "vertex"
+  ]
+}

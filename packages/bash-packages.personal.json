@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "command": "toad",
+    "install": "curl -fsSL batrachian.ai/install | sh"
+  },
+  {
+    "command": "coderabbit",
+    "install": "curl -fsSL https://cli.coderabbit.ai/install.sh | sh"
+  },
+  {
+    "command": "droid",
+    "install": "curl -fsSL https://app.factory.ai/cli | sh"
+  }
+]

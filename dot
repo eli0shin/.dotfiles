@@ -43,6 +43,7 @@ has() { command -v "$1" &>/dev/null; }
 
 BASH_PACKAGES_FILE="$PACKAGES_DIR/bash-packages.json"
 BASH_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/bash-packages.personal.json"
+BASH_PACKAGES_WORK_FILE="$PACKAGES_DIR/bash-packages.work.json"
 
 _ensure_bash_packages_file() {
     local file="$1"
@@ -95,10 +96,10 @@ _install_bash_packages() {
 
     _process_bash_packages_file "$BASH_PACKAGES_FILE"
 
-    if [[ "$profile" == "personal" ]]; then
-        if [[ -f "$BASH_PACKAGES_PERSONAL_FILE" ]]; then
-            _process_bash_packages_file "$BASH_PACKAGES_PERSONAL_FILE"
-        fi
+    if [[ "$profile" == "personal" && -f "$BASH_PACKAGES_PERSONAL_FILE" ]]; then
+        _process_bash_packages_file "$BASH_PACKAGES_PERSONAL_FILE"
+    elif [[ "$profile" == "work" && -f "$BASH_PACKAGES_WORK_FILE" ]]; then
+        _process_bash_packages_file "$BASH_PACKAGES_WORK_FILE"
     fi
 }
 
@@ -375,12 +376,14 @@ cmd_package() {
     local subcmd="${1:-}"
     shift || true
 
-    # Parse --personal flag
+    # Parse --personal and --work flags
     local personal=false
+    local work=false
     local args=()
     for arg in "$@"; do
         case "$arg" in
             --personal) personal=true ;;
+            --work) work=true ;;
             *) args+=("$arg") ;;
         esac
     done
@@ -389,6 +392,9 @@ cmd_package() {
     if [[ "$personal" == true ]]; then
         brewfile="$PACKAGES_DIR/Brewfile.personal"
         bash_pkg_file="$BASH_PACKAGES_PERSONAL_FILE"
+    elif [[ "$work" == true ]]; then
+        brewfile="$PACKAGES_DIR/Brewfile.work"
+        bash_pkg_file="$BASH_PACKAGES_WORK_FILE"
     else
         brewfile="$PACKAGES_DIR/Brewfile"
         bash_pkg_file="$BASH_PACKAGES_FILE"
@@ -470,16 +476,20 @@ cmd_package() {
             fi
             ;;
         install)
-            if [[ "$personal" == true ]]; then
-                info "Installing from $(basename "$brewfile")..."
-                brew bundle --file="$brewfile"
-            elif [[ "${args[0]:-}" == "--all" ]]; then
-                info "Installing from all Brewfiles..."
-                brew bundle --file="$PACKAGES_DIR/Brewfile"
-                [[ -f "$PACKAGES_DIR/Brewfile.personal" ]] && brew bundle --file="$PACKAGES_DIR/Brewfile.personal"
-            else
-                info "Installing from Brewfile..."
-                brew bundle --file="$PACKAGES_DIR/Brewfile"
+            local profile
+            profile=$(_get_profile)
+
+            # Always install base packages
+            info "Installing from Brewfile..."
+            brew bundle --file="$PACKAGES_DIR/Brewfile"
+
+            # Install profile-specific brew packages
+            if [[ "$profile" == "personal" && -f "$PACKAGES_DIR/Brewfile.personal" ]]; then
+                info "Installing from Brewfile.personal..."
+                brew bundle --file="$PACKAGES_DIR/Brewfile.personal"
+            elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
+                info "Installing from Brewfile.work..."
+                brew bundle --file="$PACKAGES_DIR/Brewfile.work"
             fi
 
             echo ""
@@ -521,12 +531,22 @@ cmd_package() {
                 fi
             fi
 
+            if [[ -f "$BASH_PACKAGES_WORK_FILE" ]]; then
+                local count
+                count=$(jq 'length' "$BASH_PACKAGES_WORK_FILE")
+                if [[ "$count" -gt 0 ]]; then
+                    has_packages=true
+                    echo "Work (bash-packages.work.json):"
+                    jq -r '.[] | "  \(.command): \(.install)"' "$BASH_PACKAGES_WORK_FILE"
+                fi
+            fi
+
             if [[ "$has_packages" == false ]]; then
                 echo "(none)"
             fi
             ;;
         *)
-            error "Usage: dot package <add|remove|install|list> [package] [--personal]"
+            error "Usage: dot package <add|remove|install|list> [package] [--personal|--work]"
             return 1
             ;;
     esac
@@ -663,7 +683,10 @@ cmd_restore() {
                 info "Restored: $rel_path"
                 merged=$((merged + 1))
             fi
-        done < <(find "$BACKUP_DIR" -type f -print0)
+        done < <(find "$BACKUP_DIR" -type f \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" \
+            -print0)
 
         if [[ $merged -eq 0 ]]; then
             info "No extra files to restore"
@@ -716,10 +739,9 @@ Commands:
     add <pkg>               Add brew package (auto-detects brew/cask)
     add <name> "<script>"   Add bash package with install script
     remove <pkg>            Remove package (checks bash first, then brew)
-    install                 Install from Brewfile + bash-packages.json
-    install --all           Install from all package files
+    install                 Install packages based on .dotprofile
     list                    List all packages
-    (add --personal to target personal files)
+    (add --personal or --work to target profile-specific files)
   merge             Merge config files (*.base.json -> *.json)
   backup            Backup existing configs before stow
   restore [--list|--merge]  Restore configs (--merge only restores extra files)
