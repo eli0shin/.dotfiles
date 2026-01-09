@@ -197,6 +197,9 @@ _install_git_hooks() {
 }
 
 cmd_stow() {
+    local clean=false
+    [[ "${1:-}" == "--clean" || "${1:-}" == "-c" ]] && clean=true
+
     info "Stowing dotfiles..."
 
     cd "$DOTFILES_DIR"
@@ -206,6 +209,16 @@ cmd_stow() {
 
     # Remove nested .git directories (excluding marketplaces)
     _clean_nested_git
+
+    if [[ "$clean" == true ]]; then
+        info "Clean mode: removing managed directories..."
+        for path in "${SYMLINKS[@]}"; do
+            if [[ -e "$path" && ! -L "$path" ]]; then
+                rm -rf "$path"
+                info "Removed: $path"
+            fi
+        done
+    fi
 
     # Create directory symlinks from $HOME to dotfiles
     stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
@@ -631,6 +644,35 @@ cmd_restore() {
         return 1
     fi
 
+    if [[ "${1:-}" == "--merge" ]]; then
+        info "Merging extra files from backup (skipping files in dotfiles repo)..."
+        local merged=0
+
+        # Find all files in backup
+        while IFS= read -r -d '' backup_file; do
+            local rel_path="${backup_file#$BACKUP_DIR/}"
+            local repo_file="$DOTFILES_DIR/home/$rel_path"
+            local target_file="$HOME/$rel_path"
+
+            # Only copy if file doesn't exist in dotfiles repo
+            if [[ ! -e "$repo_file" ]]; then
+                local target_dir
+                target_dir=$(dirname "$target_file")
+                mkdir -p "$target_dir"
+                cp -a "$backup_file" "$target_file"
+                info "Restored: $rel_path"
+                merged=$((merged + 1))
+            fi
+        done < <(find "$BACKUP_DIR" -type f -print0)
+
+        if [[ $merged -eq 0 ]]; then
+            info "No extra files to restore"
+        else
+            success "Restored $merged extra file(s)"
+        fi
+        return 0
+    fi
+
     info "Restoring configs from $BACKUP_DIR..."
 
     # Unstow first to remove symlinks
@@ -665,7 +707,7 @@ Usage: dot <command> [options]
 
 Commands:
   init              Full setup: brew, packages, stow
-  stow              Create symlinks using GNU Stow
+  stow [-c|--clean] Create symlinks (--clean removes dirs first)
   unstow            Remove symlinks
   update [--packages]  Pull repo, optionally update packages, re-stow
   doctor            Check installation health
@@ -680,7 +722,7 @@ Commands:
     (add --personal to target personal files)
   merge             Merge config files (*.base.json -> *.json)
   backup            Backup existing configs before stow
-  restore [--list]  Restore configs from backup
+  restore [--list|--merge]  Restore configs (--merge only restores extra files)
   link              Install dot to /usr/local/bin
   unlink            Remove dot from /usr/local/bin
   help              Show this help message
