@@ -1,0 +1,56 @@
+# Amethyst tiling window manager config
+# https://github.com/ianyh/Amethyst
+
+# Modifier keys
+mod1:
+  - option
+  - shift
+mod2:
+  - option
+  - shift
+  - control
+
+# Enabled layouts (cycle with mod1-space)
+layouts:
+  - tall
+  - wide
+  - fullscreen
+  - column
+  - two-pane
+  - tall-right
+
+# Window behavior
+float-small-windows: true
+new-windows-to-main: false
+follow-space-thrown-windows: true
+window-resize-step: 5
+
+# Mouse behavior
+focus-follows-mouse: false
+mouse-follows-focus: false
+mouse-swaps-windows: true
+mouse-resizes-windows: true
+
+# Layout HUD
+enables-layout-hud: true
+enables-layout-hud-on-space-change: true
+
+# Margins and padding (0 = no gaps)
+window-margins: false
+window-margin-size: 0
+screen-padding-left: 0
+screen-padding-right: 0
+screen-padding-top: 0
+screen-padding-bottom: 0
+
+# Restore layouts when Amethyst launches
+restore-layouts-on-launch: true
+
+# Floating apps (blacklist mode - these apps float, others tile)
+floating-is-blacklist: true
+floating:
+  - id: com.autodesk.dls.streamer.scriptapp.Autodesk-Fusion
+  - id: com.utmapp.UTM
+
+# Debug
+debug-layout-info: true
