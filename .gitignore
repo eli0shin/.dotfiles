@@ -27,6 +27,10 @@
 # Generated config files (created by dot merge)
 home/.claude/settings.json
 home/.config/opencode/opencode.json
+settings/defaults.json
+settings/keyboard.json
+settings/pmset.json
+settings/services.json
 
 # Local config overrides
 home/.config/git/config.local

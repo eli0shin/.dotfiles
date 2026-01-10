@@ -1,0 +1,8 @@
+[
+  {
+    "name": "tailscale",
+    "sudo": true,
+    "check": "tailscale status >/dev/null 2>&1",
+    "post_start": "tailscale status >/dev/null 2>&1 || sudo tailscale up"
+  }
+]

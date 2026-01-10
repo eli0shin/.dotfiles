@@ -1,0 +1,70 @@
+{
+  "NSGlobalDomain": {
+    "AppleShowAllExtensions": true,
+    "KeyRepeat": 2,
+    "InitialKeyRepeat": 15,
+    "ApplePressAndHoldEnabled": false,
+    "AppleKeyboardUIMode": 3,
+    "NSAutomaticSpellingCorrectionEnabled": true,
+    "NSAutomaticCapitalizationEnabled": true,
+    "NSAutomaticDashSubstitutionEnabled": true,
+    "NSAutomaticPeriodSubstitutionEnabled": true,
+    "NSAutomaticQuoteSubstitutionEnabled": true,
+    "NSAutomaticTextCompletionEnabled": true,
+    "NSNavPanelExpandedStateForSaveMode": true,
+    "NSNavPanelExpandedStateForSaveMode2": true,
+    "PMPrintingExpandedStateForPrint": true,
+    "PMPrintingExpandedStateForPrint2": true,
+    "NSDocumentSaveNewDocumentsToCloud": false
+  },
+  "com.apple.finder": {
+    "FXPreferredViewStyle": "Nlsv",
+    "ShowPathbar": true,
+    "ShowStatusBar": true,
+    "AppleShowAllFiles": true,
+    "FXEnableExtensionChangeWarning": false,
+    "_FXShowPosixPathInTitle": true,
+    "FXDefaultSearchScope": "SCcf"
+  },
+  "com.apple.dock": {
+    "tilesize": 37,
+    "autohide": true,
+    "mru-spaces": false,
+    "orientation": "right",
+    "show-recents": false,
+    "minimize-to-application": true,
+    "expose-animation-duration": 0.15
+  },
+  "com.apple.screencapture": {
+    "location": "~/Desktop/Screenshots",
+    "type": "png",
+    "disable-shadow": true
+  },
+  "com.apple.AppleMultitouchTrackpad": {
+    "Clicking": true,
+    "TrackpadThreeFingerDrag": true
+  },
+  "com.apple.driver.AppleBluetoothMultitouch.trackpad": {
+    "Clicking": true,
+    "TrackpadThreeFingerDrag": true
+  },
+  "com.apple.menuextra.clock": {
+    "Show24Hour": true,
+    "ShowSeconds": false
+  },
+  "com.apple.screensaver": {
+    "askForPassword": true,
+    "askForPasswordDelay": 0
+  },
+  "com.apple.TextEdit": {
+    "RichText": false,
+    "PlainTextEncoding": 4,
+    "PlainTextEncodingForWrite": 4
+  },
+  "com.apple.CrashReporter": {
+    "DialogType": "none"
+  },
+  "com.apple.Accessibility": {
+    "ReduceMotionEnabled": true
+  }
+}

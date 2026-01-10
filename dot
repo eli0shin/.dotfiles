@@ -6,6 +6,7 @@ set -euo pipefail
 
 DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 PACKAGES_DIR="$DOTFILES_DIR/packages"
+SETTINGS_DIR="$DOTFILES_DIR/settings"
 SCRIPTS_DIR="$DOTFILES_DIR/scripts"
 BACKUP_DIR="$HOME/.dotfiles-backup"
 
@@ -142,6 +143,409 @@ _process_bash_packages_file() {
 }
 
 # =============================================================================
+# Service Helpers
+# =============================================================================
+
+SERVICES_FILE="$SETTINGS_DIR/services.json"
+
+_start_services() {
+    if [[ ! -f "$SERVICES_FILE" ]]; then
+        return 0
+    fi
+
+    local count
+    count=$(jq 'length' "$SERVICES_FILE")
+    if [[ "$count" -eq 0 ]]; then
+        return 0
+    fi
+
+    info "Starting brew services..."
+
+    local services
+    services=$(jq -c '.[]' "$SERVICES_FILE")
+
+    while IFS= read -r svc_json; do
+        local name use_sudo
+        name=$(echo "$svc_json" | jq -r '.name')
+        use_sudo=$(echo "$svc_json" | jq -r '.sudo // false')
+
+        # Check if service is already running
+        local check_cmd is_running
+        check_cmd=$(echo "$svc_json" | jq -r '.check // empty')
+
+        if [[ -n "$check_cmd" ]]; then
+            # Use custom check command
+            if eval "$check_cmd"; then
+                is_running=1
+            else
+                is_running=0
+            fi
+        else
+            # Fall back to brew services list
+            is_running=$(brew services list 2>/dev/null | grep "^$name " | grep -c "started" || true)
+        fi
+
+        if [[ "$is_running" -gt 0 ]]; then
+            success "$name service already running"
+        else
+            info "Starting $name service..."
+            if [[ "$use_sudo" == "true" ]]; then
+                if sudo brew services start "$name"; then
+                    success "Started $name"
+                else
+                    warn "Failed to start $name"
+                fi
+            else
+                if brew services start "$name"; then
+                    success "Started $name"
+                else
+                    warn "Failed to start $name"
+                fi
+            fi
+        fi
+
+        # Run post-start commands
+        local post_start
+        post_start=$(echo "$svc_json" | jq -r '.post_start // empty')
+        if [[ -n "$post_start" ]]; then
+            info "Running post-start for $name..."
+            if eval "$post_start"; then
+                success "Post-start complete for $name"
+            else
+                warn "Post-start failed for $name"
+            fi
+        fi
+    done <<< "$services"
+}
+
+cmd_service() {
+    local subcmd="${1:-}"
+    shift || true
+
+    case "$subcmd" in
+        start)
+            _start_services
+            ;;
+        list)
+            if [[ -f "$SERVICES_FILE" ]]; then
+                echo -e "${BLUE}=== Managed Services ===${NC}"
+                jq -r '.[] | "\(.name) (sudo: \(.sudo // false))"' "$SERVICES_FILE"
+            else
+                echo "No services configured"
+            fi
+            echo ""
+            echo -e "${BLUE}=== Running Brew Services ===${NC}"
+            brew services list
+            ;;
+        *)
+            error "Usage: dot service <start|list>"
+            return 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Pmset Helpers
+# =============================================================================
+
+PMSET_FILE="$SETTINGS_DIR/pmset.json"
+
+cmd_pmset() {
+    local subcmd="${1:-apply}"
+
+    case "$subcmd" in
+        apply)
+            local profile
+            profile=$(_get_profile)
+
+            if [[ "$profile" != "personal" ]]; then
+                warn "pmset settings only apply to personal machines (current profile: $profile)"
+                return 0
+            fi
+
+            if [[ ! -f "$PMSET_FILE" ]]; then
+                warn "No pmset.json found"
+                return 0
+            fi
+
+            info "Checking pmset settings..."
+
+            local settings needs_change=false
+            settings=$(jq -r 'to_entries[] | "\(.key) \(.value)"' "$PMSET_FILE")
+
+            while IFS= read -r line; do
+                local key value current
+                key=$(echo "$line" | awk '{print $1}')
+                value=$(echo "$line" | awk '{print $2}')
+                current=$(pmset -g | grep -E "^\s*$key\s+" | awk '{print $2}')
+
+                if [[ "$current" == "$value" ]]; then
+                    success "$key already set to $value"
+                else
+                    needs_change=true
+                    info "Setting $key=$value (was $current)"
+                    if sudo pmset -c "$key" "$value"; then
+                        success "Set $key=$value"
+                    else
+                        warn "Failed to set $key=$value"
+                    fi
+                fi
+            done <<< "$settings"
+
+            if [[ "$needs_change" == false ]]; then
+                success "All pmset settings already correct"
+            else
+                success "pmset settings applied"
+            fi
+            ;;
+        show)
+            echo -e "${BLUE}=== Current pmset Settings ===${NC}"
+            pmset -g
+            echo ""
+            if [[ -f "$PMSET_FILE" ]]; then
+                echo -e "${BLUE}=== Configured Settings (settings/pmset.json) ===${NC}"
+                jq '.' "$PMSET_FILE"
+            fi
+            ;;
+        *)
+            error "Usage: dot pmset [apply|show]"
+            return 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Defaults Helpers
+# =============================================================================
+
+DEFAULTS_FILE="$SETTINGS_DIR/defaults.json"
+
+# Map domains to apps that need restarting
+_get_app_for_domain() {
+    case "$1" in
+        com.apple.finder) echo "Finder" ;;
+        com.apple.dock) echo "Dock" ;;
+        com.apple.SystemUIServer) echo "SystemUIServer" ;;
+        com.apple.screencapture) echo "SystemUIServer" ;;
+        com.apple.menuextra.clock) echo "SystemUIServer" ;;
+        *) echo "" ;;
+    esac
+}
+
+cmd_defaults() {
+    local subcmd="${1:-apply}"
+
+    case "$subcmd" in
+        apply)
+            local profile
+            profile=$(_get_profile)
+
+            if [[ "$profile" != "personal" ]]; then
+                warn "defaults settings only apply to personal machines (current profile: $profile)"
+                return 0
+            fi
+
+            if [[ ! -f "$DEFAULTS_FILE" ]]; then
+                warn "No defaults.json found"
+                return 0
+            fi
+
+            info "Checking macOS defaults..."
+
+            local needs_change=false
+            local apps_to_restart=()
+
+            # Iterate over each domain
+            local domains
+            domains=$(jq -r 'keys[]' "$DEFAULTS_FILE")
+
+            while IFS= read -r domain; do
+                # Iterate over each key in the domain
+                local keys
+                keys=$(jq -r --arg d "$domain" '.[$d] | keys[]' "$DEFAULTS_FILE")
+
+                while IFS= read -r key; do
+                    local value value_type current
+                    value=$(jq -r --arg d "$domain" --arg k "$key" '.[$d][$k]' "$DEFAULTS_FILE")
+                    value_type=$(jq -r --arg d "$domain" --arg k "$key" '.[$d][$k] | type' "$DEFAULTS_FILE")
+
+                    # Get current value
+                    current=$(defaults read "$domain" "$key" 2>/dev/null || echo "__NOT_SET__")
+
+                    # Convert JSON booleans to defaults format (1/0)
+                    local expected="$value"
+                    if [[ "$value_type" == "boolean" ]]; then
+                        [[ "$value" == "true" ]] && expected="1" || expected="0"
+                    fi
+
+                    if [[ "$current" == "$expected" ]]; then
+                        success "$domain $key already set to $expected"
+                    else
+                        needs_change=true
+                        info "Setting $domain $key=$expected (was $current)"
+
+                        # Write the value with appropriate type
+                        case "$value_type" in
+                            boolean)
+                                defaults write "$domain" "$key" -bool "$value"
+                                ;;
+                            number)
+                                # Check if it's an integer or float
+                                if [[ "$value" =~ ^[0-9]+$ ]]; then
+                                    defaults write "$domain" "$key" -int "$value"
+                                else
+                                    defaults write "$domain" "$key" -float "$value"
+                                fi
+                                ;;
+                            *)
+                                defaults write "$domain" "$key" -string "$value"
+                                ;;
+                        esac
+
+                        success "Set $domain $key=$expected"
+
+                        # Track app to restart
+                        local app
+                        app=$(_get_app_for_domain "$domain")
+                        if [[ -n "$app" ]] && [[ ! " ${apps_to_restart[*]} " =~ " $app " ]]; then
+                            apps_to_restart+=("$app")
+                        fi
+                    fi
+                done <<< "$keys"
+            done <<< "$domains"
+
+            # Restart affected apps
+            if [[ ${#apps_to_restart[@]} -gt 0 ]]; then
+                info "Restarting affected apps: ${apps_to_restart[*]}"
+                for app in "${apps_to_restart[@]}"; do
+                    killall "$app" 2>/dev/null || true
+                done
+            fi
+
+            if [[ "$needs_change" == false ]]; then
+                success "All macOS defaults already correct"
+            else
+                success "macOS defaults applied"
+            fi
+            ;;
+        show)
+            echo -e "${BLUE}=== Configured Defaults (settings/defaults.json) ===${NC}"
+            if [[ -f "$DEFAULTS_FILE" ]]; then
+                jq '.' "$DEFAULTS_FILE"
+            else
+                echo "(no config file)"
+            fi
+            ;;
+        *)
+            error "Usage: dot defaults [apply|show]"
+            return 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Keyboard Helpers
+# =============================================================================
+
+KEYBOARD_FILE="$SETTINGS_DIR/keyboard.json"
+
+# Map key names to HID usage codes
+_get_hid_code() {
+    case "$1" in
+        caps_lock) echo "0x700000039" ;;
+        escape) echo "0x700000029" ;;
+        control) echo "0x7000000E0" ;;
+        left_control) echo "0x7000000E0" ;;
+        right_control) echo "0x7000000E4" ;;
+        left_shift) echo "0x7000000E1" ;;
+        right_shift) echo "0x7000000E5" ;;
+        left_option) echo "0x7000000E2" ;;
+        right_option) echo "0x7000000E6" ;;
+        left_command) echo "0x7000000E3" ;;
+        right_command) echo "0x7000000E7" ;;
+        *) echo "" ;;
+    esac
+}
+
+cmd_keyboard() {
+    local subcmd="${1:-apply}"
+
+    case "$subcmd" in
+        apply)
+            local profile
+            profile=$(_get_profile)
+
+            if [[ "$profile" != "personal" ]]; then
+                warn "keyboard settings only apply to personal machines (current profile: $profile)"
+                return 0
+            fi
+
+            if [[ ! -f "$KEYBOARD_FILE" ]]; then
+                warn "No keyboard.json found"
+                return 0
+            fi
+
+            info "Applying keyboard remappings..."
+
+            local remaps_count
+            remaps_count=$(jq '.remaps | length' "$KEYBOARD_FILE")
+
+            if [[ "$remaps_count" -eq 0 ]]; then
+                info "No remappings configured"
+                return 0
+            fi
+
+            # Build the hidutil mapping array
+            local mappings="["
+            local first=true
+
+            for i in $(seq 0 $((remaps_count - 1))); do
+                local from to from_code to_code comment
+                from=$(jq -r ".remaps[$i].from" "$KEYBOARD_FILE")
+                to=$(jq -r ".remaps[$i].to" "$KEYBOARD_FILE")
+                comment=$(jq -r ".remaps[$i].comment // empty" "$KEYBOARD_FILE")
+
+                from_code=$(_get_hid_code "$from")
+                to_code=$(_get_hid_code "$to")
+
+                if [[ -z "$from_code" || -z "$to_code" ]]; then
+                    warn "Unknown key: $from or $to"
+                    continue
+                fi
+
+                [[ "$first" == true ]] || mappings+=","
+                first=false
+
+                mappings+="{\"HIDKeyboardModifierMappingSrc\":$from_code,\"HIDKeyboardModifierMappingDst\":$to_code}"
+                info "Mapping $from → $to${comment:+ ($comment)}"
+            done
+
+            mappings+="]"
+
+            # Apply the remappings
+            if hidutil property --set "{\"UserKeyMapping\":$mappings}" >/dev/null; then
+                success "Keyboard remappings applied"
+            else
+                warn "Failed to apply keyboard remappings"
+            fi
+            ;;
+        show)
+            echo -e "${BLUE}=== Current Keyboard Remappings ===${NC}"
+            hidutil property --get "UserKeyMapping" 2>/dev/null || echo "(none)"
+            echo ""
+            if [[ -f "$KEYBOARD_FILE" ]]; then
+                echo -e "${BLUE}=== Configured Remappings (settings/keyboard.json) ===${NC}"
+                jq '.remaps[] | "\(.from) → \(.to)\(if .comment then " (\(.comment))" else "" end)"' -r "$KEYBOARD_FILE"
+            fi
+            ;;
+        *)
+            error "Usage: dot keyboard [apply|show]"
+            return 1
+            ;;
+    esac
+}
+
+# =============================================================================
 # Commands
 # =============================================================================
 
@@ -171,15 +575,35 @@ cmd_init() {
         brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some packages failed to install"
     fi
 
+    # Install profile-specific brew packages
+    local profile
+    profile=$(_get_profile)
+    if [[ "$profile" == "personal" && -f "$PACKAGES_DIR/Brewfile.personal" ]]; then
+        info "Installing packages from Brewfile.personal..."
+        brew bundle --file="$PACKAGES_DIR/Brewfile.personal" || warn "Some personal packages failed to install"
+    elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
+        info "Installing packages from Brewfile.work..."
+        brew bundle --file="$PACKAGES_DIR/Brewfile.work" || warn "Some work packages failed to install"
+    fi
+
     # Install bash packages
     _install_bash_packages
 
     # Install git hooks
     _install_git_hooks
 
-    # Merge configs and stow dotfiles
-    cmd_merge || warn "Config merge had issues"
+    # Stow dotfiles (includes merge)
     cmd_stow
+
+    # Start managed services
+    _start_services
+
+    # Apply personal settings
+    if [[ "$profile" == "personal" ]]; then
+        cmd_pmset apply || warn "pmset settings could not be applied"
+        cmd_defaults apply || warn "macOS defaults could not be applied"
+        cmd_keyboard apply || warn "keyboard remappings could not be applied"
+    fi
 
     success "Initialization complete!"
 }
@@ -584,9 +1008,9 @@ cmd_merge() {
         info "Profile: $(cat "$profile_file")"
     fi
 
-    # Find all *.base.json files in home/
+    # Find all *.base.json files in home/ and settings/
     local base_files
-    base_files=$(find "$DOTFILES_DIR/home" -name "*.base.json" -type f 2>/dev/null || true)
+    base_files=$(find "$DOTFILES_DIR/home" "$SETTINGS_DIR" -name "*.base.json" -type f 2>/dev/null || true)
 
     if [[ -z "$base_files" ]]; then
         info "No config files to merge (no *.base.json files found)"
@@ -745,6 +1169,12 @@ Commands:
     list                    List all packages
     (add --personal or --work to target profile-specific files)
   merge             Merge config files (*.base.json -> *.json)
+  service <subcmd>  Manage brew services
+    start                   Start services from services.json
+    list                    List configured and running services
+  pmset [apply|show]  Manage power settings (personal machines only)
+  defaults [apply|show]  Manage macOS defaults (personal machines only)
+  keyboard [apply|show]  Manage keyboard remappings (personal machines only)
   backup            Backup existing configs before stow
   restore [--list|--merge]  Restore configs (--merge only restores extra files)
   link              Install dot to /usr/local/bin
@@ -774,6 +1204,10 @@ main() {
         edit)    cmd_edit "$@" ;;
         package) cmd_package "$@" ;;
         merge)   cmd_merge "$@" ;;
+        service) cmd_service "$@" ;;
+        pmset)   cmd_pmset "$@" ;;
+        defaults) cmd_defaults "$@" ;;
+        keyboard) cmd_keyboard "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
         link)    cmd_link "$@" ;;

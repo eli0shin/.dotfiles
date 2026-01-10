@@ -1,0 +1,9 @@
+{
+  "remaps": [
+    {
+      "from": "caps_lock",
+      "to": "escape",
+      "comment": "Caps Lock → Escape (great for vim)"
+    }
+  ]
+}
