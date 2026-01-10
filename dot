@@ -554,19 +554,21 @@ cmd_package() {
 
 cmd_link() {
     info "Installing dot command globally..."
-    local link_path="/usr/local/bin/dot"
+    local link_path="$HOME/.local/bin/dot"
+
+    mkdir -p "$HOME/.local/bin"
 
     if [[ -L "$link_path" ]]; then
         warn "Link already exists at $link_path"
     else
-        sudo ln -sf "$DOTFILES_DIR/dot" "$link_path"
+        ln -sf "$DOTFILES_DIR/dot" "$link_path"
         success "Linked dot to $link_path"
     fi
 }
 
 cmd_unlink() {
     info "Removing global dot command..."
-    sudo rm -f /usr/local/bin/dot
+    rm -f "$HOME/.local/bin/dot"
     success "Unlinked dot"
 }
 
