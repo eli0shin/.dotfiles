@@ -1,0 +1,9 @@
+{
+  "sleep": 0,
+  "disksleep": 0,
+  "powernap": 0,
+  "tcpkeepalive": 1,
+  "womp": 1,
+  "ttyskeepawake": 1,
+  "displaysleep": 60
+}

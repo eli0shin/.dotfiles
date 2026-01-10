@@ -18,7 +18,7 @@
       "name": "PayPal",
       "models": {
         "gpt-5": {
-          "name": "GPT-5",
+          "name": "GPT-5"
         },
         "gpt-5-mini": {
           "name": "GPT 5-mini"

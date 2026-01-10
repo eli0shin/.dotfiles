@@ -255,23 +255,21 @@ cmd_pmset() {
 
     case "$subcmd" in
         apply)
-            local profile
-            profile=$(_get_profile)
-
-            if [[ "$profile" != "personal" ]]; then
-                warn "pmset settings only apply to personal machines (current profile: $profile)"
-                return 0
-            fi
-
             if [[ ! -f "$PMSET_FILE" ]]; then
                 warn "No pmset.json found"
                 return 0
             fi
 
+            local settings
+            settings=$(jq -r 'to_entries[] | "\(.key) \(.value)"' "$PMSET_FILE")
+
+            if [[ -z "$settings" ]]; then
+                return 0
+            fi
+
             info "Checking pmset settings..."
 
-            local settings needs_change=false
-            settings=$(jq -r 'to_entries[] | "\(.key) \(.value)"' "$PMSET_FILE")
+            local needs_change=false
 
             while IFS= read -r line; do
                 local key value current
@@ -337,14 +335,6 @@ cmd_defaults() {
 
     case "$subcmd" in
         apply)
-            local profile
-            profile=$(_get_profile)
-
-            if [[ "$profile" != "personal" ]]; then
-                warn "defaults settings only apply to personal machines (current profile: $profile)"
-                return 0
-            fi
-
             if [[ ! -f "$DEFAULTS_FILE" ]]; then
                 warn "No defaults.json found"
                 return 0
@@ -472,14 +462,6 @@ cmd_keyboard() {
 
     case "$subcmd" in
         apply)
-            local profile
-            profile=$(_get_profile)
-
-            if [[ "$profile" != "personal" ]]; then
-                warn "keyboard settings only apply to personal machines (current profile: $profile)"
-                return 0
-            fi
-
             if [[ ! -f "$KEYBOARD_FILE" ]]; then
                 warn "No keyboard.json found"
                 return 0
@@ -598,12 +580,10 @@ cmd_init() {
     # Start managed services
     _start_services
 
-    # Apply personal settings
-    if [[ "$profile" == "personal" ]]; then
-        cmd_pmset apply || warn "pmset settings could not be applied"
-        cmd_defaults apply || warn "macOS defaults could not be applied"
-        cmd_keyboard apply || warn "keyboard remappings could not be applied"
-    fi
+    # Apply system settings
+    cmd_pmset apply || warn "pmset settings could not be applied"
+    cmd_defaults apply || warn "macOS defaults could not be applied"
+    cmd_keyboard apply || warn "keyboard remappings could not be applied"
 
     success "Initialization complete!"
 }
