@@ -60,5 +60,8 @@
 	enabled = true
 	autoupdate = true
 
+[worktree]
+	guessRemote = true
+
 [include]
 	path = ~/.config/git/config.local
