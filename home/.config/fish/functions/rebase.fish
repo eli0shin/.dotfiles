@@ -5,7 +5,7 @@ function rebase
         return 1
     end
 
-    # Perform git rebase
-    echo "Rebasing onto branch '$argv[1]'..."
-    git stash && git checkout $argv[1] && git pull && git checkout - && git rebase -i $argv[1]
+    # Fetch and rebase onto remote branch
+    echo "Rebasing onto origin/$argv[1]..."
+    git fetch origin $argv[1] && git rebase -i origin/$argv[1]
 end

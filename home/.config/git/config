@@ -1,6 +1,9 @@
 [branch]
 	sort = -committerdate
 
+[tag]
+	sort = version:refname
+
 [column]
 	ui = auto
 
@@ -16,6 +19,7 @@
 
 [diff]
 	colorMoved = default
+	algorithm = histogram
 
 [filter "lfs"]
 	clean = git-lfs clean -- %f
@@ -30,23 +34,31 @@
 	autoSetupRemote = true
 
 [fetch]
+	all = true
 	prune = true
+	pruneTags = true
 	writeCommitGraph = true
 
 [init]
 	defaultBranch = main
 
+[commit]
+	verbose = true
+
 [merge]
-	conflictstyle = diff3
+	conflictstyle = zdiff3
 
 [pull]
 	rebase = true
 
 [rebase]
+	autosquash = true
+	autostash = true
 	updateRefs = true
 
 [rerere]
 	enabled = true
+	autoupdate = true
 
 [include]
 	path = ~/.config/git/config.local
