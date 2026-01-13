@@ -14,8 +14,8 @@ alias tmux "tmux -u"
 
 set -g -x NVM_DIR $HOME/.nvm
 set -gx NOOP_MODEL_API_KEY "*"
-set -gx EDITOR "nvim"
-set -gx CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR "1"
+set -gx EDITOR nvim
+set -gx CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR 1
 
 # Set turborepo remote cache token
 set -gx TURBO_TOKEN c2F2ZS11cy10dXJibw==
@@ -33,7 +33,6 @@ end
 ### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
 set --export --prepend PATH "/Users/eoshinsky/.rd/bin"
 ### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
-
 
 # Emulates vim's cursor shape behavior
 # Set the normal and visual mode cursors to a block
@@ -56,3 +55,6 @@ test -r $local_vars; and source $local_vars
 
 # repos CLI work command
 repos init --print | source
+
+# opencode
+fish_add_path $HOME/.opencode/bin
