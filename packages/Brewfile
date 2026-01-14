@@ -27,7 +27,6 @@ brew "neovim"
 brew "nginx", restart_service: :changed
 brew "nss"
 brew "pngpaste"
-brew "ripgrep"
 brew "shellcheck"
 brew "tcl-tk"
 brew "tmux"

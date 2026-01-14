@@ -810,8 +810,8 @@ cmd_package() {
             local install_script="${args[1]:-}"
 
             if [[ -z "$pkg" ]]; then
-                error "Usage: dot package add <package> [--personal]"
-                error "       dot package add <name> \"<install-script>\" [--personal]"
+                error "Usage: dot package add <package> [--personal|--work]"
+                error "       dot package add <name> \"<install-script>\" [--personal|--work]"
                 return 1
             fi
 
@@ -856,7 +856,7 @@ cmd_package() {
         remove)
             local pkg="${args[0]:-}"
             if [[ -z "$pkg" ]]; then
-                error "Usage: dot package remove <package> [--personal]"
+                error "Usage: dot package remove <package> [--personal|--work]"
                 return 1
             fi
 
@@ -869,6 +869,11 @@ cmd_package() {
             elif _bash_package_exists "$pkg" "$BASH_PACKAGES_PERSONAL_FILE"; then
                 info "Removing bash package '$pkg' from bash-packages.personal.json..."
                 _remove_bash_package "$pkg" "$BASH_PACKAGES_PERSONAL_FILE"
+                success "Removed bash package: $pkg"
+                info "Note: The command '$pkg' remains installed on your system"
+            elif _bash_package_exists "$pkg" "$BASH_PACKAGES_WORK_FILE"; then
+                info "Removing bash package '$pkg' from bash-packages.work.json..."
+                _remove_bash_package "$pkg" "$BASH_PACKAGES_WORK_FILE"
                 success "Removed bash package: $pkg"
                 info "Note: The command '$pkg' remains installed on your system"
             else

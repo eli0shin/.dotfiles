@@ -1,11 +1,5 @@
 {
   "dependencies": {
-<<<<<<< HEAD
-    "@opencode-ai/plugin": "1.1.14"
-||||||| parent of 248ff2a (minor updates)
-    "@opencode-ai/plugin": "1.1.12"
-=======
-    "@opencode-ai/plugin": "1.1.13"
->>>>>>> 248ff2a (minor updates)
+    "@opencode-ai/plugin": "1.1.20"
   }
 }
