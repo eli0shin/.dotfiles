@@ -1,7 +1,10 @@
 fish_add_path --path "$HOME/go/bin"
 fish_add_path --path /usr/local/go/bin
 fish_add_path --path "$HOME/.local/bin/"
-fish_add_path --path "$HOME/.bun/bin"
+
+# bun
+set --export BUN_INSTALL "$HOME/.bun"
+fish_add_path $BUN_INSTALL/bin
 
 # Disable fish welcome message
 set fish_greeting
@@ -32,7 +35,7 @@ end
 # load_nvm >/dev/stderr
 
 ### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
-set --export --prepend PATH "/Users/eoshinsky/.rd/bin"
+set --export --prepend PATH "$HOME/.rd/bin"
 ### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
 
 # Emulates vim's cursor shape behavior
