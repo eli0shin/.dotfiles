@@ -3,8 +3,10 @@
   "env": {
     "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "DISABLE_TELEMETRY": "0"
   },
+  "teammateMode": "tmux",
   "permissions": {
     "allow": [
       "Bash(bun add:*)",
@@ -62,7 +64,6 @@
     ],
     "deny": []
   },
-  "model": "opus",
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/scripts/statusline.sh",
