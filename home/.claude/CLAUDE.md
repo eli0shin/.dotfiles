@@ -20,3 +20,18 @@ DO NOT include the current year in web search queries - it limits results and ex
 - **Version information**: Must verify against current documentation
 - **Statistics/measurements**: Must cite recent, authoritative sources
 - ALWAYS use a package manager to install of update a depndency (npm or bun install) NEVER write a package to package.json
+
+## Problem Solving
+- Always try the simplest fix first. Do not build abstractions, add parameters, or restructure code when a one-line change solves the problem.
+- When debugging, run the failing command FIRST. Do not trace through code manually or theorize before reproducing.
+- Fix problems at the right layer. If something fails only in CI, fix the CI config — not the application code. If something fails at runtime, fix the code — not the tests.
+
+## Codebase Awareness
+- Before writing any new function, search the codebase for existing helpers that do the same thing. Use them.
+- Before writing tests, read 2-3 existing test files to learn the project's testing patterns. Match them exactly.
+- Before proposing a fix, read the surrounding code to understand local conventions. Do not import patterns from other projects.
+
+## Execution
+- When told to run something, run it. Do not ask clarifying questions, enter plan mode, or try to predict the output.
+- When an approach fails, stop and try a fundamentally different approach. Do not iterate on a broken strategy.
+- Scope changes to what was asked. Do not refactor adjacent code, add documentation, or "improve" things that are working.
