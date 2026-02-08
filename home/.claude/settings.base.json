@@ -7,6 +7,7 @@
     "DISABLE_TELEMETRY": "0"
   },
   "teammateMode": "tmux",
+  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Bash(bun add:*)",
