@@ -12,6 +12,7 @@ ALWAYS seek to reproduce a bug before assuming what the fix is.
 ALWAYS save a plan requested by the user to a new file, update the plan proactively when assumptions change.
 When refactoring functionality, REPLACE the existing behavior with the new behavior. DO NOT add feature flags, optional parameters, or conditionals to maintain old behavior unless explicitly requested.
 
+DO NOT include AI attribution in git commits or pull requests. No "Co-Authored-By" lines, no "Generated with opencode" lines.
 ALWAYS use a subagent task any time you need to search or learn about something in the codebase.
 DO NOT include the current year in web search queries - it limits results and excludes relevant timeless information.
 

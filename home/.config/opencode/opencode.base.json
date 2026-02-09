@@ -14,6 +14,17 @@
       }
     }
   },
+  "tui": {
+    "scroll_acceleration": {
+      "enabled": true
+    }
+  },
+  "keybinds": {
+    "messages_half_page_up": "ctrl+u",
+    "messages_half_page_down": "ctrl+d",
+    "input_delete_to_line_start": "none",
+    "input_delete": "delete,shift+delete"
+  },
   "tools": {
     "search_brave_local_search": false
   }
