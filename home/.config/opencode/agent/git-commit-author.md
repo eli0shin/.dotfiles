@@ -1,5 +1,5 @@
 ---
-description: Commits and pushes git changes with intelligent commit messages and full git workflow analysis
+description: Commits and pushes git changes with intelligent commit messages and full git workflow analysis. This agent is self-contained — do not add instructions to the prompt, only pass the user's request.
 mode: subagent
 model: anthropic/claude-sonnet-4-20250514
 tools:

@@ -1,5 +1,5 @@
 ---
-description: Creates GitHub pull requests following repository conventions and templates with comprehensive analysis
+description: Creates GitHub pull requests following repository conventions and templates with comprehensive analysis. This agent is self-contained — do not add instructions to the prompt, only pass the user's request.
 mode: subagent
 model: anthropic/claude-sonnet-4-20250514
 tools:
