@@ -38,7 +38,7 @@ fi
 # Format git info with colors
 git_info=""
 if [ "$git_additions" -gt 0 ] || [ "$git_deletions" -gt 0 ]; then
-  git_info=" ${green}+${git_additions}${gray} ${red}-${git_deletions}${gray}"
+  git_info=" | ${green}+${git_additions}${gray} ${red}-${git_deletions}${gray}"
 fi
 
 # Determine context color based on raw token count
@@ -50,7 +50,13 @@ else
   context_color="$gray"
 fi
 
+# Format LSP info with pipe separator
+lsp_section=""
+if [ -n "$lsp_info" ]; then
+  lsp_section=" | ${lsp_info}"
+fi
+
 # Build the colored status line
-colored_status="${orange}${model}${gray} ${context_color}${context_display}${gray}${git_info} ${lsp_info}${reset}"
+colored_status="${orange}${model}${gray} ${context_color}${context_display}${gray}${git_info}${lsp_section}${reset}"
 
 printf "%b" "$colored_status"
