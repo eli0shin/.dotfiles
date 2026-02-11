@@ -1,3 +1,4 @@
+tap "datadog/pack"
 brew "gettext"
 brew "cairo"
 brew "create-dmg"
@@ -6,5 +7,6 @@ brew "git-trim"
 brew "jpeg"
 brew "pkgconf"
 brew "pyenv"
+brew "datadog/pack/pup"
 mas "Perplexity", id: 6714467650
 go "golang.org/x/tools/gopls"
