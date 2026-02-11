@@ -8,8 +8,18 @@ project_dir=$(echo "$input" | jq -r '.workspace.project_dir')
 model=$(echo "$input" | jq -r '.model.display_name')
 transcript_path=$(echo "$input" | jq -r '.transcript_path')
 
-# Get formatted context info from context_size.sh
-context_info=$(~/.claude/scripts/context_size.sh "$transcript_path" 2>/dev/null)
+# Color codes
+gray="\033[38;2;163;163;163m"
+orange="\033[38;2;193;95;60m"
+green="\033[32m"
+yellow="\033[33m"
+red="\033[31m"
+reset="\033[0m"
+
+# Get context info from context_size.sh (format: "raw_tokens display_string")
+context_output=$(~/.claude/scripts/context_size.sh "$transcript_path" 2>/dev/null)
+raw_tokens=$(echo "$context_output" | awk '{print $1}')
+context_display=$(echo "$context_output" | cut -d' ' -f2-)
 
 # Get running LSP servers
 lsp_info=$(cli-lsp-client statusline 2>/dev/null)
@@ -28,13 +38,19 @@ fi
 # Format git info with colors
 git_info=""
 if [ "$git_additions" -gt 0 ] || [ "$git_deletions" -gt 0 ]; then
-  git_info=" \033[32m+${git_additions}\033[38;2;163;163;163m \033[31m-${git_deletions}\033[38;2;163;163;163m"
+  git_info=" ${green}+${git_additions}${gray} ${red}-${git_deletions}${gray}"
 fi
 
-# Build the status line with tokens and model
-status_text="$model $context_info$git_info $lsp_info"
+# Determine context color based on raw token count
+if [ "$raw_tokens" -gt 100000 ] 2>/dev/null; then
+  context_color="$red"
+elif [ "$raw_tokens" -ge 60000 ] 2>/dev/null; then
+  context_color="$yellow"
+else
+  context_color="$gray"
+fi
 
-# Create the colored status text with color #A3A3A3 (RGB: 163,163,163)
-colored_status="\033[38;2;163;163;163m$status_text\033[0m"
+# Build the colored status line
+colored_status="${orange}${model}${gray} ${context_color}${context_display}${gray}${git_info} ${lsp_info}${reset}"
 
 printf "%b" "$colored_status"

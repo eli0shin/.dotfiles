@@ -33,13 +33,13 @@ if [ -n "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
     # Convert to human readable format with percentage of 200k context window
     context_window_size=200000
     usage_percentage=$(((TOTAL * 100) / context_window_size))
-    
+
     if [ "$TOTAL" -gt 1000 ]; then
         token_display=$((TOTAL / 1000))
-        echo "${token_display}k(${usage_percentage}%)"
+        echo "${TOTAL} ${token_display}k(${usage_percentage}%)"
     else
-        echo "${TOTAL}(${usage_percentage}%)"
+        echo "${TOTAL} ${TOTAL}(${usage_percentage}%)"
     fi
 else
-    echo "(0%)"
+    echo "0 (0%)"
 fi
