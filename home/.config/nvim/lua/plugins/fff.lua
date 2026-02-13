@@ -1,7 +1,7 @@
 return {
   'dmtrKovalenko/fff.nvim',
   build = function()
-    require("fff.download").download_or_build_binary()
+    require('fff.download').download_or_build_binary()
   end,
   opts = {
     debug = {
@@ -12,9 +12,11 @@ return {
   lazy = false,
   keys = {
     {
-      "ff",
-      function() require('fff').find_files() end,
+      'ff',
+      function()
+        require('fff').find_files()
+      end,
       desc = 'FFFind files',
-    }
-  }
+    },
+  },
 }
