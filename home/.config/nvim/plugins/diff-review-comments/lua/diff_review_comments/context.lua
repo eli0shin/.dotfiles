@@ -4,6 +4,78 @@ local diffview = require 'diff_review_comments.extractors.diffview'
 local octo = require 'diff_review_comments.extractors.octo'
 local generic = require 'diff_review_comments.extractors.generic'
 
+local function run_git(repo, args)
+  if vim.fn.executable 'git' ~= 1 then
+    return nil
+  end
+
+  local cmd = string.format('git -C %s %s', vim.fn.shellescape(repo), args)
+  local out = vim.fn.systemlist(cmd)
+  if vim.v.shell_error ~= 0 or not out or #out == 0 then
+    return nil
+  end
+
+  local line = out[1]
+  if not line or line == '' then
+    return nil
+  end
+
+  return line
+end
+
+local function resolve_merge_base(repo)
+  local candidates = {
+    'merge-base HEAD @{upstream}',
+    'merge-base HEAD origin/HEAD',
+    'merge-base HEAD origin/main',
+    'merge-base HEAD origin/master',
+  }
+
+  for _, args in ipairs(candidates) do
+    local value = run_git(repo, args)
+    if value then
+      return value
+    end
+  end
+
+  return nil
+end
+
+local function resolve_base_branch(repo)
+  return run_git(repo, 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}')
+    or run_git(repo, 'symbolic-ref refs/remotes/origin/HEAD --short')
+    or run_git(repo, 'rev-parse --abbrev-ref origin/main')
+    or run_git(repo, 'rev-parse --abbrev-ref origin/master')
+end
+
+local function normalize_compare(repo, compare)
+  local current = type(compare) == 'table' and compare or {}
+  local normalized = {
+    base = current.base or current.left,
+    head = current.head or current.right,
+    base_branch = current.base_branch or current.left_branch,
+    head_branch = current.head_branch or current.right_branch,
+  }
+
+  if not normalized.head or normalized.head == '' then
+    normalized.head = run_git(repo, 'rev-parse HEAD')
+  end
+
+  if not normalized.base or normalized.base == '' then
+    normalized.base = resolve_merge_base(repo)
+  end
+
+  if not normalized.head_branch or normalized.head_branch == '' then
+    normalized.head_branch = run_git(repo, 'branch --show-current') or 'HEAD'
+  end
+
+  if not normalized.base_branch or normalized.base_branch == '' then
+    normalized.base_branch = resolve_base_branch(repo)
+  end
+
+  return normalized
+end
+
 local function repo_root()
   local file = vim.api.nvim_buf_get_name(0)
   if file == '' then
@@ -90,6 +162,8 @@ function M.capture(max_lines)
   local abs_path = extracted.file.abs_path or vim.api.nvim_buf_get_name(0)
   extracted.file.repo_relpath = relpath(abs_path, root)
   extracted.file.filetype = vim.bo.filetype
+  extracted.diff = extracted.diff or {}
+  extracted.diff.compare = normalize_compare(root, extracted.diff.compare)
 
   return {
     repo_root = root,

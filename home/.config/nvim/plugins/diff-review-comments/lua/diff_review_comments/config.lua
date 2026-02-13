@@ -11,9 +11,6 @@ local defaults = {
   max_selection_lines = 200,
   storage_path = vim.fn.stdpath('data') .. '/diff-review-comments/comments.json',
   notify = true,
-  terminal = {
-    height = 15,
-  },
   providers = {
     opencode = {
       provider_id = 'openai',

@@ -2,10 +2,6 @@ local M = {}
 
 local utils = require 'diff_review_comments.utils'
 
-local function timestamp()
-  return os.date '!%Y-%m-%dT%H:%M:%SZ'
-end
-
 local function code_block(ft, lines)
   local safe_ft = ft and ft ~= '' and ft or 'text'
   local body = table.concat(lines or {}, '\n')
@@ -38,13 +34,39 @@ local function format_selected_lines(comment, changed)
   return out
 end
 
+local function file_reference(comment)
+  local rel = comment.file and comment.file.repo_relpath or nil
+  if rel and rel ~= '' then
+    if rel:sub(1, 1) == '/' then
+      return '@' .. rel
+    end
+    if rel:sub(1, 2) == './' then
+      return '@' .. rel
+    end
+    return '@./' .. rel
+  end
+
+  local abs = comment.file and comment.file.abs_path or nil
+  if abs and abs ~= '' then
+    return '@' .. abs
+  end
+
+  return '[unknown]'
+end
+
+local function compare_value(compare, key)
+  local value = compare and compare[key] or nil
+  if not value or value == '' then
+    return 'unknown'
+  end
+  return value
+end
+
 function M.build(repo_root, comments)
   local changed_cache = {}
   local out = {
     '# Review Requests',
     '',
-    'Repository: ' .. repo_root,
-    'Generated: ' .. timestamp(),
     'Total comments: ' .. #comments,
     '',
   }
@@ -52,11 +74,13 @@ function M.build(repo_root, comments)
   for i, c in ipairs(comments) do
     local selected_side = utils.side_info(c.diff.selected_side)
     local changed = utils.get_changed_for_comment(repo_root, c, changed_cache)
-    local file_path = c.file.repo_relpath or c.file.abs_path or '[unknown]'
-    local file_ref = file_path == '[unknown]' and file_path or ('@' .. file_path)
+    local compare = c.diff and c.diff.compare or nil
     table.insert(out, '## Comment ' .. i)
-    table.insert(out, 'Id: ' .. c.id)
-    table.insert(out, 'File: ' .. file_ref)
+    table.insert(out, 'File: ' .. file_reference(c))
+    table.insert(out, 'From commit: ' .. compare_value(compare, 'base'))
+    table.insert(out, 'To commit: ' .. compare_value(compare, 'head'))
+    table.insert(out, 'From branch: ' .. compare_value(compare, 'base_branch'))
+    table.insert(out, 'To branch: ' .. compare_value(compare, 'head_branch'))
     table.insert(
       out,
       string.format('Selection: L%d:C%d-L%d:C%d', c.selection.start.line, c.selection.start.col, c.selection['end'].line, c.selection['end'].col)

@@ -122,6 +122,7 @@ function M.extract(selection)
     diff = {
       side = final_side,
       selected_side = selected_side,
+      compare = {},
       selected = selected_block,
       from = from_block,
       to = to_block,

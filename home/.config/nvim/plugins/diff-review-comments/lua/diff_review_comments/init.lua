@@ -147,7 +147,6 @@ function M.run_comments()
     prompt_file = prompt_file,
     cwd = repo_root,
     comment_count = #comments,
-    height = state.config.terminal.height,
   }
 
   store.set_last_run(state.config.storage_path, repo_root, {

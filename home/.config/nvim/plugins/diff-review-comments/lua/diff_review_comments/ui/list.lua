@@ -28,16 +28,36 @@ local function line_sign_for(comment, line_no, changed)
   return ' '
 end
 
+local function compare_value(compare, key)
+  local value = compare and compare[key] or nil
+  if not value or value == '' then
+    return 'unknown'
+  end
+  return value
+end
+
+local function format_compare(compare)
+  return string.format(
+    '  Compare: %s (%s) -> %s (%s)',
+    compare_value(compare, 'base_branch'),
+    compare_value(compare, 'base'),
+    compare_value(compare, 'head_branch'),
+    compare_value(compare, 'head')
+  )
+end
+
 local function fmt_comment(comment, repo_root, cache)
   local path = comment.file.repo_relpath or comment.file.abs_path or '[no file]'
   local selected = comment.diff.selected
   local side = utils.side_info(comment.diff.selected_side)
   local first_line = vim.split(comment.comment_text or '', '\n', { plain = true })[1] or ''
   local changed = utils.get_changed_for_comment(repo_root, comment, cache)
+  local compare = comment.diff and comment.diff.compare or nil
 
   local lines = {
     string.format('[%s] %s (%s)', comment.id, path, side.label),
     string.format('  Lines: %d-%d', selected.line_start, selected.line_end),
+    format_compare(compare),
     '  Selected code:',
   }
 

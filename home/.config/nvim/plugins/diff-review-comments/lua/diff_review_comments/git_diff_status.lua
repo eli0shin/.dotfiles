@@ -96,6 +96,28 @@ local function normalized_compare(compare)
   return base, head
 end
 
+local function current_head(repo_root)
+  local root = vim.fn.shellescape(repo_root)
+  return first_line(run_git(string.format('git -C %s rev-parse HEAD', root)))
+end
+
+local function should_include_working_tree(repo_root, compare, head)
+  if type(compare) ~= 'table' then
+    return true
+  end
+
+  if not head or head == '' then
+    return true
+  end
+
+  local resolved_head = current_head(repo_root)
+  if not resolved_head then
+    return false
+  end
+
+  return head == resolved_head
+end
+
 local function run_git_diff(repo_root, repo_relpath, compare)
   if repo_root == nil or repo_root == '' or repo_relpath == nil or repo_relpath == '' then
     return nil
@@ -107,24 +129,25 @@ local function run_git_diff(repo_root, repo_relpath, compare)
   local root = vim.fn.shellescape(repo_root)
   local path = vim.fn.shellescape(repo_relpath)
   local base, head = normalized_compare(compare)
+  local out = {}
 
   if base and head then
     local cmd = string.format('git -C %s diff --no-color -U0 %s %s -- %s', root, vim.fn.shellescape(base), vim.fn.shellescape(head), path)
-    local out = run_git(cmd)
-    if out then
-      return out
+    append_lines(out, run_git(cmd))
+  end
+
+  if not (base and head) then
+    local merge_base = base or resolve_merge_base(repo_root)
+    if merge_base then
+      local branch_cmd = string.format('git -C %s diff --no-color -U0 %s...HEAD -- %s', root, vim.fn.shellescape(merge_base), path)
+      append_lines(out, run_git(branch_cmd))
     end
   end
 
-  local out = {}
-  local merge_base = base or resolve_merge_base(repo_root)
-  if merge_base then
-    local branch_cmd = string.format('git -C %s diff --no-color -U0 %s...HEAD -- %s', root, vim.fn.shellescape(merge_base), path)
-    append_lines(out, run_git(branch_cmd))
+  if should_include_working_tree(repo_root, compare, head) then
+    local working_tree_cmd = string.format('git -C %s diff --no-color -U0 HEAD -- %s', root, path)
+    append_lines(out, run_git(working_tree_cmd))
   end
-
-  local working_tree_cmd = string.format('git -C %s diff --no-color -U0 HEAD -- %s', root, path)
-  append_lines(out, run_git(working_tree_cmd))
 
   if #out == 0 then
     return nil
