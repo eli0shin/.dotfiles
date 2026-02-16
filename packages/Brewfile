@@ -2,6 +2,7 @@ tap "opencode-ai/tap"
 tap "nikitabobko/tap"
 tap "hashicorp/tap"
 tap "sst/tap"
+brew "gettext", args: ["build-from-source"]
 brew "ast-grep"
 brew "bash"
 brew "bash-language-server"

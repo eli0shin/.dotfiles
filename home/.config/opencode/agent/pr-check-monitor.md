@@ -1,13 +1,13 @@
 ---
 description: Monitors and analyzes PR check results with automatic failure investigation and local reproduction. This agent is self-contained — do not add instructions to the prompt, only pass the user's request.
 mode: subagent
-model: anthropic/claude-sonnet-4-20250514
 tools:
   bash: true
   glob: true
   grep: true
   list: true
   read: true
+  write: false
   webfetch: true
   todowrite: true
 ---

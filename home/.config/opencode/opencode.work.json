@@ -6,10 +6,35 @@
       "npm": "@ai-sdk/anthropic",
       "name": "Anthropic(Enterprise)",
       "options": {
+        "baseURL": "{env:ANTHROPIC_BASE_URL}/v1",
+        "headers": {
+          "Authorization": "Bearer {env:ANTHROPIC_AUTH_TOKEN}"
+        },
+        "apiKey": ""
+      },
+      "models": {}
+    },
+    "anthropic-proxy": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Anthropic(Proxy)",
+      "options": {
+        "baseURL": "http://localhost:3001/v1",
+        "headers": {
+          "Authorization": "Bearer {env:ANTHROPIC_AUTH_TOKEN}"
+        },
+        "apiKey": ""
+      },
+      "models": {}
+    },
+    "openai": {
+      "npm": "@ai-sdk/openai",
+      "name": "OpenAI(Enterprise)",
+      "options": {
         "baseURL": "{env:ANTHROPIC_BASE_URL}",
         "headers": {
           "Authorization": "Bearer {env:ANTHROPIC_AUTH_TOKEN}"
-        }
+        },
+        "apiKey": ""
       },
       "models": {}
     },
@@ -17,33 +42,6 @@
       "npm": "@paypalcorp/ai-gateway-ai-sdk",
       "name": "PayPal",
       "models": {
-        "gpt-5": {
-          "name": "GPT-5"
-        },
-        "gpt-5-mini": {
-          "name": "GPT 5-mini"
-        },
-        "gpt-5-nano": {
-          "name": "GPT 5-nano"
-        },
-        "o4-mini": {
-          "name": "o4-mini"
-        },
-        "gpt-4o": {
-          "name": "GPT 4o"
-        },
-        "gpt-4o-mini": {
-          "name": "GPT 4o-mini"
-        },
-        "gpt-4.1": {
-          "name": "GPT 4.1"
-        },
-        "gpt-4.1-mini": {
-          "name": "GPT 4.1-mini"
-        },
-        "gpt-4.1-nano": {
-          "name": "GPT 4.1-nano"
-        },
         "gemini-2.0-flash": {
           "name": "2.0 Flash"
         },
@@ -60,9 +58,12 @@
     }
   },
   "disabled_providers": [
-    "openai",
     "gemini",
     "opencode",
-    "vertex"
+    "google-vertex",
+    "vertex",
+    "anthropic-vertex-ai",
+    "google",
+    "google-vertex/anthropic"
   ]
 }

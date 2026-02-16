@@ -4,23 +4,14 @@
   "autoshare": false,
   "autoupdate": true,
   "agent": {},
-  "mcp": {
-    "search": {
-      "type": "local",
-      "command": ["bun", "x", "@modelcontextprotocol/server-brave-search"],
-      "enabled": true,
-      "environment": {
-        "BRAVE_API_KEY": "{env:BRAVE_API_KEY}"
-      }
-    }
-  },
+  "mcp": {},
   "tui": {
     "scroll_acceleration": {
       "enabled": true
     }
   },
   "keybinds": {
-    "app_exit": "ctrl+c,<<leader>q",
+    "app_exit": "ctrl+c,<leader>q",
     "messages_half_page_up": "ctrl+u",
     "messages_half_page_down": "ctrl+d",
     "input_delete_to_line_start": "none",
