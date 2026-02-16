@@ -1151,7 +1151,7 @@ dot - Dotfiles management CLI
 Usage: dot <command> [options]
 
 Commands:
-  init              Full setup: brew, packages, stow
+  init              Full setup: brew, packages, stow, config
   stow [-c|--clean] Create symlinks (--clean removes dirs first)
   unstow            Remove symlinks
   update [--packages]  Pull repo, optionally update packages, re-stow
@@ -1168,9 +1168,9 @@ Commands:
   service <subcmd>  Manage brew services
     start                   Start services from services.json
     list                    List configured and running services
-  pmset [apply|show]  Manage power settings (personal machines only)
-  defaults [apply|show]  Manage macOS defaults (personal machines only)
-  keyboard [apply|show]  Manage keyboard remappings (personal machines only)
+  pmset [apply|show]  Manage power settings
+  defaults [apply|show]  Manage macOS defaults
+  keyboard [apply|show]  Manage keyboard remappings
   backup            Backup existing configs before stow
   restore [--list|--merge]  Restore configs (--merge only restores extra files)
   link              Install dot to /usr/local/bin
