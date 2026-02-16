@@ -124,12 +124,23 @@ _process_bash_packages_file() {
     packages=$(jq -c '.[]' "$file")
 
     while IFS= read -r pkg_json; do
-        local cmd install_script
+        local cmd install_script update_cmd
         cmd=$(echo "$pkg_json" | jq -r '.command')
         install_script=$(echo "$pkg_json" | jq -r '.install')
+        update_cmd=$(echo "$pkg_json" | jq -r '.update // empty')
 
         if has "$cmd"; then
-            success "$cmd already installed"
+            if [[ -n "$update_cmd" ]]; then
+                info "Updating $cmd..."
+                echo "  Running: $update_cmd"
+                if eval "$update_cmd"; then
+                    success "Updated $cmd"
+                else
+                    warn "Failed to update $cmd (continuing...)"
+                fi
+            else
+                success "$cmd already installed"
+            fi
         else
             info "Installing $cmd..."
             echo "  Running: $install_script"

@@ -1,6 +1,7 @@
 [
   {
     "command": "pup",
-    "install": "mkdir -p ~/.local/bin && curl -L https://github.com/DataDog/pup/releases/download/v0.12.0/pup_0.12.0_Darwin_arm64.tar.gz | tar xz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
+    "install": "mkdir -p ~/.local/bin && curl -L https://github.com/DataDog/pup/releases/download/v0.12.0/pup_0.12.0_Darwin_arm64.tar.gz | tar xz -C /tmp && mv /tmp/pup ~/.local/bin/pup",
+    "update": "mkdir -p ~/.local/bin && curl -L https://github.com/DataDog/pup/releases/download/v0.12.0/pup_0.12.0_Darwin_arm64.tar.gz | tar xz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
   }
 ]

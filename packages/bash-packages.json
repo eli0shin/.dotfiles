@@ -1,26 +1,37 @@
 [
   {
     "command": "uv",
-    "install": "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    "install": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+    "update": "uv self update"
   },
   {
     "command": "rustup",
-    "install": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    "install": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+    "update": "rustup self update"
   },
   {
     "command": "claude",
-    "install": "curl -fsSL https://claude.ai/install.sh | sh"
+    "install": "curl -fsSL https://claude.ai/install.sh | sh",
+    "update": "claude update"
   },
   {
     "command": "opencode",
-    "install": "curl -fsSL https://opencode.ai/install | bash"
+    "install": "curl -fsSL https://opencode.ai/install | bash",
+    "update": "opencode upgrade"
   },
   {
     "command": "bun",
-    "install": "curl -fsSL https://bun.sh/install | bash"
+    "install": "curl -fsSL https://bun.sh/install | bash",
+    "update": "bun upgrade"
   },
   {
     "command": "repos",
-    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/repos/main/install.sh | bash"
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/repos/main/install.sh | bash",
+    "update": "repos update"
+  },
+  {
+    "command": "cli-lsp-client",
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/cli-lsp-client/main/install.sh | bash",
+    "update": "cli-lsp-client update"
   }
 ]
