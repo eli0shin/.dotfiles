@@ -12,7 +12,6 @@ set fish_greeting
 # Add local_functions to fish function path for lazy loading
 set -p fish_function_path ~/.config/fish/local_functions
 
-alias code "/Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin/code"
 alias tmux "tmux -u"
 
 set -g -x NVM_DIR $HOME/.nvm

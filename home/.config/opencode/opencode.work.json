@@ -40,7 +40,7 @@
     },
     "paypal": {
       "npm": "@paypalcorp/ai-gateway-ai-sdk",
-      "name": "PayPal",
+      "name": "Cosmos",
       "models": {
         "gemini-2.0-flash": {
           "name": "2.0 Flash"
@@ -64,6 +64,6 @@
     "vertex",
     "anthropic-vertex-ai",
     "google",
-    "google-vertex/anthropic"
+    "google-vertex-anthropic"
   ]
 }
