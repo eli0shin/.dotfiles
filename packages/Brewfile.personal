@@ -6,8 +6,6 @@ mas "Developer", id: 640199958
 mas "Grocery", id: 1195676848
 mas "Keynote", id: 409183694
 mas "Microsoft Excel", id: 462058435
-mas "Microsoft OneNote", id: 784801555
-mas "Microsoft Outlook", id: 985367838
 mas "Microsoft PowerPoint", id: 462062816
 mas "Microsoft Word", id: 462054704
 mas "OneDrive", id: 823766827
@@ -23,18 +21,32 @@ go "golang.org/x/tools/cmd/goimports"
 go "golang.org/x/tools/gopls"
 go "honnef.co/go/tools/cmd/staticcheck"
 go "github.com/a-h/templ/cmd/templ"
+
+brew "aws-sam-cli"
 brew "go"
+brew "jdtls"
 brew "nvm"
 brew "openjdk"
 brew "r"
-brew "jdtls"
 brew "tailscale"
+cask "arduino-ide"
+cask "autodesk-fusion"
+cask "bambu-studio"
+cask "chatgpt"
+cask "datadog-agent"
 cask "discord"
 cask "docker-desktop"
+cask "electron-fiddle"
 cask "firefox"
 cask "google-chrome"
+cask "homerow"
+cask "keybase"
+cask "obs"
+cask "openscad"
+cask "orcaslicer"
+cask "postman"
+cask "qmk-toolbox"
+cask "raspberry-pi-imager"
 cask "slack"
-cask "vlc"
+cask "streamlabs"
 cask "zoom"
-brew "openjdk"
-brew "aws-sam-cli"
