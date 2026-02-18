@@ -14,18 +14,6 @@
       },
       "models": {}
     },
-    "anthropic-proxy": {
-      "npm": "@ai-sdk/anthropic",
-      "name": "Anthropic(Proxy)",
-      "options": {
-        "baseURL": "http://localhost:3001/v1",
-        "headers": {
-          "Authorization": "Bearer {env:ANTHROPIC_AUTH_TOKEN}"
-        },
-        "apiKey": ""
-      },
-      "models": {}
-    },
     "openai": {
       "npm": "@ai-sdk/openai",
       "name": "OpenAI(Enterprise)",
