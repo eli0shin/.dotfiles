@@ -144,6 +144,7 @@ function M.run_comments()
     template = provider.template,
     provider_id = provider.provider_id,
     model_id = provider.model_id,
+    agent_id = provider.agent_id,
     prompt_file = prompt_file,
     cwd = repo_root,
     comment_count = #comments,

@@ -15,7 +15,8 @@ local defaults = {
     opencode = {
       provider_id = 'openai',
       model_id = 'gpt-5.3-codex',
-      template = 'opencode --model {provider_id}/{model_id} --prompt {prompt_text}',
+      agent_id = 'plan',
+      template = 'opencode --model {provider_id}/{model_id} --agent {agent_id} --prompt {prompt_text}',
     },
     claude = {
       template = 'claude < {prompt_file}',

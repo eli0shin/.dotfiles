@@ -18,6 +18,8 @@ pup traces search --query="<query>" [--from="<time>"] [--to="<time>"] [--limit=N
 
 Returns span data including service, resource, duration, tags, and trace IDs.
 
+**Time window tip:** Use wider windows (`--from="5h"`) for aggregates where you want the full picture, but use shorter windows (`--from="15m"`) when searching for sample spans. Short windows return more recent, relevant results and avoid wading through stale data.
+
 ```bash
 # Search all spans in the last hour (defaults)
 pup traces search
@@ -232,3 +234,43 @@ pup traces aggregate --query="service:api resource_name:\"GET /api/checkout\"" -
 # Which services are calling myservice and getting errors?
 pup traces aggregate --query="@peer.service:myservice status:error" --compute="count" --group-by="service" --from="5h"
 ```
+
+### Detect Open Circuit Breakers (Compare Success vs Error Traces)
+
+When a service has overwhelming server errors but its downstream client calls all succeed, the root cause may be an **open circuit breaker** — a downstream call that is silently skipped, producing no span at all.
+
+**Symptoms:**
+- Service has a very high server:client error ratio (e.g., 131K server errors, 248 client errors)
+- Error spans are faster than success spans (the circuit breaker fails fast, skipping work)
+- Errors are concentrated on specific hosts/clusters while others are healthy
+
+**Technique: compare the downstream call tree of a success trace vs an error trace for the same endpoint.**
+
+```bash
+# 1. Check if errors are host/cluster-specific
+pup traces aggregate --query="service:failing-svc status:error" --compute="count" --group-by="host" --from="5h"
+pup traces aggregate --query="service:failing-svc" --compute="count" --group-by="host" --from="5h"
+
+# 2. Get a SUCCESS trace's server span_id for the failing endpoint
+pup traces search --query="service:failing-svc status:ok resource_name:\"POST /endpoint\"" --from="5h" --limit=1
+# note the span_id
+
+# 3. Get an ERROR trace's server span_id for the same endpoint
+pup traces search --query="service:failing-svc status:error resource_name:\"POST /endpoint\"" --from="5h" --limit=1
+# note the span_id
+
+# 4. Walk the children of each using parent_id to see downstream calls
+pup traces search --query="parent_id:<success_span_id>" --from="5h" --limit=50
+pup traces search --query="parent_id:<error_span_id>" --from="5h" --limit=50
+
+# 5. Compare: look for a service that appears in the success trace but is MISSING
+#    from the error trace. A missing call (not a failed call) indicates the circuit
+#    breaker is open and the call is never attempted.
+
+# 6. Confirm by checking the missing service's traffic in the affected cluster
+pup traces aggregate --query="service:missing-downstream-svc" --compute="count" --group-by="host" --from="5h"
+# If the affected cluster has near-zero traffic while other clusters are healthy,
+# the circuit breaker has tripped against that service.
+```
+
+**Key insight:** Circuit breakers create an instrumentation gap — when the circuit is open, no span is created for the skipped call. This makes the failing service appear to be the root cause (high server errors, no client errors) when the real problem is the unreachable downstream service. The trickle of traffic you see in the affected cluster is the circuit breaker's half-open probes testing if the downstream has recovered.

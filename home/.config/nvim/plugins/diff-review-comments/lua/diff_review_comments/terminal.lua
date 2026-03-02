@@ -13,6 +13,7 @@ local function expand(template, vars)
   out = out:gsub('{prompt_text}', function() return vars.prompt_text end)
   out = out:gsub('{provider_id}', function() return vars.provider_id end)
   out = out:gsub('{model_id}', function() return vars.model_id end)
+  out = out:gsub('{agent_id}', function() return vars.agent_id end)
   out = out:gsub('{cwd}', function() return vars.cwd end)
   out = out:gsub('{comment_count}', function() return tostring(vars.comment_count) end)
   return out
@@ -25,6 +26,7 @@ function M.run(opts)
     prompt_text = vim.fn.shellescape(prompt_text),
     provider_id = opts.provider_id or '',
     model_id = opts.model_id or '',
+    agent_id = opts.agent_id or '',
     cwd = vim.fn.shellescape(opts.cwd),
     comment_count = opts.comment_count,
   })
