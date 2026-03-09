@@ -788,6 +788,28 @@ export default function RawFetchLoggerPlugin() {
             },
           })
 
+          if (capture.capture_error) {
+            await event({
+              type: 'capture_warning',
+              id,
+              ts: new Date().toISOString(),
+              stage: 'response_body_capture',
+              request: info,
+              attempt: run.attempt,
+              max_attempts: run.max_attempts,
+              retry_decision: run.retry_decision,
+              retry_suppressed_reason: run.retry_suppressed_reason,
+              capture_timeout: capture.capture_timeout,
+              capture_aborted: capture.capture_aborted,
+              error: capture.capture_error,
+              response: {
+                body_file: capture.file,
+                body_bytes: capture.bytes,
+                body_truncated: capture.truncated,
+              },
+            })
+          }
+
           if (!continuation) return
           if (!capture.empty_error) return
           if (!capture.partial_text?.trim()) return
