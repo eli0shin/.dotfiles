@@ -5,11 +5,6 @@
     "update": "curl -fsSL https://batrachian.ai/install | sh"
   },
   {
-    "command": "coderabbit",
-    "install": "curl -fsSL https://cli.coderabbit.ai/install.sh | sh",
-    "update": "coderabbit update"
-  },
-  {
     "command": "droid",
     "install": "curl -fsSL https://app.factory.ai/cli | sh"
   }
