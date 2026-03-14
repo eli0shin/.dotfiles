@@ -1,4 +1,5 @@
-brew "gettext"
+brew tap atlassian/homebrew-acli
+brew "aclibrew"
 brew "cairo"
 brew "create-dmg"
 brew "giflib"
