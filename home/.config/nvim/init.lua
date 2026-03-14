@@ -45,6 +45,7 @@ require('lazy').setup({
   require 'plugins.noice',
   require 'plugins.numb',
   require 'plugins.fff',
+  require 'plugins.snacks',
 }, {
   ui = {
     icons = {},
