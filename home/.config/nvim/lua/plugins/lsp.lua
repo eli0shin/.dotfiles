@@ -243,6 +243,8 @@ return { -- LSP Configuration & Plugins
     end
     vim.list_extend(ensure_installed, {
       'stylua', -- Used to format Lua code
+      'biome', -- Formatter + linter for JS/TS
+      'oxlint', -- Linter for JS/TS (OXC ecosystem)
     })
     require('mason-tool-installer').setup { ensure_installed = ensure_installed }
 
