@@ -3,6 +3,9 @@
   "theme": "opencode",
   "autoshare": false,
   "autoupdate": true,
+  "experimental": {
+    "openTelemetry": true
+  },
   "agent": {},
   "mcp": {},
   "tui": {

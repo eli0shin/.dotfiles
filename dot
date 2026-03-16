@@ -689,8 +689,21 @@ cmd_update() {
 
     # Update packages if requested
     if [[ "${1:-}" == "--packages" ]]; then
+        local profile
+
         info "Updating Homebrew packages..."
-        brew update && brew upgrade
+        brew update || warn "Homebrew update failed"
+
+        if [[ -f "$PACKAGES_DIR/Brewfile" ]]; then
+            brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some Brewfile packages failed to update"
+        fi
+
+        profile=$(_get_profile)
+        if [[ "$profile" == "personal" && -f "$PACKAGES_DIR/Brewfile.personal" ]]; then
+            brew bundle --file="$PACKAGES_DIR/Brewfile.personal" || warn "Some personal Brewfile packages failed to update"
+        elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
+            brew bundle --file="$PACKAGES_DIR/Brewfile.work" || warn "Some work Brewfile packages failed to update"
+        fi
     fi
 
     # Merge configs and re-stow

@@ -27,6 +27,7 @@
 # Generated config files (created by dot merge)
 home/.claude/settings.json
 home/.config/opencode/opencode.json
+home/.config/opencode/otel.json
 home/.config/opencode/package.json
 settings/defaults.json
 settings/keyboard.json
@@ -35,6 +36,7 @@ settings/services.json
 
 # Local config overrides
 home/.config/git/config.local
+home/.config/opencode/otel.local.json
 
 # Claude state (keep config, exclude state)
 home/.claude/plugins/
