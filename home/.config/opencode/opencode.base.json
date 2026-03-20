@@ -1,24 +1,17 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "theme": "opencode",
   "autoshare": false,
   "autoupdate": true,
   "experimental": {
     "openTelemetry": true
   },
   "agent": {},
-  "mcp": {},
-  "tui": {
-    "scroll_acceleration": {
-      "enabled": true
+  "mcp": {
+    "chrome": {
+      "type": "local",
+      "command": ["bun", "x", "chrome-devtools-mcp@latest", "--autoConnect"],
+      "enabled": false
     }
-  },
-  "keybinds": {
-    "app_exit": "ctrl+c,<leader>q",
-    "messages_half_page_up": "ctrl+u",
-    "messages_half_page_down": "ctrl+d",
-    "input_delete_to_line_start": "none",
-    "input_delete": "delete,shift+delete"
   },
   "tools": {}
 }

@@ -33,5 +33,10 @@
     "command": "cli-lsp-client",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/cli-lsp-client/main/install.sh | bash",
     "update": "cli-lsp-client update"
+  },
+  {
+    "command": "mcp-controller",
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/mcp-controller/main/install.sh | bash",
+    "update": "mcp-controller update"
   }
 ]

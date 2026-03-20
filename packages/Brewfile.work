@@ -1,5 +1,5 @@
-brew tap atlassian/homebrew-acli
-brew "aclibrew"
+tap "atlassian/homebrew-acli"
+brew "acli"
 brew "cairo"
 brew "create-dmg"
 brew "giflib"
