@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
+import { SpanStatusCode } from '@opentelemetry/api'
+
 import { createTracingLifecycle } from '../lib/opencode-otel/state.ts'
 
 const createFakeSpanFactory = () => {
@@ -104,6 +106,91 @@ describe('createTracingLifecycle', () => {
     expect(factory.spans[3].parentSpanID).toBe(factory.spans[2].id)
     expect(factory.spans[3].attributes['tool.output']).toBe('/tmp/demo')
     expect(factory.spans[3].ended).toBe(true)
+    expect(factory.spans[3].status).toEqual({ code: SpanStatusCode.OK })
+  })
+
+  test('captures prompt and runtime metadata on custom spans', () => {
+    const factory = createFakeSpanFactory()
+    const lifecycle = createTracingLifecycle({ startSpan: factory.startSpan as any })
+
+    lifecycle.setConfig({ username: 'elioshinsky' })
+
+    lifecycle.onEvent({
+      type: 'session.created',
+      properties: { info: { id: 'session-1', title: 'Lookup session', slug: 'quiet-knight', version: '1.2.27' } },
+    })
+
+    lifecycle.onChatMessagesTransform(
+      {},
+      {
+        messages: [
+          {
+            info: { id: 'user-0', sessionID: 'session-1', role: 'user' },
+            parts: [{ type: 'text', text: 'Earlier context' }],
+          },
+        ],
+      },
+    )
+    lifecycle.onChatSystemTransform(
+      { sessionID: 'session-1' },
+      { system: ['Be concise', 'Stay helpful'] },
+    )
+
+    lifecycle.onChatMessage(
+      { sessionID: 'session-1', agent: 'build', model: { providerID: 'anthropic', modelID: 'claude' } },
+      createUserOutput('user-1', 'Look up the current context'),
+    )
+
+    lifecycle.onChatParams(
+      {
+        sessionID: 'session-1',
+        agent: 'build',
+        model: { id: 'claude', name: 'Claude', api: { id: 'anthropic.messages' } },
+        provider: { id: 'anthropic' },
+        message: { id: 'user-1' },
+      },
+      { temperature: 0.1, topP: 1, topK: 0, options: {} },
+    )
+
+    lifecycle.onEvent({
+      type: 'message.part.delta',
+      properties: { sessionID: 'session-1', field: 'text', delta: 'Hello there' },
+    })
+    lifecycle.onEvent({
+      type: 'message.updated',
+      properties: {
+        info: {
+          id: 'assistant-1',
+          role: 'assistant',
+          sessionID: 'session-1',
+          parentID: 'user-1',
+          modelID: 'claude',
+          providerID: 'anthropic',
+          agent: 'build',
+          mode: 'build',
+          variant: 'high',
+          path: { cwd: '/tmp/demo', root: '/tmp/demo' },
+          time: { created: 1, completed: 2 },
+          finish: 'stop',
+          cost: 0,
+          tokens: { input: 10, output: 20, reasoning: 5, cache: { read: 2, write: 0 } },
+        },
+      },
+    })
+
+    expect(factory.spans[0].attributes['session.slug']).toBe('quiet-knight')
+    expect(factory.spans[0].attributes['session.version']).toBe('1.2.27')
+    expect(factory.spans[1].attributes['user.id']).toBe('elioshinsky')
+    expect(factory.spans[2].attributes['session.id']).toBe('session-1')
+    expect(factory.spans[2].attributes['user.id']).toBe('elioshinsky')
+    expect(factory.spans[2].attributes['llm.model.api']).toBe('anthropic.messages')
+    expect(factory.spans[2].attributes['llm.prompt.messages']).toContain('Earlier context')
+    expect(factory.spans[2].attributes['llm.prompt.system']).toContain('Be concise')
+    expect(factory.spans[2].attributes['llm.output.text']).toBe('Hello there')
+    expect(factory.spans[2].attributes['assistant.time.completed']).toBe(2)
+    expect(factory.spans[2].attributes['assistant.path.cwd']).toBe('/tmp/demo')
+    expect(factory.spans[2].attributes['llm.response.ms_to_first_chunk']).toBeDefined()
+    expect(factory.spans[2].attributes['llm.response.ms_to_finish']).toBeDefined()
   })
 
   test('queues later user messages under the origin user span and attaches the next llm call to the queued message', () => {
@@ -193,7 +280,10 @@ describe('createTracingLifecycle', () => {
     expect(factory.spans[1].ended).toBe(true)
     expect(factory.spans[2].ended).toBe(true)
     expect(factory.spans[3].ended).toBe(true)
+    expect(factory.spans[1].status).toEqual({ code: SpanStatusCode.OK })
+    expect(factory.spans[2].status).toEqual({ code: SpanStatusCode.OK })
     expect(factory.spans[3].status?.message).toBe('session idle cleanup')
+    expect(factory.spans[3].status?.code).toBe(SpanStatusCode.ERROR)
   })
 
   test('parents spawned subagent sessions under the task tool span', () => {
@@ -465,5 +555,56 @@ describe('createTracingLifecycle', () => {
     lifecycle.shutdown()
 
     expect(sessionSpan.ended).toBe(true)
+    expect(sessionSpan.status).toEqual({ code: SpanStatusCode.OK })
+  })
+
+  test('preserves explicit error status when a tool part fails', () => {
+    const factory = createFakeSpanFactory()
+    const lifecycle = createTracingLifecycle({ startSpan: factory.startSpan as any })
+
+    lifecycle.onEvent({
+      type: 'session.created',
+      properties: { info: { id: 'session-1', title: 'Failure session' } },
+    })
+    lifecycle.onChatMessage(
+      { sessionID: 'session-1', agent: 'build', model: { providerID: 'anthropic', modelID: 'claude' } },
+      createUserOutput('user-1', 'Trigger a tool failure'),
+    )
+    lifecycle.onChatParams(
+      {
+        sessionID: 'session-1',
+        agent: 'build',
+        model: { id: 'claude' },
+        provider: { id: 'anthropic' },
+        message: { id: 'user-1' },
+      },
+      { temperature: 0.1, topP: 1, topK: 0, options: {} },
+    )
+    lifecycle.onToolExecuteBefore(
+      { tool: 'bash', sessionID: 'session-1', callID: 'call-1' },
+      { args: { command: 'false' } },
+    )
+    lifecycle.onEvent({
+      type: 'message.part.updated',
+      properties: {
+        part: {
+          id: 'part-1',
+          callID: 'call-1',
+          sessionID: 'session-1',
+          messageID: 'assistant-1',
+          type: 'tool',
+          tool: 'bash',
+          state: {
+            status: 'error',
+            error: { message: 'boom' },
+          },
+        },
+      },
+    })
+
+    const toolSpan = factory.spans.find((span) => span.name === 'tool_call')
+
+    expect(toolSpan.ended).toBe(true)
+    expect(toolSpan.status).toEqual({ code: SpanStatusCode.ERROR, message: 'tool error' })
   })
 })

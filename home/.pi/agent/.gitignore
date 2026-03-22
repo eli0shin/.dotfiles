@@ -1,0 +1,17 @@
+# Ignore everything by default
+*
+
+# Explicitly include tracked config and reusable assets
+!.gitignore
+!AGENTS.md
+!settings.base.json
+!settings.personal.json
+!settings.work.json
+!extensions/
+!extensions/**
+!skills/
+!skills/**
+!prompts/
+!prompts/**
+!themes/
+!themes/**

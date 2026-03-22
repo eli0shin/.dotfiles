@@ -126,3 +126,11 @@ export const getTelemetryRuntime = (): Runtime => {
   if (!globalState[GLOBAL_KEY]) globalState[GLOBAL_KEY] = createRuntime()
   return globalState[GLOBAL_KEY]
 }
+
+export const resetTelemetryRuntime = () => {
+  const globalState = globalThis as typeof globalThis & {
+    [GLOBAL_KEY]?: Runtime
+  }
+
+  delete globalState[GLOBAL_KEY]
+}

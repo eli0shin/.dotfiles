@@ -4,7 +4,7 @@ import path from 'node:path'
 
 import { describe, expect, test } from 'bun:test'
 
-import { readTelemetryConfig } from '../lib/opencode-otel/otel.ts'
+import { getTelemetryRuntime, readTelemetryConfig, resetTelemetryRuntime } from '../lib/opencode-otel/otel.ts'
 
 const withTempConfig = (text: string) => {
   const dir = mkdtempSync(path.join(tmpdir(), 'opencode-otel-'))
@@ -129,5 +129,20 @@ describe('readTelemetryConfig', () => {
         }
       },
     )
+  })
+
+  test('recreates the telemetry runtime after reset', async () => {
+    resetTelemetryRuntime()
+    const first = getTelemetryRuntime()
+
+    resetTelemetryRuntime()
+    const second = getTelemetryRuntime()
+
+    try {
+      expect(second).not.toBe(first)
+    } finally {
+      await second.shutdown()
+      resetTelemetryRuntime()
+    }
   })
 })

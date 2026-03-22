@@ -26,6 +26,8 @@
 
 # Generated config files (created by dot merge)
 home/.claude/settings.json
+home/.pi/web-search.json
+home/.pi/agent/settings.json
 home/.config/opencode/opencode.json
 home/.config/opencode/otel.json
 home/.config/opencode/package.json
@@ -36,7 +38,14 @@ settings/services.json
 
 # Local config overrides
 home/.config/git/config.local
+home/.pi/web-search.local.json
+home/.pi/agent/settings.local.json
 home/.config/opencode/otel.local.json
+
+# Pi state (keep config, exclude auth/runtime state)
+home/.pi/agent/auth.json
+home/.pi/agent/sessions/
+home/.pi/agent/git/
 
 # Claude state (keep config, exclude state)
 home/.claude/plugins/
@@ -64,3 +73,4 @@ home/.claude/settings.local.json
 fishd.tmp*
 .opencode/plans/
 .opencode/plan/
+**/node_modules/**/*

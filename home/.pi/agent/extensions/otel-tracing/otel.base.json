@@ -1,0 +1,10 @@
+{
+  "endpoint": "http://localhost:4320/v1/traces",
+  "headers": {
+    "Authorization": "{env:CLICKSTACK_OTEL_KEY}"
+  },
+  "serviceName": "pi",
+  "serviceVersion": "0.1.0",
+  "userId": "{env:USER}",
+  "maxAttributeLength": 12000
+}

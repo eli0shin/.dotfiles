@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 
 const env = process.env
+const logToFile = env.LOG_REQUESTS === 'true'
 const root = path.join(
   env.HOME || '~',
   '.config',
@@ -129,11 +130,13 @@ const ensure = (() => {
 })()
 
 const event = async (line) => {
+  if (!logToFile) return
   await ensure()
   await appendFile(events, `${JSON.stringify(line)}\n`)
 }
 
 const dropped = async (id, frames) => {
+  if (!logToFile) return null
   if (!frames || frames.length === 0) return null
   await ensure()
   const file = path.join(bodies, `${id}.dropped.ndjson`)
@@ -184,14 +187,14 @@ const body = async (id, response) => {
     }
   }
 
-  await ensure()
+  if (logToFile) await ensure()
   const type = response.headers.get('content-type') || ''
-  const file = path.join(bodies, `${id}.bin`)
-  const chunkFile = chunkLog ? path.join(bodies, `${id}.chunks.ndjson`) : null
+  const file = logToFile ? path.join(bodies, `${id}.bin`) : null
+  const chunkFile = logToFile && chunkLog ? path.join(bodies, `${id}.chunks.ndjson`) : null
   const textFile =
-    /^text\//.test(type) ||
+    logToFile && (/^text\//.test(type) ||
     type.includes('json') ||
-    type.includes('event-stream')
+    type.includes('event-stream'))
       ? path.join(bodies, `${id}.txt`)
       : null
 
@@ -296,7 +299,7 @@ const body = async (id, response) => {
   }
 
   try {
-    out = await open(file, 'w')
+    out = file ? await open(file, 'w') : null
     txt = textFile ? await open(textFile, 'w') : null
     chunk = chunkFile ? await open(chunkFile, 'w') : null
     reader = response.body.getReader()
@@ -318,7 +321,7 @@ const body = async (id, response) => {
           size === read.value.byteLength
             ? read.value
             : read.value.subarray(0, size)
-        await out.write(part)
+        if (out) await out.write(part)
         await inspect(decoder.decode(part, { stream: true }), part.byteLength)
         bytes += part.byteLength
       }

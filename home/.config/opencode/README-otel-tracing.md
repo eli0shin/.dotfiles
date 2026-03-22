@@ -2,6 +2,8 @@
 
 This plugin lives at `plugins/otel-tracing.ts` and is auto-discovered from `~/.config/opencode/plugins/` by OpenCode's local plugin loader.
 
+OpenCode's built-in AI SDK OpenTelemetry spans are disabled in this setup because they were exporting as disconnected root traces in local ClickStack. The local plugin keeps the useful metadata on custom spans instead: session/user IDs, prompt snapshots, model/provider info, streamed output, token usage, and tool inputs/outputs.
+
 ## Setup
 
 1. Install dependencies in `~/.config/opencode/` with `bun install`.
@@ -17,5 +19,6 @@ This plugin lives at `plugins/otel-tracing.ts` and is auto-discovered from `~/.c
 3. Export any referenced env vars before launching OpenCode, for example `export CLICKSTACK_INGEST_TOKEN=...`.
 4. Run OpenCode and send a prompt that triggers at least one tool call.
 5. Confirm traces contain `session`, `user_message`, `llm_call`, and `tool_call` spans.
-6. Trigger a subagent and confirm the child session is nested under the originating `task` tool span.
-7. Send a second message while the first is still busy and confirm the queued message is nested under the in-flight user span.
+6. Confirm `llm_call` spans carry the useful request metadata directly, including `session.id`, `user.id`, `llm.prompt.messages`, `llm.prompt.system`, model/provider fields, streamed output, and token/finish fields.
+7. Trigger a subagent and confirm the child session is nested under the originating `task` tool span.
+8. Send a second message while the first is still busy and confirm the queued message is nested under the in-flight user span.

@@ -3,7 +3,7 @@
   "autoshare": false,
   "autoupdate": true,
   "experimental": {
-    "openTelemetry": true
+    "openTelemetry": false
   },
   "agent": {},
   "mcp": {

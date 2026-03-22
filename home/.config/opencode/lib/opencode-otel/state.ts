@@ -14,6 +14,7 @@ type SpanEntry = {
   span: Span
   context: Context
   ended: boolean
+  status?: SpanStatus
 }
 
 type SessionEntry = SpanEntry & {
@@ -42,6 +43,8 @@ type LlmCallEntry = SpanEntry & {
   sessionID: string
   parentMessageID: string
   text: string
+  startedAt: number
+  firstChunkAt: number | null
 }
 
 type ToolEntry = SpanEntry & {
@@ -68,6 +71,15 @@ type RuntimeEvent = {
   properties?: Record<string, any>
 }
 
+type RuntimeConfigMetadata = {
+  userID?: string
+}
+
+type PromptSnapshot = {
+  messages?: Array<Record<string, any>>
+  system?: string[]
+}
+
 type StartSpan = (input: {
   name: string
   parentContext?: Context
@@ -88,7 +100,12 @@ const openSpan = ({
   extra?: Record<string, unknown>
 }) => {
   const { span, context } = startSpan({ name, parentContext, attributes })
-  return { ...extra, span, context, ended: false }
+  return { ...extra, span, context, ended: false, status: undefined }
+}
+
+const setEntryStatus = (entry: SpanEntry, status: SpanStatus) => {
+  entry.span.setStatus(status)
+  entry.status = status
 }
 
 const setDefinedAttributes = (
@@ -102,7 +119,12 @@ const setDefinedAttributes = (
 
 const endSpan = (entry: SpanEntry | null | undefined, status?: SpanStatus) => {
   if (!entry || entry.ended) return
-  if (status) entry.span.setStatus(status)
+
+  if (status) setEntryStatus(entry, status)
+  else if (entry.status?.code !== SpanStatusCode.ERROR) {
+    setEntryStatus(entry, { code: SpanStatusCode.OK })
+  }
+
   entry.span.end()
   entry.ended = true
 }
@@ -117,7 +139,14 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
     sessionMessageIDs: new Map<string, Set<string>>(),
     childSessionParents: new Map<string, ChildSessionParent>(),
     taskCallChildren: new Map<string, string>(),
+    promptSnapshots: new Map<string, PromptSnapshot>(),
+    runtimeConfig: {} as RuntimeConfigMetadata,
   }
+
+  const getRuntimeMetadata = (sessionID?: string) => ({
+    sessionID,
+    userID: state.runtimeConfig.userID,
+  })
 
   const sessionMessages = (sessionID: string) => {
     const ids = state.sessionMessageIDs.get(sessionID)
@@ -288,6 +317,8 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
       if (link.sessionID === sessionID) state.toolLinks.delete(key)
     }
 
+    state.promptSnapshots.delete(sessionID)
+
     const session = state.sessions.get(sessionID)
     if (!session) return
     session.status = 'idle'
@@ -313,6 +344,33 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
 
   const api = {
     state,
+    setConfig(config: Record<string, any>) {
+      state.runtimeConfig.userID =
+        typeof config?.username === 'string' && config.username.length > 0
+          ? config.username
+          : undefined
+    },
+    onChatSystemTransform(input: Record<string, any>, output: Record<string, any>) {
+      if (!input?.sessionID || !Array.isArray(output?.system)) return
+      const current = state.promptSnapshots.get(input.sessionID) || {}
+      state.promptSnapshots.set(input.sessionID, {
+        ...current,
+        system: output.system.filter((value: unknown): value is string => typeof value === 'string'),
+      })
+    },
+    onChatMessagesTransform(_input: Record<string, any>, output: Record<string, any>) {
+      const messages = Array.isArray(output?.messages) ? output.messages : []
+      for (const message of messages) {
+        const sessionID = message?.info?.sessionID
+        if (!sessionID) continue
+
+        const current = state.promptSnapshots.get(sessionID) || {}
+        state.promptSnapshots.set(sessionID, {
+          ...current,
+          messages,
+        })
+      }
+    },
     onChatMessage(input: Record<string, any>, output: Record<string, any>) {
       const session = withSession(input.sessionID, () => api.onChatMessage(input, output))
       if (!session?.spanEntry) return
@@ -329,7 +387,12 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
         startSpan,
         name: queued ? 'queued_user_message' : 'user_message',
         parentContext,
-        attributes: userMessageAttributes({ input, output, queued }),
+        attributes: userMessageAttributes({
+          input,
+          output,
+          queued,
+          runtime: getRuntimeMetadata(input.sessionID),
+        }),
         extra: {
           messageID,
           sessionID: input.sessionID,
@@ -356,15 +419,25 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
       const active = state.llmCalls.get(input.sessionID)
       if (active) endSpan(active)
 
+      const prompt = state.promptSnapshots.get(input.sessionID)
+
       const entry = openSpan({
         startSpan,
         name: 'llm_call',
         parentContext: parentMessage.context,
-        attributes: llmCallAttributes({ input, output, parentMessageID }),
+        attributes: llmCallAttributes({
+          input,
+          output,
+          parentMessageID,
+          runtime: getRuntimeMetadata(input.sessionID),
+          prompt,
+        }),
         extra: {
           sessionID: input.sessionID,
           parentMessageID,
           text: '',
+          startedAt: Date.now(),
+          firstChunkAt: null,
         },
       }) as LlmCallEntry
 
@@ -384,7 +457,12 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
         startSpan,
         name: 'tool_call',
         parentContext,
-        attributes: toolStartAttributes({ input, output, link }),
+        attributes: toolStartAttributes({
+          input,
+          output,
+          link,
+          runtime: getRuntimeMetadata(input.sessionID),
+        }),
         extra: {
           sessionID: input.sessionID,
           callID: input.callID,
@@ -409,7 +487,15 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
           : undefined
       if (childSessionID) resolveChildSessionParent(childSessionID, input.callID)
 
-      setDefinedAttributes(entry.span, toolFinishAttributes({ input, output, link }))
+      setDefinedAttributes(
+        entry.span,
+        toolFinishAttributes({
+          input,
+          output,
+          link,
+          runtime: getRuntimeMetadata(input.sessionID),
+        }),
+      )
       endSpan(entry)
       state.toolCalls.delete(input.callID)
       if (link?.partID) state.toolCalls.delete(link.partID)
@@ -459,6 +545,9 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
         const llm = state.llmCalls.get(info.sessionID)
         if (!llm) return
         setDefinedAttributes(llm.span, assistantAttributes(info))
+        if (info.time?.completed) {
+          llm.span.setAttribute('llm.response.ms_to_finish', Date.now() - llm.startedAt)
+        }
         return
       }
 
@@ -471,8 +560,13 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
         if (!session) return
         const llm = state.llmCalls.get(sessionID)
         if (!llm) return
+        if (llm.firstChunkAt === null) {
+          llm.firstChunkAt = Date.now()
+          llm.span.setAttribute('llm.response.ms_to_first_chunk', llm.firstChunkAt - llm.startedAt)
+        }
         llm.text += delta
         llm.span.setAttribute('llm.output.preview', llm.text)
+        llm.span.setAttribute('llm.output.text', llm.text)
         return
       }
 
@@ -515,7 +609,7 @@ export const createTracingLifecycle = ({ startSpan }: { startSpan: StartSpan }) 
               'tool.child_session_id': childSessionID,
             })
             if (part.state?.status === 'error') {
-              entry.span.setStatus({ code: SpanStatusCode.ERROR, message: 'tool error' })
+              setEntryStatus(entry, { code: SpanStatusCode.ERROR, message: 'tool error' })
               endSpan(entry)
             }
             if (part.state?.status === 'completed') endSpan(entry)
