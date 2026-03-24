@@ -5,3 +5,4 @@
 *.swo
 .env.local
 .opencode/plans/
+.repos/worktree.json
