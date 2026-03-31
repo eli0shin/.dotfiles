@@ -1,3 +1,10 @@
 {
-  "plugin": ["@ex-machina/opencode-anthropic-auth"]
+  "plugin": ["@ex-machina/opencode-anthropic-auth"],
+  "mcp": {
+    "honeycomb": {
+      "type": "remote",
+      "url": "https://mcp.honeycomb.io/mcp",
+      "enabled": false
+    }
+  }
 }

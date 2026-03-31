@@ -1,7 +1,2 @@
 [
-  {
-    "command": "pup",
-    "install": "mkdir -p ~/.local/bin && gh release download --repo DataDog/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup",
-    "update": "mkdir -p ~/.local/bin && gh release download --repo DataDog/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
-  }
 ]
