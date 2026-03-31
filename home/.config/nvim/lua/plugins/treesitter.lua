@@ -24,6 +24,10 @@ return {
         --  If you are experiencing weird indenting issues, add the language to
         --  the list of additional_vim_regex_highlighting and disabled languages for indent.
         additional_vim_regex_highlighting = { 'ruby' },
+        disable = function(_, buf)
+          local name = vim.api.nvim_buf_get_name(buf)
+          return name:find('diffview://', 1, true) ~= nil
+        end,
       },
       indent = { enable = true, disable = { 'ruby' } },
     },
