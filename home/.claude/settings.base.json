@@ -7,10 +7,6 @@
     "DISABLE_TELEMETRY": "0",
     "CLAUDE_CODE_NO_FLICKER": "1"
   },
-  "showThinkingSummaries": true,
-  "teammateMode": "tmux",
-  "includeCoAuthoredBy": false,
-  "model": "opus[1m]",
   "permissions": {
     "allow": [
       "Bash(bun add:*)",
@@ -78,9 +74,16 @@
     "prettier-plugin@cli-lsp-client-plugins": true,
     "lsp-plugin@cli-lsp-client-plugins": true
   },
+  "includeCoAuthoredBy": false,
+  "model": "opus[1m]",
+  "outputStyle": "default",
   "syntaxHighlightingDisabled": false,
   "alwaysThinkingEnabled": true,
+  "prefersReducedMotion": true,
+  "showThinkingSummaries": true,
+  "teammateMode": "tmux",
   "feedbackSurveyState": {
     "lastShownTime": 1754020113523
-  }
+  },
+  "effortLevel": "high"
 }
