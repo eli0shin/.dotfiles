@@ -4,7 +4,9 @@ return {
   dependencies = { 'nvim-treesitter/nvim-treesitter', 'echasnovski/mini.icons' },
   ---@module 'render-markdown'
   ---@type render.md.UserConfig
-  opts = {},
+  opts = {
+    latex = { enabled = false },
+  },
   keys = {
     { '<leader>m', group = '[M]arkdown' },
     { '<leader>mt', '<cmd>RenderMarkdown toggle<cr>', desc = '[T]oggle' },
