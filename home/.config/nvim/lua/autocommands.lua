@@ -27,6 +27,16 @@ vim.api.nvim_create_autocmd('TermOpen', {
   end,
 })
 
+-- LspRestart and LspInfo commands (replaced by native vim.lsp API in Neovim 0.11+)
+vim.api.nvim_create_user_command('LspRestart', function()
+  vim.lsp.stop_client(vim.lsp.get_clients())
+  vim.cmd('edit')
+end, { desc = 'Restart all LSP clients' })
+
+vim.api.nvim_create_user_command('LspInfo', function()
+  vim.cmd('checkhealth vim.lsp')
+end, { desc = 'Show LSP info' })
+
 vim.api.nvim_create_user_command('Browse', function(opts)
   vim.fn.system { 'open', opts.fargs[1] }
 end, { nargs = 1 })
