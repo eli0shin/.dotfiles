@@ -28,6 +28,7 @@ brew "jdtls"
 brew "nvm"
 brew "openjdk"
 brew "r"
+brew "render"
 brew "tailscale", restart_service: :changed
 cask "arduino-ide"
 cask "autodesk-fusion"
