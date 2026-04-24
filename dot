@@ -602,12 +602,42 @@ cmd_init() {
     # Start managed services
     _start_services
 
+    # Set login shell
+    _set_login_shell
+
     # Apply system settings
     cmd_pmset apply || warn "pmset settings could not be applied"
     cmd_defaults apply || warn "macOS defaults could not be applied"
     cmd_keyboard apply || warn "keyboard remappings could not be applied"
 
     success "Initialization complete!"
+}
+
+_set_login_shell() {
+    local fish_path
+    fish_path="$(command -v fish 2>/dev/null || true)"
+
+    if [[ -z "$fish_path" ]]; then
+        warn "Fish shell not found, skipping login shell setup"
+        return 0
+    fi
+
+    if [[ "$SHELL" == "$fish_path" ]]; then
+        success "Login shell already set to fish"
+        return 0
+    fi
+
+    if ! grep -qxF "$fish_path" /etc/shells; then
+        info "Adding $fish_path to /etc/shells..."
+        echo "$fish_path" | sudo tee -a /etc/shells >/dev/null
+    fi
+
+    info "Setting login shell to fish..."
+    if chsh -s "$fish_path"; then
+        success "Login shell set to $fish_path"
+    else
+        warn "Failed to set login shell"
+    fi
 }
 
 _install_git_hooks() {
