@@ -59,3 +59,6 @@ test -r $local_vars; and source $local_vars
 
 # opencode
 fish_add_path $HOME/.opencode/bin
+
+# repos CLI work command
+repos init --print | source
