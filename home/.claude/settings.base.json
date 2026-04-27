@@ -62,7 +62,8 @@
       "WebFetch(domain:www.nngroup.com)",
       "WebSearch"
     ],
-    "deny": []
+    "deny": [],
+    "defaultMode": "dontAsk"
   },
   "statusLine": {
     "type": "command",
@@ -85,5 +86,5 @@
   "feedbackSurveyState": {
     "lastShownTime": 1754020113523
   },
-  "effortLevel": "high"
+  "effortLevel": "xhigh"
 }
