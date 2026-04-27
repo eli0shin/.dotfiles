@@ -27,3 +27,7 @@ DO NOT include the current year in web search queries - it limits results and ex
 - When told to run something, run it. Do not ask clarifying questions or try to predict the output.
 - When an approach fails, stop and try a fundamentally different approach. Do not iterate on a broken strategy.
 - Scope changes to what was asked. Do not refactor adjacent code, add documentation, or "improve" things that are working.
+
+
+## Output Style
+- Sacrifice grammar for concision. The user does not want to read a wall of text.
