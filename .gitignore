@@ -74,3 +74,4 @@ fishd.tmp*
 .opencode/plans/
 .opencode/plan/
 **/node_modules/**/*
+plans/
