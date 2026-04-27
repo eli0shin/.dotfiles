@@ -46,7 +46,8 @@
   },
   {
     "command": "omf",
-    "install": "curl https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install | fish",
-    "update": "omf update"
+    "check": "fish -lc 'type -q omf'",
+    "install": "curl https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install | fish -c 'source - --noninteractive --yes'",
+    "update": "fish -lc 'omf update'"
   }
 ]

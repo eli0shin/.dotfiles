@@ -124,12 +124,13 @@ _process_bash_packages_file() {
     packages=$(jq -c '.[]' "$file")
 
     while IFS= read -r pkg_json; do
-        local cmd install_script update_cmd
+        local cmd install_script update_cmd check_cmd
         cmd=$(echo "$pkg_json" | jq -r '.command')
         install_script=$(echo "$pkg_json" | jq -r '.install')
         update_cmd=$(echo "$pkg_json" | jq -r '.update // empty')
+        check_cmd=$(echo "$pkg_json" | jq -r '.check // empty')
 
-        if has "$cmd"; then
+        if { [[ -n "$check_cmd" ]] && eval "$check_cmd"; } || { [[ -z "$check_cmd" ]] && has "$cmd"; }; then
             if [[ -n "$update_cmd" ]]; then
                 info "Updating $cmd..."
                 echo "  Running: $update_cmd"
