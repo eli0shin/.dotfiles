@@ -15,17 +15,7 @@ mas "Vimlike", id: 1584519802
 mas "WhatsApp", id: 310633997
 mas "Xcode", id: 497799835
 
-go "github.com/air-verse/air"
-go "github.com/go-delve/delve/cmd/dlv"
-go "golang.org/x/tools/cmd/goimports"
-go "golang.org/x/tools/gopls"
-go "honnef.co/go/tools/cmd/staticcheck"
-go "github.com/a-h/templ/cmd/templ"
-
-brew "aws-sam-cli"
-brew "go"
 brew "jdtls"
-brew "nvm"
 brew "openjdk"
 brew "r"
 brew "render"
@@ -33,9 +23,7 @@ brew "tailscale", restart_service: :changed
 cask "arduino-ide"
 cask "autodesk-fusion"
 cask "bambu-studio"
-cask "chatgpt"
 cask "discord"
-cask "docker-desktop"
 cask "electron-fiddle"
 cask "firefox"
 cask "google-chrome"
