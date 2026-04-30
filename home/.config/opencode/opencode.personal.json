@@ -1,5 +1,6 @@
 {
-  "plugin": ["@ex-machina/opencode-anthropic-auth@latest"],
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-claude-auth@latest"],
   "mcp": {
     "honeycomb": {
       "type": "remote",
