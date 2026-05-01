@@ -45,6 +45,9 @@ has() { command -v "$1" &>/dev/null; }
 BASH_PACKAGES_FILE="$PACKAGES_DIR/bash-packages.json"
 BASH_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/bash-packages.personal.json"
 BASH_PACKAGES_WORK_FILE="$PACKAGES_DIR/bash-packages.work.json"
+NPM_PACKAGES_FILE="$PACKAGES_DIR/npm-packages"
+NPM_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/npm-packages.personal"
+NPM_PACKAGES_WORK_FILE="$PACKAGES_DIR/npm-packages.work"
 
 _ensure_bash_packages_file() {
     local file="$1"
@@ -89,6 +92,57 @@ _get_profile() {
     fi
 }
 
+_ensure_npm_packages_file() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        touch "$file"
+    fi
+}
+
+_npm_package_exists() {
+    local pkg="$1"
+    local file="$2"
+    _ensure_npm_packages_file "$file"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" == "$pkg" ]] && return 0
+    done < "$file"
+
+    return 1
+}
+
+_bun_global_package_exists() {
+    local pkg="$1"
+    local global_package_json="$HOME/.bun/install/global/package.json"
+
+    [[ -f "$global_package_json" ]] || return 1
+    jq -e --arg pkg "$pkg" '(.dependencies // {})[$pkg] != null' "$global_package_json" >/dev/null 2>&1
+}
+
+_add_npm_package() {
+    local pkg="$1"
+    local file="$2"
+    _ensure_npm_packages_file "$file"
+    printf '%s\n' "$pkg" >> "$file"
+}
+
+_remove_npm_package() {
+    local pkg="$1"
+    local file="$2"
+    local tmp
+
+    _ensure_npm_packages_file "$file"
+    tmp=$(mktemp)
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == "$pkg" ]] && continue
+        printf '%s\n' "$line" >> "$tmp"
+    done < "$file"
+
+    mv "$tmp" "$file"
+}
+
 _install_bash_packages() {
     info "Installing bash packages..."
 
@@ -102,6 +156,63 @@ _install_bash_packages() {
     elif [[ "$profile" == "work" && -f "$BASH_PACKAGES_WORK_FILE" ]]; then
         _process_bash_packages_file "$BASH_PACKAGES_WORK_FILE"
     fi
+}
+
+_install_npm_packages() {
+    info "Installing npm registry packages with Bun..."
+
+    if ! has bun; then
+        warn "Bun is not installed, skipping npm registry packages"
+        return 0
+    fi
+
+    local profile
+    profile=$(_get_profile)
+
+    _process_npm_packages_file "$NPM_PACKAGES_FILE"
+
+    if [[ "$profile" == "personal" && -f "$NPM_PACKAGES_PERSONAL_FILE" ]]; then
+        _process_npm_packages_file "$NPM_PACKAGES_PERSONAL_FILE"
+    elif [[ "$profile" == "work" && -f "$NPM_PACKAGES_WORK_FILE" ]]; then
+        _process_npm_packages_file "$NPM_PACKAGES_WORK_FILE"
+    fi
+}
+
+_process_npm_packages_file() {
+    local file="$1"
+    local mode="${2:-install}"
+
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
+
+    if ! grep -q '^[^#[:space:]]' "$file"; then
+        return 0
+    fi
+
+    info "Processing $(basename "$file")..."
+
+    while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+        [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+
+        if [[ "$mode" == "update" ]]; then
+            info "Updating $pkg..."
+            if bun update -g "$pkg"; then
+                success "Updated $pkg"
+            else
+                warn "Failed to update $pkg (continuing...)"
+            fi
+        elif _bun_global_package_exists "$pkg"; then
+            success "$pkg already installed"
+        else
+            info "Installing $pkg..."
+            if bun add -g "$pkg"; then
+                success "Installed $pkg"
+            else
+                warn "Failed to install $pkg (continuing...)"
+            fi
+        fi
+    done < "$file"
 }
 
 _process_bash_packages_file() {
@@ -594,6 +705,9 @@ cmd_init() {
     # Install bash packages
     _install_bash_packages
 
+    # Install npm registry packages
+    _install_npm_packages
+
     # Install git hooks
     _install_git_hooks
 
@@ -735,6 +849,19 @@ cmd_update() {
         elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
             brew bundle --file="$PACKAGES_DIR/Brewfile.work" || warn "Some work Brewfile packages failed to update"
         fi
+
+        if has bun; then
+            info "Updating npm registry packages with Bun..."
+            _process_npm_packages_file "$NPM_PACKAGES_FILE" update
+
+            if [[ "$profile" == "personal" && -f "$NPM_PACKAGES_PERSONAL_FILE" ]]; then
+                _process_npm_packages_file "$NPM_PACKAGES_PERSONAL_FILE" update
+            elif [[ "$profile" == "work" && -f "$NPM_PACKAGES_WORK_FILE" ]]; then
+                _process_npm_packages_file "$NPM_PACKAGES_WORK_FILE" update
+            fi
+        else
+            warn "Bun is not installed, skipping npm registry package updates"
+        fi
     fi
 
     # Merge configs and re-stow
@@ -849,25 +976,30 @@ cmd_package() {
     # Parse --personal and --work flags
     local personal=false
     local work=false
+    local npm=false
     local args=()
     for arg in "$@"; do
         case "$arg" in
             --personal) personal=true ;;
             --work) work=true ;;
+            --npm) npm=true ;;
             *) args+=("$arg") ;;
         esac
     done
 
-    local brewfile bash_pkg_file
+    local brewfile bash_pkg_file npm_pkg_file
     if [[ "$personal" == true ]]; then
         brewfile="$PACKAGES_DIR/Brewfile.personal"
         bash_pkg_file="$BASH_PACKAGES_PERSONAL_FILE"
+        npm_pkg_file="$NPM_PACKAGES_PERSONAL_FILE"
     elif [[ "$work" == true ]]; then
         brewfile="$PACKAGES_DIR/Brewfile.work"
         bash_pkg_file="$BASH_PACKAGES_WORK_FILE"
+        npm_pkg_file="$NPM_PACKAGES_WORK_FILE"
     else
         brewfile="$PACKAGES_DIR/Brewfile"
         bash_pkg_file="$BASH_PACKAGES_FILE"
+        npm_pkg_file="$NPM_PACKAGES_FILE"
     fi
 
     case "$subcmd" in
@@ -877,12 +1009,35 @@ cmd_package() {
 
             if [[ -z "$pkg" ]]; then
                 error "Usage: dot package add <package> [--personal|--work]"
+                error "       dot package add <package> --npm [--personal|--work]"
                 error "       dot package add <name> \"<install-script>\" [--personal|--work]"
                 return 1
             fi
 
-            # Two args = bash package, one arg = brew package
-            if [[ -n "$install_script" ]]; then
+            if [[ "$npm" == true ]]; then
+                _ensure_npm_packages_file "$npm_pkg_file"
+
+                if _npm_package_exists "$pkg" "$npm_pkg_file"; then
+                    error "Package '$pkg' already exists in $(basename "$npm_pkg_file")"
+                    return 1
+                fi
+
+                info "Adding npm registry package '$pkg' to $(basename "$npm_pkg_file")..."
+                _add_npm_package "$pkg" "$npm_pkg_file"
+
+                if has bun; then
+                    if _bun_global_package_exists "$pkg"; then
+                        success "$pkg is already installed"
+                    else
+                        info "Installing $pkg with Bun..."
+                        bun add -g "$pkg" || warn "Installation may have failed"
+                    fi
+                else
+                    warn "Bun is not installed, package was added but not installed"
+                fi
+
+                success "Added npm registry package: $pkg"
+            elif [[ -n "$install_script" ]]; then
                 _ensure_bash_packages_file "$bash_pkg_file"
 
                 if _bash_package_exists "$pkg" "$bash_pkg_file"; then
@@ -926,8 +1081,50 @@ cmd_package() {
                 return 1
             fi
 
-            # Check bash packages first (both files)
-            if _bash_package_exists "$pkg" "$BASH_PACKAGES_FILE"; then
+            if [[ "$npm" == true ]]; then
+                if _npm_package_exists "$pkg" "$npm_pkg_file"; then
+                    info "Removing npm registry package '$pkg' from $(basename "$npm_pkg_file")..."
+                    _remove_npm_package "$pkg" "$npm_pkg_file"
+
+                    if has bun; then
+                        bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                    else
+                        warn "Bun is not installed, skipping uninstall"
+                    fi
+
+                    success "Removed npm registry package: $pkg"
+                else
+                    error "Package '$pkg' not found in $(basename "$npm_pkg_file")"
+                    return 1
+                fi
+            elif _npm_package_exists "$pkg" "$NPM_PACKAGES_FILE"; then
+                info "Removing npm registry package '$pkg' from npm-packages..."
+                _remove_npm_package "$pkg" "$NPM_PACKAGES_FILE"
+                if has bun; then
+                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                else
+                    warn "Bun is not installed, skipping uninstall"
+                fi
+                success "Removed npm registry package: $pkg"
+            elif _npm_package_exists "$pkg" "$NPM_PACKAGES_PERSONAL_FILE"; then
+                info "Removing npm registry package '$pkg' from npm-packages.personal..."
+                _remove_npm_package "$pkg" "$NPM_PACKAGES_PERSONAL_FILE"
+                if has bun; then
+                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                else
+                    warn "Bun is not installed, skipping uninstall"
+                fi
+                success "Removed npm registry package: $pkg"
+            elif _npm_package_exists "$pkg" "$NPM_PACKAGES_WORK_FILE"; then
+                info "Removing npm registry package '$pkg' from npm-packages.work..."
+                _remove_npm_package "$pkg" "$NPM_PACKAGES_WORK_FILE"
+                if has bun; then
+                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                else
+                    warn "Bun is not installed, skipping uninstall"
+                fi
+                success "Removed npm registry package: $pkg"
+            elif _bash_package_exists "$pkg" "$BASH_PACKAGES_FILE"; then
                 info "Removing bash package '$pkg' from bash-packages.json..."
                 _remove_bash_package "$pkg" "$BASH_PACKAGES_FILE"
                 success "Removed bash package: $pkg"
@@ -969,6 +1166,9 @@ cmd_package() {
 
             echo ""
             _install_bash_packages
+
+            echo ""
+            _install_npm_packages
 
             success "Installation complete"
             ;;
@@ -1019,9 +1219,46 @@ cmd_package() {
             if [[ "$has_packages" == false ]]; then
                 echo "(none)"
             fi
+
+            echo ""
+            echo -e "${BLUE}=== NPM Registry Packages (Bun global) ===${NC}"
+            _ensure_npm_packages_file "$NPM_PACKAGES_FILE"
+
+            local has_npm_packages=false
+
+            if [[ -f "$NPM_PACKAGES_FILE" ]] && grep -q '^[^#[:space:]]' "$NPM_PACKAGES_FILE"; then
+                has_npm_packages=true
+                echo "Core (npm-packages):"
+                while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+                    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+                    echo "  $pkg"
+                done < "$NPM_PACKAGES_FILE"
+            fi
+
+            if [[ -f "$NPM_PACKAGES_PERSONAL_FILE" ]] && grep -q '^[^#[:space:]]' "$NPM_PACKAGES_PERSONAL_FILE"; then
+                has_npm_packages=true
+                echo "Personal (npm-packages.personal):"
+                while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+                    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+                    echo "  $pkg"
+                done < "$NPM_PACKAGES_PERSONAL_FILE"
+            fi
+
+            if [[ -f "$NPM_PACKAGES_WORK_FILE" ]] && grep -q '^[^#[:space:]]' "$NPM_PACKAGES_WORK_FILE"; then
+                has_npm_packages=true
+                echo "Work (npm-packages.work):"
+                while IFS= read -r pkg || [[ -n "$pkg" ]]; do
+                    [[ -z "$pkg" || "$pkg" == \#* ]] && continue
+                    echo "  $pkg"
+                done < "$NPM_PACKAGES_WORK_FILE"
+            fi
+
+            if [[ "$has_npm_packages" == false ]]; then
+                echo "(none)"
+            fi
             ;;
         *)
-            error "Usage: dot package <add|remove|install|list> [package] [--personal|--work]"
+            error "Usage: dot package <add|remove|install|list> [package] [--personal|--work] [--npm]"
             return 1
             ;;
     esac

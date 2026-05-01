@@ -1,6 +1,14 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "share": "disabled",
+  "mcp":{
+    "lucid": {
+      "type": "remote",
+      "url": "https://mcp.lucid.app/mcp",
+      "oauth": {},
+      "enabled": false
+    }
+  },
   "disabled_providers": [
     "opencode"
   ]
