@@ -63,7 +63,7 @@
       "WebSearch"
     ],
     "deny": [],
-    "defaultMode": "dontAsk"
+    "defaultMode": "bypassPermissions"
   },
   "statusLine": {
     "type": "command",
