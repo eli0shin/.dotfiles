@@ -56,11 +56,6 @@
     "askForPassword": true,
     "askForPasswordDelay": 0
   },
-  "com.apple.TextEdit": {
-    "RichText": false,
-    "PlainTextEncoding": 4,
-    "PlainTextEncodingForWrite": 4
-  },
   "com.apple.CrashReporter": {
     "DialogType": "none"
   },
