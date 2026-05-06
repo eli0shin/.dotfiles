@@ -1,15 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "share": "disabled",
-  "mcp":{
+  "mcp": {
     "lucid": {
       "type": "remote",
       "url": "https://mcp.lucid.app/mcp",
       "oauth": {},
       "enabled": false
+    },
+    "figma": {
+      "type": "remote",
+      "url": "https://mcp.figma.com/mcp",
+      "oauth": {
+        "clientId": "{env:FIGMA_CLIENT_ID}",
+        "clientSecret": "{env:FIGMA_CLIENT_SECRET}"
+      },
+      "enabled": false
     }
   },
-  "disabled_providers": [
-    "opencode"
-  ]
+  "disabled_providers": ["opencode"]
 }

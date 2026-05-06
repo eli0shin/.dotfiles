@@ -14,7 +14,7 @@ set -p fish_function_path ~/.config/fish/local_functions
 
 alias tmux "tmux -u"
 
-set -g -x NVM_DIR $HOME/.nvm
+set -gx NVM_DIR $HOME/.nvm
 set -gx NOOP_MODEL_API_KEY "*"
 set -gx EDITOR nvim
 set -gx CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR 1

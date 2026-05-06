@@ -6,3 +6,4 @@
 .env.local
 .opencode/plans/
 .repos/worktree.json
+.repos/

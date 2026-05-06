@@ -5,6 +5,7 @@
   "experimental": {
     "openTelemetry": false
   },
+  "plugin": ["opencode-pty"],
   "agent": {},
   "mcp": {
     "chrome": {

@@ -3,8 +3,6 @@ require 'motions'
 require 'autocommands'
 require 'lazy-setup'
 
-vim.g.github_enterprise_urls = { 'https://github.paypal.com' }
-
 --  To check the current status of your plugins, run
 --    :Lazy
 require('lazy').setup({
@@ -34,11 +32,9 @@ require('lazy').setup({
   require 'plugins.render-markdown',
   require 'plugins.grug-far',
   require 'plugins.arctic',
-  require 'plugins.mcp-hub',
   require 'plugins.copilot',
   require 'plugins.blink-compat-init',
   require 'plugins.blink-cmp',
-  require 'plugins.claude-code',
   require 'plugins.indent_line',
   require 'plugins.lint',
   require 'plugins.trouble',
