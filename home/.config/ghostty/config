@@ -43,8 +43,9 @@ scrollback-limit = 1000
 term = xterm-256color
 
 # Minimal visual preferences
-window-padding-x = 4
-window-padding-y = 4
+window-padding-x = 0
+window-padding-y = 0
+window-padding-balance = true
 
 # Cursor
 cursor-style = block
