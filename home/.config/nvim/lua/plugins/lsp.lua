@@ -66,6 +66,11 @@ return { -- LSP Configuration & Plugins
     vim.api.nvim_create_autocmd('LspAttach', {
       group = vim.api.nvim_create_augroup('kickstart-lsp-attach', { clear = true }),
       callback = function(event)
+        -- Neovim document colors can assert while Diffview swaps its virtual buffers into windows.
+        if vim.api.nvim_buf_get_name(event.buf):find('diffview://', 1, true) then
+          vim.lsp.document_color.enable(false, { bufnr = event.buf })
+        end
+
         -- NOTE: Remember that Lua is a real programming language, and as such it is possible
         -- to define small helper and utility functions so you don't have to repeat yourself.
         --

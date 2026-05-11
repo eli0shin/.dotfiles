@@ -1,6 +1,8 @@
+fish_add_path --prepend --path /opt/homebrew/opt/git/bin
 fish_add_path --path "$HOME/go/bin"
 fish_add_path --path /usr/local/go/bin
 fish_add_path --path "$HOME/.local/bin/"
+fish_add_path --path "$HOCE/Library/pnpm/bin"
 
 # bun
 set --export BUN_INSTALL "$HOME/.bun"
@@ -31,12 +33,6 @@ if status is-interactive
     # setup fzf
     fzf --fish | source
 end
-
-# load_nvm >/dev/stderr
-
-### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
-set --export --prepend PATH "$HOME/.rd/bin"
-### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
 
 # Emulates vim's cursor shape behavior
 # Set the normal and visual mode cursors to a block
