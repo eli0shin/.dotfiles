@@ -1,0 +1,8 @@
+# Ignore everything by default
+*
+
+# Explicitly include managed agent skills
+!.gitignore
+!.skill-lock.json
+!skills/
+!skills/**

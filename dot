@@ -19,6 +19,7 @@ SYMLINKS=(
     "$HOME/.config/git"
     "$HOME/.config/omf"
     "$HOME/.config/opencode"
+    "$HOME/.agents"
     "$HOME/.claude"
 )
 
