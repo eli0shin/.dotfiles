@@ -1,10 +1,12 @@
 {
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-opus-4-6",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
   "enabledModels": [
     "anthropic/claude-sonnet-4-6",
     "anthropic/claude-opus-4-6",
-    "openai-codex/gpt-5.4",
-    "openai-codex/gpt-5.4-mini"
-  ]
+    "openai-codex/gpt-5.5"
+  ],
+  "warnings": {
+    "anthropicExtraUsage": false
+  }
 }

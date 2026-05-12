@@ -1,5 +1,5 @@
 {
-  "defaultThinkingLevel": "xhigh",
+  "defaultThinkingLevel": "low",
   "quietStartup": true,
   "collapseChangelog": true,
   "doubleEscapeAction": "tree",
@@ -12,7 +12,9 @@
     "enabled": true,
     "maxRetries": 3,
     "baseDelayMs": 2000,
-    "maxDelayMs": 60000
+    "provider": {
+      "maxRetryDelayMs": 60000
+    }
   },
   "packages": [
     "npm:pi-web-access",
