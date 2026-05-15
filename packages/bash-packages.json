@@ -49,5 +49,19 @@
     "check": "fish -lc 'type -q omf'",
     "install": "curl https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install | fish -c 'source - --noninteractive --yes'",
     "update": "fish -lc 'omf update'"
+  },
+  {
+    "command": "sqlit",
+    "install": "uv tool install sqlit-tui",
+    "update": "uv tool upgrade sqlit-tui"
+  },
+  {
+    "command": "aws",
+    "install": "curl \"https://awscli.amazonaws.com/AWSCLIV2.pkg\" -o \"/tmp/AWSCLIV2.pkg\" && sudo installer -pkg /tmp/AWSCLIV2.pkg -target /"
+  },
+  {
+    "command": "sst",
+    "install": "curl -fsSL https://sst.dev/install | bash",
+    "update": "sst upgrade"
   }
 ]

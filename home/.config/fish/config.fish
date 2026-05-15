@@ -58,3 +58,6 @@ fish_add_path $HOME/.opencode/bin
 
 # repos CLI work command
 repos init --print | source
+
+# sst
+fish_add_path $HONE/.sst/bin

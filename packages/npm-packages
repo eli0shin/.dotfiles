@@ -1,3 +1,5 @@
 @kitlangton/ghui
 prettier
 eslint
+oxlint
+oxfmt
