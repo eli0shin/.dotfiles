@@ -9,7 +9,7 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 1. Open a diff view (diffview, octo PR review, or `:diffsplit`)
 2. Visually select code and press `<leader>dca` to add a comment
 3. Repeat across files — comments are stored per-repo as JSON
-4. Press `<leader>dcr` to build a markdown prompt from all comments and run it through a configured provider
+4. Press `<leader>dcr` to build a markdown prompt from all comments and run it through a configured provider (`opencode`, `claude`, `pi`, or `custom`)
 
 ## Keymaps
 
@@ -72,6 +72,9 @@ require('diff_review_comments').setup {
     claude = {
       template = 'claude < {prompt_file}',
     },
+    pi = {
+      template = 'pi @{prompt_file}',
+    },
     custom = {
       template = '',
     },
@@ -89,6 +92,7 @@ Templates support these variables:
 | `{prompt_text}`   | The prompt content (shell-escaped) |
 | `{provider_id}`   | Provider ID from config            |
 | `{model_id}`      | Model ID from config               |
+| `{agent_id}`      | Agent ID from config               |
 | `{cwd}`           | Repository root (shell-escaped)    |
 | `{comment_count}` | Number of comments                 |
 

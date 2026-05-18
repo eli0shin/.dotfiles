@@ -1,7 +1,7 @@
 local M = {}
 
 local defaults = {
-  provider = 'opencode',
+  provider = 'pi',
   keymaps = {
     add = '<leader>dca',
     list = '<leader>dcl',
@@ -20,6 +20,9 @@ local defaults = {
     },
     claude = {
       template = 'claude < {prompt_file}',
+    },
+    pi = {
+      template = 'pi @{prompt_file}',
     },
     custom = {
       template = '',
