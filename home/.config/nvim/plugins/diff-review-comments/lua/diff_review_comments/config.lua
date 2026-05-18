@@ -9,13 +9,13 @@ local defaults = {
     clear = '<leader>dcx',
   },
   max_selection_lines = 200,
-  storage_path = vim.fn.stdpath('data') .. '/diff-review-comments/comments.json',
+  storage_path = vim.fn.stdpath 'data' .. '/diff-review-comments/comments.json',
   notify = true,
   providers = {
     opencode = {
       provider_id = 'openai',
-      model_id = 'gpt-5.3-codex',
-      agent_id = 'plan',
+      model_id = 'gpt-5.5',
+      agent_id = 'build',
       template = 'opencode --model {provider_id}/{model_id} --agent {agent_id} --prompt {prompt_text}',
     },
     claude = {
