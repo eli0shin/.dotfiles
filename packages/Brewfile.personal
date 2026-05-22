@@ -19,7 +19,7 @@ brew "jdtls"
 brew "openjdk"
 brew "r"
 brew "render"
-brew "tailscale", restart_service: :changed
+brew "tailscale"
 cask "arduino-ide"
 cask "autodesk-fusion"
 cask "bambu-studio"

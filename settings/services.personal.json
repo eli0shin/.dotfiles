@@ -2,7 +2,8 @@
   {
     "name": "tailscale",
     "sudo": true,
-    "check": "tailscale status >/dev/null 2>&1",
-    "post_start": "tailscale status >/dev/null 2>&1 || sudo tailscale up"
+    "pre_start": "launchctl print gui/$(id -u)/homebrew.mxcl.tailscale >/dev/null 2>&1 && launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/homebrew.mxcl.tailscale.plist >/dev/null 2>&1 || true; rm -f ~/Library/LaunchAgents/homebrew.mxcl.tailscale.plist; sudo mkdir -p /etc/resolver; printf 'nameserver 100.100.100.100\\ndomain home.arpa\\nsearch_order 1\\ntimeout 5\\n' | sudo tee /etc/resolver/home.arpa >/dev/null",
+    "check": "pgrep -x tailscaled >/dev/null 2>&1 && tailscale status >/dev/null 2>&1",
+    "post_start": "tailscale up --accept-dns --accept-routes --hostname=macbookpro >/dev/null 2>&1 || tailscale up --reset --accept-dns --accept-routes --hostname=macbookpro >/dev/null 2>&1"
   }
 ]

@@ -309,6 +309,19 @@ _start_services() {
             is_running=$(brew services list 2>/dev/null | grep "^$name " | grep -c "started" || true)
         fi
 
+        # Run pre-start commands before checking/starting the service.
+        # Useful for cleaning up stale LaunchAgents or conflicting service state.
+        local pre_start
+        pre_start=$(echo "$svc_json" | jq -r '.pre_start // empty')
+        if [[ -n "$pre_start" ]]; then
+            info "Running pre-start for $name..."
+            if eval "$pre_start"; then
+                success "Pre-start complete for $name"
+            else
+                warn "Pre-start failed for $name"
+            fi
+        fi
+
         if [[ "$is_running" -gt 0 ]]; then
             success "$name service already running"
         else
