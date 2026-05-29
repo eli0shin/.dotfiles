@@ -9,6 +9,8 @@ description: Safely inspect and edit Home Assistant Lovelace dashboards that are
 
 Dashboards are user-facing UI state. Prefer Home Assistant **storage/UI-managed dashboards** over GitOps YAML dashboards unless the user explicitly asks for dashboard-as-code.
 
+For normal multi-card dashboard layout, use view-level layout such as `type: masonry` with cards directly under the view. **Never wrap multiple dashboard cards in a Lovelace `grid` card unless the user explicitly says: "put everything in a single card".** A `grid` card is itself one constrained card and can make the layout narrow/tiny; it is not the same thing as a full-width masonry dashboard layout.
+
 In this homelab repo, do **not** add Lovelace dashboard YAML to `kubernetes/apps/homeassistant/configuration.yaml`, ConfigMaps, or Deployment mounts by default. That causes Flux/Kubernetes config changes and can restart Home Assistant.
 
 ## Quick workflow
@@ -80,18 +82,13 @@ with open(path) as f:
 # Edit only doc['data']['config']; preserve version/minor_version/key/data wrapper.
 doc['data']['config'] = {
   'views': [{
+    'type': 'masonry',
     'title': 'Cameras',
     'path': 'cameras',
     'icon': 'mdi:cctv',
-    'cards': [{
-      'type': 'grid',
-      'title': 'Cameras',
-      'columns': 2,
-      'square': False,
-      'cards': [
-        {'type':'picture-entity','entity':'camera.front_door_live_view','name':'Front Door','camera_view':'live','show_state':False},
-      ],
-    }]
+    'cards': [
+      {'type':'picture-entity','entity':'camera.front_door_live_view','name':'Front Door','camera_view':'live','show_state':False},
+    ],
   }]
 }
 
