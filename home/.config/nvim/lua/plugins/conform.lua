@@ -24,7 +24,6 @@ local config_dependent_fts = {
   javascriptreact = true,
   typescript = true,
   typescriptreact = true,
-  json = true,
   markdown = true,
   graphql = true,
   html = true,

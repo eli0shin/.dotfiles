@@ -2,7 +2,7 @@
 
 Tracked first-pass Pi extensions for this dotfiles setup.
 
-- `permission-gate.ts`: ask before dangerous bash commands
+- `permission-gate.ts`: ask/block bash commands matching `permissionGate.bash` patterns in Pi settings
 - `protected-paths.ts`: block writes to secret or generated paths
 - `status-line.ts`: show simple turn progress in the footer
 - `model-status.ts`: show the active model in the footer

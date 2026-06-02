@@ -16,6 +16,18 @@
       "maxRetryDelayMs": 60000
     }
   },
+  "permissionGate": {
+    "bash": {
+      "ask": [
+        "\\brm\\s+(-rf?|--recursive)",
+        "\\bsudo\\b",
+        "\\bgit\\s+push\\b",
+        "\\bgit\\s+reset\\s+--hard\\b",
+        "\\b(chmod|chown)\\b.*777"
+      ],
+      "block": []
+    }
+  },
   "packages": [
     "npm:pi-web-access",
     "npm:@benvargas/pi-exa-mcp"
