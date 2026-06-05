@@ -63,5 +63,14 @@
     "command": "sst",
     "install": "curl -fsSL https://sst.dev/install | bash",
     "update": "sst upgrade"
+  },
+  {
+    "command": "datadog_mcp_cli",
+    "install": "curl -sSL https://coterm.datadoghq.com/mcp-cli/install.sh | bash"
+  },
+  {
+    "command": "mcp2cli",
+    "install": "uv tool install mcp2cli",
+    "update": "uv tool upgrade mcp2cli"
   }
 ]

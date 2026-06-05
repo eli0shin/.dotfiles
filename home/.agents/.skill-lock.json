@@ -120,6 +120,15 @@
       "pluginName": "mattpocock-skills",
       "installedAt": "2026-05-11T15:13:55.547Z",
       "updatedAt": "2026-05-11T15:13:55.547Z"
+    },
+    "mcp2cli": {
+      "source": "knowsuchagency/mcp2cli",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/knowsuchagency/mcp2cli.git",
+      "skillPath": "skills/mcp2cli/SKILL.md",
+      "skillFolderHash": "0fcf46091538967b93c6e32a62d1a7e238be83aa",
+      "installedAt": "2026-06-05T01:33:12.139Z",
+      "updatedAt": "2026-06-05T01:33:12.139Z"
     }
   },
   "dismissed": {
@@ -128,17 +137,16 @@
   "lastSelectedAgents": [
     "amp",
     "antigravity",
+    "antigravity-cli",
     "cline",
     "codex",
     "cursor",
     "deepagents",
-    "dexto",
-    "firebender",
     "gemini-cli",
     "github-copilot",
-    "kimi-cli",
+    "kimi-code-cli",
     "opencode",
     "warp",
-    "claude-code"
+    "zed"
   ]
 }
