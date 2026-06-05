@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec mcp2cli --mcp 'https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=core,alerting,dashboards,ddsql,error-tracking,kubernetes,widgets,code-exec,rum' --oauth "$@"
