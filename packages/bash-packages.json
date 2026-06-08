@@ -25,6 +25,11 @@
     "update": "bun upgrade"
   },
   {
+    "command": "pi",
+    "install": "curl -fsSL https://pi.dev/install.sh | sh",
+    "update": "pi update"
+  },
+  {
     "command": "repos",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/repos/main/install.sh | bash",
     "update": "repos update"
