@@ -13,7 +13,7 @@ local function header(repo_root, count)
     'Repo: ' .. repo_root,
     'Open comments: ' .. count,
     '',
-    'Keys: <CR> open file, e edit comment, dd delete, X clear all, r refresh, q close',
+    'Keys: <CR> open file, e edit comment, R run comment/selection, dd delete, X clear all, r refresh, q close',
     '',
   }
 end
@@ -109,6 +109,20 @@ local function find_comment_at_cursor()
   return nil
 end
 
+local function find_comments_in_range(start_line, end_line)
+  if start_line > end_line then
+    start_line, end_line = end_line, start_line
+  end
+
+  local comments = {}
+  for l = start_line, end_line do
+    if state.by_line[l] then
+      table.insert(comments, state.by_line[l])
+    end
+  end
+  return comments
+end
+
 function M.open(opts)
   vim.cmd 'enew'
   local bufnr = vim.api.nvim_get_current_buf()
@@ -160,6 +174,28 @@ function M.open(opts)
     vim.api.nvim_win_set_cursor(0, { c.selection.start.line, math.max(c.selection.start.col - 1, 0) })
   end
 
+  local function run_current()
+    local c = find_comment_at_cursor()
+    if c and opts.run_comments then
+      opts.run_comments { c }
+    end
+  end
+
+  local function run_visual_selection()
+    local start_line = vim.fn.line "'<"
+    local end_line = vim.fn.line "'>"
+    local comments = find_comments_in_range(start_line, end_line)
+    if #comments == 0 then
+      local c = find_comment_at_cursor()
+      if c then
+        comments = { c }
+      end
+    end
+    if #comments > 0 and opts.run_comments then
+      opts.run_comments(comments)
+    end
+  end
+
   local function clear_all()
     local answer = vim.fn.confirm('Clear all diff review comments for this repo?', '&Yes\n&No', 2)
     if answer == 1 then
@@ -172,6 +208,8 @@ function M.open(opts)
   vim.keymap.set('n', 'r', refresh, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'dd', delete_current, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'e', edit_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('n', 'R', run_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('x', 'R', run_visual_selection, { buffer = bufnr, silent = true })
   vim.keymap.set('n', '<CR>', open_current_file, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'X', clear_all, { buffer = bufnr, silent = true })
 

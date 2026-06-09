@@ -109,6 +109,9 @@ function M.list_comments()
       store.clear_repo(state.config.storage_path, repo_root)
       notify('Cleared all comments for repo')
     end,
+    run_comments = function(comments)
+      M.run_comments(comments)
+    end,
   }
 end
 
@@ -122,9 +125,9 @@ function M.clear_comments()
   notify('Cleared all comments for repo')
 end
 
-function M.run_comments()
+function M.run_comments(comments)
   local repo_root = context.current_repo_root()
-  local comments = store.get_open_comments(state.config.storage_path, repo_root)
+  comments = comments or store.get_open_comments(state.config.storage_path, repo_root)
   if #comments == 0 then
     notify('No open comments to run', vim.log.levels.WARN)
     return
@@ -159,7 +162,7 @@ function M.run_comments()
     prompt_file = prompt_file,
   })
 
-  notify('Running review prompt with ' .. provider_name)
+  notify(string.format('Running review prompt with %s (%d comments)', provider_name, #comments))
 end
 
 local function set_keymaps()

@@ -106,6 +106,7 @@ The list view (`<leader>dcl`) shows all open comments with code previews and dif
 | `e`    | Edit comment text    |
 | `dd`   | Delete comment       |
 | `X`    | Clear all comments   |
+| `R`    | Run comment under cursor, or visually selected comment headers |
 | `r`    | Refresh list         |
 | `q`    | Close                |
 
