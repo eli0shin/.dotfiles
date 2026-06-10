@@ -1,10 +1,7 @@
 local M = {}
 
 local state = {
-  term_bufnr = nil,
   term_winid = nil,
-  shell_job_id = nil,
-  cwd = nil,
 }
 
 local function expand(template, vars)
@@ -31,28 +28,19 @@ function M.run(opts)
     comment_count = opts.comment_count,
   })
 
-  local function valid_buf(bufnr)
-    return bufnr and vim.api.nvim_buf_is_valid(bufnr)
-  end
-
   local function valid_win(winid)
     return winid and vim.api.nvim_win_is_valid(winid)
   end
 
-  local function ensure_terminal_buffer(cwd)
-    if valid_buf(state.term_bufnr) then
-      return state.term_bufnr
-    end
-
+  local function create_terminal_buffer(cwd)
     local bufnr = vim.api.nvim_create_buf(true, false)
-    local name = string.format('diff-review-comments://terminal/%s', cwd)
+    local name = string.format('diff-review-comments://terminal/%s/%s', vim.fn.fnamemodify(cwd, ':t'), vim.uv.hrtime())
     pcall(vim.api.nvim_buf_set_name, bufnr, name)
 
     vim.bo[bufnr].bufhidden = 'hide'
     vim.bo[bufnr].swapfile = false
     vim.bo[bufnr].filetype = 'diff-review-comments-terminal'
 
-    state.term_bufnr = bufnr
     return bufnr
   end
 
@@ -71,43 +59,19 @@ function M.run(opts)
     return winid
   end
 
-  local function job_running(job_id)
-    if not job_id or job_id <= 0 then
-      return false
-    end
-    return vim.fn.jobwait({ job_id }, 0)[1] == -1
-  end
-
-  local function ensure_shell_job(bufnr, cwd)
-    if job_running(state.shell_job_id) and state.cwd == cwd then
-      return state.shell_job_id
-    end
-
-    local shell = vim.o.shell
-    local job_id = nil
-    vim.api.nvim_buf_call(bufnr, function()
-      job_id = vim.fn.termopen(shell, { cwd = cwd })
-    end)
-
-    if not job_id or job_id <= 0 then
-      return nil
-    end
-
-    state.shell_job_id = job_id
-    state.cwd = cwd
-    return job_id
-  end
-
-  local bufnr = ensure_terminal_buffer(opts.cwd)
+  local bufnr = create_terminal_buffer(opts.cwd)
   ensure_terminal_window(bufnr)
 
-  local shell_job_id = ensure_shell_job(bufnr, opts.cwd)
-  if not shell_job_id then
+  local job_id = nil
+  vim.api.nvim_buf_call(bufnr, function()
+    job_id = vim.fn.termopen(cmd, { cwd = opts.cwd })
+  end)
+
+  if not job_id or job_id <= 0 then
     vim.notify('Failed to open terminal for provider command', vim.log.levels.ERROR)
     return
   end
 
-  vim.fn.chansend(shell_job_id, cmd .. '\n')
   vim.cmd.startinsert()
 end
 

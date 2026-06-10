@@ -13,7 +13,7 @@ local function header(repo_root, count)
     'Repo: ' .. repo_root,
     'Open comments: ' .. count,
     '',
-    'Keys: <CR> open file, e edit comment, R run comment/selection, dd delete, X clear all, r refresh, q close',
+    'Keys: <CR> open file, e edit comment, r run, R run+delete, dd delete, visual d delete, <leader>r refresh, X clear all, q close',
     '',
   }
 end
@@ -89,7 +89,9 @@ local function render(bufnr, repo_root, comments)
     for _, line in ipairs(chunk) do
       table.insert(lines, line)
     end
-    state.by_line[start_line] = c
+    for line = start_line, #lines do
+      state.by_line[line] = c
+    end
   end
 
   if #comments == 0 then
@@ -115,9 +117,12 @@ local function find_comments_in_range(start_line, end_line)
   end
 
   local comments = {}
+  local seen = {}
   for l = start_line, end_line do
-    if state.by_line[l] then
-      table.insert(comments, state.by_line[l])
+    local comment = state.by_line[l]
+    if comment and not seen[comment.id] then
+      table.insert(comments, comment)
+      seen[comment.id] = true
     end
   end
   return comments
@@ -144,6 +149,24 @@ function M.open(opts)
     end
     opts.delete_comment(c)
     refresh()
+  end
+
+  local function delete_visual_selection()
+    local start_line = vim.fn.line "'<"
+    local end_line = vim.fn.line "'>"
+    local comments = find_comments_in_range(start_line, end_line)
+    if #comments == 0 then
+      local c = find_comment_at_cursor()
+      if c then
+        comments = { c }
+      end
+    end
+    for _, c in ipairs(comments) do
+      opts.delete_comment(c)
+    end
+    if #comments > 0 then
+      refresh()
+    end
   end
 
   local function edit_current()
@@ -196,6 +219,34 @@ function M.open(opts)
     end
   end
 
+  local function run_then_delete_current()
+    local c = find_comment_at_cursor()
+    if c and opts.run_comments then
+      opts.run_comments { c }
+      opts.delete_comment(c)
+      refresh()
+    end
+  end
+
+  local function run_then_delete_visual_selection()
+    local start_line = vim.fn.line "'<"
+    local end_line = vim.fn.line "'>"
+    local comments = find_comments_in_range(start_line, end_line)
+    if #comments == 0 then
+      local c = find_comment_at_cursor()
+      if c then
+        comments = { c }
+      end
+    end
+    if #comments > 0 and opts.run_comments then
+      opts.run_comments(comments)
+      for _, c in ipairs(comments) do
+        opts.delete_comment(c)
+      end
+      refresh()
+    end
+  end
+
   local function clear_all()
     local answer = vim.fn.confirm('Clear all diff review comments for this repo?', '&Yes\n&No', 2)
     if answer == 1 then
@@ -205,11 +256,14 @@ function M.open(opts)
   end
 
   vim.keymap.set('n', 'q', '<cmd>bdelete<cr>', { buffer = bufnr, silent = true })
-  vim.keymap.set('n', 'r', refresh, { buffer = bufnr, silent = true })
+  vim.keymap.set('n', '<leader>r', refresh, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'dd', delete_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('x', 'd', delete_visual_selection, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'e', edit_current, { buffer = bufnr, silent = true })
-  vim.keymap.set('n', 'R', run_current, { buffer = bufnr, silent = true })
-  vim.keymap.set('x', 'R', run_visual_selection, { buffer = bufnr, silent = true })
+  vim.keymap.set('n', 'r', run_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('x', 'r', run_visual_selection, { buffer = bufnr, silent = true })
+  vim.keymap.set('n', 'R', run_then_delete_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('x', 'R', run_then_delete_visual_selection, { buffer = bufnr, silent = true })
   vim.keymap.set('n', '<CR>', open_current_file, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'X', clear_all, { buffer = bufnr, silent = true })
 
