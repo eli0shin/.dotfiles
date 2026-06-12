@@ -20,6 +20,7 @@ return {
         'vimdoc',
         'javascript',
         'typescript',
+        'tsx',
       }
 
       -- Enable treesitter highlighting and indentation per filetype
