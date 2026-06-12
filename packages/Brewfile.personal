@@ -12,7 +12,7 @@ mas "OneDrive", id: 823766827
 mas "Pages", id: 409201541
 mas "Perplexity", id: 6714467650
 mas "Vimlike", id: 1584519802
-mas "WhatsApp", id: 310633997
+# mas "WhatsApp", id: 310633997
 mas "Xcode", id: 497799835
 
 brew "jdtls"
