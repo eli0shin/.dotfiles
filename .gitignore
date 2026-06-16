@@ -8,6 +8,10 @@
 **/.env
 **/.env.*
 
+# Docker: track only config.json, not runtime/state files
+home/.docker/*
+!home/.docker/config.json
+
 # State and cache
 **/lazy-lock.json
 **/node_modules/
