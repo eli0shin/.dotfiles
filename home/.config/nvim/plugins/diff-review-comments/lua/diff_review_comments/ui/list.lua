@@ -1,6 +1,7 @@
 local M = {}
 
 local input_float = require 'diff_review_comments.ui.input_float'
+local prompt = require 'diff_review_comments.prompt'
 local utils = require 'diff_review_comments.utils'
 
 local state = {
@@ -13,7 +14,7 @@ local function header(repo_root, count)
     'Repo: ' .. repo_root,
     'Open comments: ' .. count,
     '',
-    'Keys: <CR> open file, e edit comment, r run, R run+delete, dd delete, visual d delete, <leader>r refresh, X clear all, q close',
+    'Keys: <CR> open file, e edit comment, r run, R run+delete, dd delete, xx/visual x yank+delete, visual d delete, <leader>r refresh, X clear all, q close',
     '',
   }
 end
@@ -151,7 +152,7 @@ function M.open(opts)
     refresh()
   end
 
-  local function delete_visual_selection()
+  local function comments_from_visual_selection()
     local start_line = vim.fn.line "'<"
     local end_line = vim.fn.line "'>"
     local comments = find_comments_in_range(start_line, end_line)
@@ -161,12 +162,46 @@ function M.open(opts)
         comments = { c }
       end
     end
+    return comments
+  end
+
+  local function delete_visual_selection()
+    local comments = comments_from_visual_selection()
     for _, c in ipairs(comments) do
       opts.delete_comment(c)
     end
     if #comments > 0 then
       refresh()
     end
+  end
+
+  local function yank_then_delete_comments(comments)
+    if #comments == 0 then
+      return
+    end
+
+    local text = prompt.build(opts.repo_root, comments)
+    vim.fn.setreg('"', text)
+    if vim.fn.has 'clipboard' == 1 then
+      vim.fn.setreg('+', text)
+    end
+
+    for _, c in ipairs(comments) do
+      opts.delete_comment(c)
+    end
+    refresh()
+    vim.notify(string.format('Yanked and deleted %d diff review comment(s)', #comments))
+  end
+
+  local function yank_then_delete_current()
+    local c = find_comment_at_cursor()
+    if c then
+      yank_then_delete_comments { c }
+    end
+  end
+
+  local function yank_then_delete_visual_selection()
+    yank_then_delete_comments(comments_from_visual_selection())
   end
 
   local function edit_current()
@@ -205,15 +240,7 @@ function M.open(opts)
   end
 
   local function run_visual_selection()
-    local start_line = vim.fn.line "'<"
-    local end_line = vim.fn.line "'>"
-    local comments = find_comments_in_range(start_line, end_line)
-    if #comments == 0 then
-      local c = find_comment_at_cursor()
-      if c then
-        comments = { c }
-      end
-    end
+    local comments = comments_from_visual_selection()
     if #comments > 0 and opts.run_comments then
       opts.run_comments(comments)
     end
@@ -229,15 +256,7 @@ function M.open(opts)
   end
 
   local function run_then_delete_visual_selection()
-    local start_line = vim.fn.line "'<"
-    local end_line = vim.fn.line "'>"
-    local comments = find_comments_in_range(start_line, end_line)
-    if #comments == 0 then
-      local c = find_comment_at_cursor()
-      if c then
-        comments = { c }
-      end
-    end
+    local comments = comments_from_visual_selection()
     if #comments > 0 and opts.run_comments then
       opts.run_comments(comments)
       for _, c in ipairs(comments) do
@@ -258,7 +277,9 @@ function M.open(opts)
   vim.keymap.set('n', 'q', '<cmd>bdelete<cr>', { buffer = bufnr, silent = true })
   vim.keymap.set('n', '<leader>r', refresh, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'dd', delete_current, { buffer = bufnr, silent = true })
+  vim.keymap.set('n', 'xx', yank_then_delete_current, { buffer = bufnr, silent = true })
   vim.keymap.set('x', 'd', delete_visual_selection, { buffer = bufnr, silent = true })
+  vim.keymap.set('x', 'x', yank_then_delete_visual_selection, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'e', edit_current, { buffer = bufnr, silent = true })
   vim.keymap.set('n', 'r', run_current, { buffer = bufnr, silent = true })
   vim.keymap.set('x', 'r', run_visual_selection, { buffer = bufnr, silent = true })
