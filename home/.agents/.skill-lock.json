@@ -129,6 +129,15 @@
       "skillFolderHash": "0fcf46091538967b93c6e32a62d1a7e238be83aa",
       "installedAt": "2026-06-05T01:33:12.139Z",
       "updatedAt": "2026-06-05T01:33:12.139Z"
+    },
+    "code-review-skill": {
+      "source": "awesome-skills/code-review-skill",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/awesome-skills/code-review-skill.git",
+      "skillPath": "SKILL.md",
+      "skillFolderHash": "17267ff26b95dcea28c3dae76f9931cdf9604520",
+      "installedAt": "2026-06-16T15:35:45.088Z",
+      "updatedAt": "2026-06-16T15:35:45.088Z"
     }
   },
   "dismissed": {
