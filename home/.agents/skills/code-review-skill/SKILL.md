@@ -94,6 +94,24 @@ Before diving into code, understand:
 4. Understand the business requirement
 5. Note any relevant architectural decisions
 
+### Phase 1.5: PR Claim Verification
+
+Before line-by-line review, extract the PR's thesis and try to falsify it.
+
+1. **Summarize the PR thesis in one sentence** — what must now be true if this PR is correct?
+2. **List 2–5 concrete claims the PR makes**, such as:
+   - Behavior claims: "X now happens"
+   - Contract claims: "API Y returns Z" / "header A causes behavior B"
+   - Safety claims: "fallback is safe" / "no worse than today"
+   - Equivalence claims: "same as existing path" / "mirrors implementation X"
+   - Rollout claims: "gated", "temporary", "backward compatible"
+   - Test claims: "fully covered"
+3. **Verify each claim independently** in code, tests, docs, or the relevant upstream/downstream service. If proof lives outside the current repo and you can inspect it, inspect it. If you cannot inspect it, mark the claim unverified rather than accepting it.
+4. **Treat unsupported or contradicted claims as review findings.** A PR can be locally well-written and still not do what it says.
+5. **Be especially skeptical of soothing language**: "safe fallback", "temporary", "no worse than today", "same as", "fully tested", "just wiring", "already supported". Ask what evidence would make that statement true.
+
+Do not let the PR description frame the review as settled fact. Use it as a claim list to prove or disprove.
+
 
 ### Phase 2: High-Level Review
 
