@@ -22,6 +22,7 @@ set -gx EDITOR nvim
 set -gx CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR 1
 set -gx OPENCODE_EXPERIMENTAL 1
 set -gx OPENCODE_ENABLE_EXA 1
+set -gx DD_TOKEN_STORAGE file
 
 # Set turborepo remote cache token
 set -gx TURBO_TOKEN c2F2ZS11cy10dXJibw==
