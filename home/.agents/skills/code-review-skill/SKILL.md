@@ -40,6 +40,7 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 - Nitpick formatting (use linters)
 - Block progress unnecessarily
 - Rewrite to your preference
+- Comment on mocks because their internal implementation is simpler than or different from production code
 
 ### 2. Effective Feedback
 
@@ -93,7 +94,6 @@ Before diving into code, understand:
 4. Understand the business requirement
 5. Note any relevant architectural decisions
 
-> For large diffs, pipe the diff through [`scripts/pr-analyzer.py`](scripts/pr-analyzer.py) (`git diff main...HEAD | python scripts/pr-analyzer.py`) to triage complexity and get a suggested review approach before reading.
 
 ### Phase 2: High-Level Review (5-10 minutes)
 
@@ -114,6 +114,45 @@ For each file, check:
 - **Performance** - N+1 queries, unnecessary loops, memory leaks
 - **Maintainability** - Clear names, single responsibility, comments
 - **Reuse** - Before accepting new code, search for existing utilities/helpers that could replace it. Check adjacent files and shared modules for similar patterns. See [Universal Quality Guide](reference/code-quality-universal.md) for anti-patterns like parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, and no-op updates.
+
+### Mock Contract Rule
+
+When reviewing mocks, stubs, fakes, or spies, evaluate only their **external contract**:
+
+Do not EVER compare mock logic to production logic. Only comment when the mock’s public interface shape is wrong for the code under test: sync vs async, argument list, returned type/shape, error/rejection shape, or required side effects. Do not object that a mock uses simpler conditions than production. That is exactly what mocks are supposed to do
+
+- Accepted inputs / call signature
+- Returned output shape and type
+- Async vs sync behavior
+- Thrown/rejected error shape when the unit under test branches on it
+- Externally observable side effects when relevant to the test
+
+Always call out a mock when its external contract does not match the production dependency. Examples:
+
+- Production returns `Promise<T>`, but the mock returns plain `T`
+- Production can return `null`, but the mock setup makes `null` impossible in a test that depends on it
+- Production returns `{ status, data }`, but the mock returns only `data`
+- The mock accepts different arguments than production and would not catch a bad call site
+- Production throws/rejects a specific error shape that the unit branches on, but the mock cannot produce it
+
+Do **not** comment when the mock differs only in internal implementation. A mock is not supposed to duplicate production logic.
+
+Before commenting on a mock, classify the issue:
+
+- **External contract mismatch** → valid review comment
+- **Internal implementation difference** → do not comment
+
+```markdown
+❌ Invalid comment:
+"`isAuthenticated` mock checks `Boolean(session.auth)` but production checks token expiry. Please copy the production logic."
+
+Why invalid: same input contract, same boolean output contract; the difference is internal logic.
+
+✅ Valid comment:
+"`getSession` is async in production, but this mock returns a session object synchronously. If the code under test forgets to await it, this test could still pass. Please return a Promise from the mock."
+
+Why valid: async/sync behavior is part of the external contract.
+```
 
 ### Phase 4: Summary & Decision (2-3 minutes)
 
