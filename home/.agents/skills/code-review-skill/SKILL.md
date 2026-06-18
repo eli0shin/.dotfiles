@@ -85,7 +85,7 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 
 ## Review Process
 
-### Phase 1: Context Gathering (2-3 minutes)
+### Phase 1: Context Gathering
 
 Before diving into code, understand:
 1. Read PR description and linked issue
@@ -95,7 +95,7 @@ Before diving into code, understand:
 5. Note any relevant architectural decisions
 
 
-### Phase 2: High-Level Review (5-10 minutes)
+### Phase 2: High-Level Review
 
 1. **Architecture & Design** - Does the solution fit the problem?
    - For significant changes, consult [Architecture Review Guide](reference/architecture-review-guide.md)
@@ -106,7 +106,7 @@ Before diving into code, understand:
 3. **File Organization** - Are new files in the right places?
 4. **Testing Strategy** - Are there tests covering edge cases?
 
-### Phase 3: Line-by-Line Review (10-20 minutes)
+### Phase 3: Line-by-Line Review
 
 For each file, check:
 - **Logic & Correctness** - Edge cases, off-by-one, null checks, race conditions
@@ -154,7 +154,7 @@ Why invalid: same input contract, same boolean output contract; the difference i
 Why valid: async/sync behavior is part of the external contract.
 ```
 
-### Phase 4: Summary & Decision (2-3 minutes)
+### Phase 4: Summary & Decision
 
 1. Summarize key concerns
 2. Highlight what you liked
