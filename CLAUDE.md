@@ -18,6 +18,8 @@ dot update --packages # Also update Homebrew packages
 dot doctor            # Check installation health
 dot merge             # Merge config files (*.base.json -> *.json)
 dot edit              # Open dotfiles in $EDITOR
+dot benchmark-shell [-r N] [-v]  # Benchmark Fish shell startup performance
+dot completions       # Generate Fish shell completions for the dot command
 
 # Package management
 dot package add <pkg>                      # Add brew package (auto-detects cask)

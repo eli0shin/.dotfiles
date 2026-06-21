@@ -22,6 +22,9 @@ dot update            # Pull repo and re-stow
 dot update --packages # Also update Homebrew packages
 dot doctor            # Check installation health
 dot edit              # Open dotfiles in editor
+dot benchmark-shell   # Benchmark Fish shell startup performance
+dot benchmark-shell -r 20 -v  # 20 runs with per-run timing
+dot completions       # Generate Fish shell completions for `dot`
 dot package add <pkg> # Add package to Brewfile
 dot package remove <pkg> # Remove package
 dot package list      # List packages
