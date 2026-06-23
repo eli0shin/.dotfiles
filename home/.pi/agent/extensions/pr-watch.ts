@@ -24,7 +24,8 @@ type WatchState = {
 type Check = {
   name?: string;
   state?: string;
-  conclusion?: string;
+  bucket?: string;
+  workflow?: string;
   link?: string;
   completedAt?: string;
 };
@@ -162,15 +163,34 @@ export default function prWatch(pi: ExtensionAPI): void {
       "pr",
       "checks",
       "--json",
-      "name,state,conclusion,link,completedAt",
+      "name,state,bucket,workflow,link,completedAt",
     ], ctx);
     return checks ?? [];
   }
 
+  function isApprovalWaitingCheck(check: Check): boolean {
+    const completedAt = check.completedAt ?? "";
+    return (
+      (check.state ?? "").toLowerCase() === "waiting" &&
+      (check.bucket ?? "").toLowerCase() === "pending" &&
+      completedAt.startsWith("0001-01-01") &&
+      (check.link ?? "").includes("/actions/runs/") &&
+      Boolean(check.workflow)
+    );
+  }
+
   function isTerminalCheck(check: Check): boolean {
-    if (check.conclusion) return true;
     const stateValue = (check.state ?? "").toLowerCase();
-    return Boolean(stateValue) && !["pending", "queued", "in_progress", "requested", "waiting"].includes(stateValue);
+    const bucketValue = (check.bucket ?? "").toLowerCase();
+
+    // GitHub Actions deployment jobs paused for environment approval show up as
+    // WAITING/pending with no completion timestamp. Some repos approve these only
+    // after merge, so don't let them keep PR-watch pending forever.
+    if (isApprovalWaitingCheck(check)) return true;
+
+    return Boolean(stateValue || bucketValue) && ![stateValue, bucketValue].some((value) =>
+      ["pending", "queued", "in_progress", "requested", "waiting"].includes(value),
+    );
   }
 
   async function fetchActivityIds(ctx: ExtensionContext): Promise<string[]> {
