@@ -7,6 +7,9 @@
 !settings.base.json
 !settings.personal.json
 !settings.work.json
+!models.base.json
+!models.personal.json
+!models.work.json
 !extensions/
 !extensions/**
 !skills/

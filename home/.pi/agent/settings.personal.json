@@ -4,6 +4,7 @@
   "enabledModels": [
     "openai-codex/gpt-5.5",
     "anthropic/claude-sonnet-4-6",
-    "anthropic/claude-opus-4-8"
+    "anthropic/claude-opus-4-8",
+    "zai/glm-5.2"
   ]
 }
