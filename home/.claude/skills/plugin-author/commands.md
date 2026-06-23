@@ -240,7 +240,7 @@ Next steps:
 
 - Implement the feature
 - Write tests
-- Use /review when ready
+- Use /code-review when ready
 - Use /deploy when done
 ```
 
@@ -269,7 +269,7 @@ Running comprehensive code review:
 Provide detailed feedback and approval recommendation.
 ```
 
-Usage: `/review`
+Usage: `/code-review`
 
 ## Command Best Practices
 

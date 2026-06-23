@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAdvisoryMessage, buildReviewPrompt } from "../review-message.ts";
-import { findReviewError, getFinalAssistantText, isReviewFailure } from "../review-runner.ts";
+import { buildAdvisoryMessage, buildReviewPrompt } from "../code-review-message.ts";
+import { findReviewError, getFinalAssistantText, isReviewFailure } from "../code-review-runner.ts";
 
 test("buildReviewPrompt references the skill and read-only intent", () => {
   const p = buildReviewPrompt();
-  assert.match(p, /code-review-skill/);
+  assert.match(p, /using the code-review skill/);
+  assert.doesNotMatch(p, /code-review-skill/);
   assert.match(p, /uncommitted changes/);
   assert.match(p, /Do not modify any files/);
 });

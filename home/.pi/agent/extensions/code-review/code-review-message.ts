@@ -1,5 +1,5 @@
 const BASE_PROMPT = [
-  "Review the current changes using the code-review-skill.",
+  "Review the current changes using the code-review skill.",
   "If there are uncommitted changes, review those; otherwise review the changes on this branch/PR against its base.",
   "Do not modify any files. Report findings grouped by severity with file:line and a concrete suggested fix, then a short overall verdict.",
 ].join(" ");

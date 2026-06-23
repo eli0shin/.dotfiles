@@ -57,14 +57,14 @@ export interface RunReviewOptions {
 
 /**
  * Run the review as an isolated, in-process pi session via the SDK.
- * Uses default resource discovery (so the code-review-skill is available).
+ * Uses default resource discovery (so the code-review is available).
  */
 export async function runReview(
   prompt: string,
   cwd: string,
   options: RunReviewOptions = {},
 ): Promise<ReviewResult> {
-  // Isolated session: discover skills (for code-review-skill) but NOT other
+  // Isolated session: discover skills (for code-review) but NOT other
   // user extensions, which would otherwise be loaded into the review process.
   const loader = new DefaultResourceLoader({
     cwd,

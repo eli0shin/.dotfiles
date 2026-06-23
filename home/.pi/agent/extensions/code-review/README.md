@@ -5,7 +5,7 @@ main conversation context.
 
 Two entry points:
 
-- **`/review`** — slash command. Runs the review, then surfaces findings in a UI
+- **`/code-review`** — slash command. Runs the review, then surfaces findings in a UI
   overlay with **Send to agent / Save to file / Ignore**. Nothing is injected into
   the conversation unless you choose *Send to agent*.
 - **`run_code_review`** — tool the main agent can call to self-review its own
@@ -14,13 +14,13 @@ Two entry points:
 
 Both entry points create an isolated SDK session with extensions disabled and an
 explicit tool allowlist: `read`, `grep`, `find`, `ls`, and `bash`. The subagent is
-instructed to use the `code-review-skill` and not modify files.
+instructed to use the `code-review` skill and not modify files.
 
-## `/review` usage
+## `/code-review` usage
 
 ```text
-/review                          # current changes, or branch/PR changes vs base
-/review focus on tests           # same review, with extra guidance
+/code-review                          # current changes, or branch/PR changes vs base
+/code-review focus on tests           # same review, with extra guidance
 ```
 
 Arguments are treated as optional focus guidance for the reviewer. Scoped review
@@ -32,9 +32,9 @@ an overlay with the markdown-rendered findings and the action choices.
 ## Files
 
 - `index.ts` — command + tool registration and orchestration
-- `review-runner.ts` — creates the isolated SDK session, streams output, and reports failures
-- `review-message.ts` — builds the review task prompt and the advisory message
-- `review-ui.ts` — the overlay and in-progress widget
+- `code-review-runner.ts` — creates the isolated SDK session, streams output, and reports failures
+- `code-review-message.ts` — builds the review task prompt and the advisory message
+- `code-review-ui.ts` — the overlay and in-progress widget
 - `types.ts` — shared types
 
 ## Development

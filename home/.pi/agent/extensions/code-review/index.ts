@@ -2,7 +2,7 @@
  * Code Review extension
  *
  * Adds:
- *   - `/review` slash command: runs a review subagent against the current
+ *   - `/code-review` slash command: runs a review subagent against the current
  *     changes, surfaces findings in a UI overlay, and ONLY sends them to the
  *     main agent if the user chooses "Send to agent".
  *   - `run_code_review` tool: lets the main agent review its own changes. The
@@ -10,7 +10,7 @@
  *
  * The review runs as an isolated in-process pi session via the SDK (the
  * equivalent of `pi -p "review the current changes"`), uses the
- * code-review-skill, and provides a review of the code changes.
+ * code-review skill, and provides a review of the code changes.
  */
 
 import * as fs from "node:fs";
@@ -19,18 +19,18 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { buildAdvisoryMessage, buildReviewPrompt } from "./review-message.ts";
-import { isReviewFailure, runReview } from "./review-runner.ts";
-import { presentReview } from "./review-ui.ts";
+import { buildAdvisoryMessage, buildReviewPrompt } from "./code-review-message.ts";
+import { isReviewFailure, runReview } from "./code-review-runner.ts";
+import { presentReview } from "./code-review-ui.ts";
 import type { ReviewResult } from "./types.ts";
 
 export default function (pi: ExtensionAPI) {
-  // -------- /review command --------
-  pi.registerCommand("review", {
+  // -------- /code-review command --------
+  pi.registerCommand("code-review", {
     description: "Review the current changes; choose whether to send the findings to the agent",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
-        ctx.ui.notify("/review requires interactive mode", "error");
+        ctx.ui.notify("/code-review requires interactive mode", "error");
         return;
       }
       if (!ctx.isIdle()) {
@@ -75,7 +75,7 @@ export default function (pi: ExtensionAPI) {
         pi.sendUserMessage(buildAdvisoryMessage(result.output));
         ctx.ui.notify("Review findings sent to the agent.", "info");
       } else if (action === "save") {
-        const file = path.join(os.tmpdir(), `pi-review-${Date.now()}.md`);
+        const file = path.join(os.tmpdir(), `pi-code-review-${Date.now()}.md`);
         fs.writeFileSync(file, `# Code Review\n\n${result.output}\n`, "utf8");
         ctx.ui.notify(`Review saved to ${file}`, "info");
       } else {
@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
     label: "Run Code Review",
     description: [
       "Run a code-review subagent against the current changes and return its findings.",
-      "The subagent uses the code-review-skill and provides a review of the code changes.",
+      "The subagent uses the code-review skill and provides a review of the code changes.",
       "Use this after completing non-trivial code changes to self-review before finishing.",
     ].join(" "),
     promptSnippet: "Run a code review of the current changes and return findings",
