@@ -85,6 +85,27 @@ Transform code reviews from gatekeeping to knowledge sharing through constructiv
 
 ## Review Process
 
+### Publishing PR Comments
+
+Default to a local review only.
+
+Do not post GitHub/GitLab/Bitbucket PR comments, submit reviews, approve, request changes, or otherwise mutate the PR unless the user explicitly asks to publish/post/add/submit comments or a review.
+
+Examples that DO permit publishing:
+- "add these comments to the PR"
+- "submit this review"
+- "post this as a request changes review"
+- "approve the PR"
+
+Examples that DO NOT permit publishing:
+- "review this PR"
+- "rereview"
+- "pull latest and rereview"
+- "what do you think?"
+- "are there any blockers?"
+
+For non-publishing review requests, report findings in chat and ask before posting them.
+
 ### Phase 1: Context Gathering
 
 Before diving into code, understand:

@@ -263,7 +263,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.lastNotifyAt = Date.now();
         await notifyAgent(
           ctx,
-          `CI finished for the current PR.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If the checks passed, briefly summarize that. If they failed, diagnose and fix them.\n\nPR: ${state.watchedPr.url}\nHead SHA: ${state.watchedPr.headSha}`,
+          `CI finished for the current PR.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing check is not sufficient on its own. If any check involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the check's logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the checks passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nPR: ${state.watchedPr.url}\nHead SHA: ${state.watchedPr.headSha}`,
         );
       }
 
