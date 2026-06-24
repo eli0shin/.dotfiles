@@ -83,7 +83,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function startPolling(ctx: ExtensionContext): void {
     if (interval || !state.enabled || !state.active || !state.watchedPr) return;
-    interval = setInterval(() => void poll(ctx, "interval"), POLL_INTERVAL_MS);
+    interval = setInterval(() => void poll(ctx), POLL_INTERVAL_MS);
     setStatus(ctx);
   }
 
@@ -127,10 +127,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
     if (!repo?.nameWithOwner) return false;
 
-    const previousKey = state.watchedPr ? `${state.watchedPr.repo}#${state.watchedPr.number}` : undefined;
-    const nextKey = `${repo.nameWithOwner}#${pr.number}`;
-    const headChanged = state.watchedPr?.headSha !== pr.headRefOid;
-
     state.active = true;
     state.watchedPr = {
       repo: repo.nameWithOwner,
@@ -140,16 +136,12 @@ export default function prWatch(pi: ExtensionAPI): void {
       headSha: pr.headRefOid,
     };
 
-    if (previousKey !== nextKey || headChanged) {
-      state.notifiedChecksKey = undefined;
-      state.seenActivityIds = await fetchActivityIds(ctx);
-    }
+    await baselineCurrentPrState(ctx);
 
     state.lastError = undefined;
     save();
     startPolling(ctx);
     if (notify) ctx.ui.notify(`PR watch active for #${pr.number} (${reason}).`, "info");
-    await poll(ctx, "discover", { suppressInitialNotifications: true });
     return true;
   }
 
@@ -188,6 +180,23 @@ export default function prWatch(pi: ExtensionAPI): void {
     );
   }
 
+  function checksCompletionKey(headSha: string, checks: Check[]): string {
+    const checkSignature = checks
+      .map((check) => [check.workflow, check.name, check.state, check.bucket, check.completedAt, check.link].join("|"))
+      .sort()
+      .join(";");
+    return `${headSha}:${checkSignature}`;
+  }
+
+  async function baselineCurrentPrState(ctx: ExtensionContext): Promise<void> {
+    const checks = await fetchChecks(ctx);
+    state.notifiedChecksKey =
+      checks.length > 0 && checks.every(isTerminalCheck)
+        ? checksCompletionKey(state.watchedPr?.headSha ?? "", checks)
+        : undefined;
+    state.seenActivityIds = await fetchActivityIds(ctx);
+  }
+
   async function fetchActivityIds(ctx: ExtensionContext): Promise<string[]> {
     if (!state.watchedPr) return [];
     const { repo, number } = state.watchedPr;
@@ -217,7 +226,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     else pi.sendUserMessage(message, { deliverAs: "followUp" });
   }
 
-  async function poll(ctx: ExtensionContext, reason: string, options: { suppressInitialNotifications?: boolean } = {}): Promise<void> {
+  async function poll(ctx: ExtensionContext): Promise<void> {
     if (polling || !state.enabled || !state.active || !state.watchedPr) return;
     polling = true;
 
@@ -241,13 +250,9 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       const checks = await fetchChecks(ctx);
       const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
-      const checksKey = `${state.watchedPr.headSha}:complete`;
+      const checksKey = checksCompletionKey(state.watchedPr.headSha, checks);
 
-      if (
-        allChecksTerminal &&
-        state.notifiedChecksKey !== checksKey &&
-        !options.suppressInitialNotifications
-      ) {
+      if (allChecksTerminal && state.notifiedChecksKey !== checksKey) {
         state.notifiedChecksKey = checksKey;
         state.lastNotifyAt = Date.now();
         await notifyAgent(
@@ -260,7 +265,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       const seen = new Set(state.seenActivityIds);
       const newActivityIds = currentActivityIds.filter((id) => !seen.has(id));
 
-      if (newActivityIds.length > 0 && !options.suppressInitialNotifications) {
+      if (newActivityIds.length > 0) {
         state.lastNotifyAt = Date.now();
         await notifyAgent(
           ctx,
@@ -298,8 +303,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (state.enabled && state.active && state.watchedPr) {
-      startPolling(ctx);
-      void poll(ctx, "startup", { suppressInitialNotifications: true });
+      await discover(ctx, "startup", false);
     }
   });
 
