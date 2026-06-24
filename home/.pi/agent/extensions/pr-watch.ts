@@ -13,8 +13,6 @@ type WatchState = {
   active: boolean;
   watchedPr?: WatchedPr;
   seenActivityIds: string[];
-  checkHeadSha?: string;
-  checksHadPending: boolean;
   notifiedChecksKey?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -49,7 +47,6 @@ const initialState = (): WatchState => ({
   enabled: true,
   active: false,
   seenActivityIds: [],
-  checksHadPending: false,
 });
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -144,8 +141,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     };
 
     if (previousKey !== nextKey || headChanged) {
-      state.checkHeadSha = pr.headRefOid;
-      state.checksHadPending = false;
       state.notifiedChecksKey = undefined;
       state.seenActivityIds = await fetchActivityIds(ctx);
     }
@@ -241,21 +236,15 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       if (latest.headRefOid !== state.watchedPr.headSha) {
         state.watchedPr.headSha = latest.headRefOid;
-        state.checkHeadSha = latest.headRefOid;
-        state.checksHadPending = false;
         state.notifiedChecksKey = undefined;
       }
 
       const checks = await fetchChecks(ctx);
       const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
-      const checksPending = checks.length > 0 && !allChecksTerminal;
       const checksKey = `${state.watchedPr.headSha}:complete`;
 
-      if (checksPending) {
-        state.checksHadPending = true;
-      } else if (
+      if (
         allChecksTerminal &&
-        state.checksHadPending &&
         state.notifiedChecksKey !== checksKey &&
         !options.suppressInitialNotifications
       ) {
