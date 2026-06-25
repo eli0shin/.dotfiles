@@ -27,7 +27,7 @@
   {
     "command": "pi",
     "install": "curl -fsSL https://pi.dev/install.sh | sh",
-    "update": "pi update"
+    "update": "pi update --all"
   },
   {
     "command": "repos",

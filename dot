@@ -1169,15 +1169,15 @@ cmd_package() {
 
             # Always install base packages
             info "Installing from Brewfile..."
-            brew bundle --file="$PACKAGES_DIR/Brewfile"
+            brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some Brewfile packages failed to install"
 
             # Install profile-specific brew packages
             if [[ "$profile" == "personal" && -f "$PACKAGES_DIR/Brewfile.personal" ]]; then
                 info "Installing from Brewfile.personal..."
-                brew bundle --file="$PACKAGES_DIR/Brewfile.personal"
+                brew bundle --file="$PACKAGES_DIR/Brewfile.personal" || warn "Some personal Brewfile packages failed to install"
             elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
                 info "Installing from Brewfile.work..."
-                brew bundle --file="$PACKAGES_DIR/Brewfile.work"
+                brew bundle --file="$PACKAGES_DIR/Brewfile.work" || warn "Some work Brewfile packages failed to install"
             fi
 
             echo ""
