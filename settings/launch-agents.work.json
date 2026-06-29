@@ -1,0 +1,10 @@
+[
+  {
+    "label": "com.dotfiles.github-pr-review-notifier",
+    "script": "~/.dotfiles/scripts/github-pr-review-notifier.sh",
+    "run_at_load": true,
+    "start_interval_seconds": 300,
+    "stdout_log": "~/Library/Logs/dotfiles/github-pr-review-notifier.log",
+    "stderr_log": "~/Library/Logs/dotfiles/github-pr-review-notifier.err.log"
+  }
+]

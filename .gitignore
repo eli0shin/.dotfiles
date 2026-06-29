@@ -38,6 +38,7 @@ home/.config/opencode/otel.json
 home/.config/opencode/package.json
 settings/defaults.json
 settings/keyboard.json
+settings/launch-agents.json
 settings/pmset.json
 settings/services.json
 
