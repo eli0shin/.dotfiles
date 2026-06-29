@@ -18,9 +18,11 @@
   },
   "permissionGate": {
     "bash": {
+      "askCommands": [
+        "rm",
+        "sudo"
+      ],
       "ask": [
-        "\\brm\\s+(-rf?|--recursive)",
-        "\\bsudo\\b",
         "\\bgit\\s+push\\b(?:(?![;&|]).)*(?:(?:^|\\s)(?:refs/heads/)?(?:main|master)(?=$|\\s)|:(?:refs/heads/)?(?:main|master)(?=$|\\s))",
         "\\bgit\\s+reset\\s+--hard\\b",
         "\\b(chmod|chown)\\b.*777"

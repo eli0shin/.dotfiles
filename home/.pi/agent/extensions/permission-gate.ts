@@ -5,6 +5,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 type BashPermissionGateSettings = {
   ask?: string[];
+  askCommands?: string[];
   block?: string[];
 };
 
@@ -45,44 +46,110 @@ function compilePatterns(patterns: string[] | undefined): RegExp[] {
   return (patterns ?? []).map((pattern) => new RegExp(pattern, "i"));
 }
 
-function tokenizeSimpleCommand(command: string): string[] | undefined {
-  if (/[;&|`$()<>\n]/.test(command)) return undefined;
+type Token = { value: string; quoted: boolean };
 
-  const tokens: string[] = [];
-  let token = "";
+// Splits a command line into "simple command" segments (one per pipeline
+// stage, &&/||/; branch, subshell, command substitution, redirection target,
+// etc.). Each token tracks whether any of its characters came from inside
+// quotes so callers can ignore quoted data when matching dangerous patterns.
+// Returns undefined only when the input cannot be parsed (unterminated quote).
+function parseSegments(command: string): Token[][] | undefined {
+  const segments: Token[][] = [];
+  let tokens: Token[] = [];
+  let value = "";
+  let quoted = false;
+  let hasChar = false;
   let quote: "'" | '"' | undefined;
+
+  const endToken = (): void => {
+    if (hasChar) tokens.push({ value, quoted });
+    value = "";
+    quoted = false;
+    hasChar = false;
+  };
+  const endSegment = (): void => {
+    endToken();
+    if (tokens.length) {
+      segments.push(tokens);
+      tokens = [];
+    }
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
+    const next = command[index + 1];
 
     if (quote) {
       if (char === quote) {
         quote = undefined;
       } else {
-        token += char;
+        value += char;
+        quoted = true;
+        hasChar = true;
       }
       continue;
     }
 
     if (char === "'" || char === '"') {
       quote = char;
+      hasChar = true;
       continue;
     }
 
-    if (/\s/.test(char)) {
-      if (token) {
-        tokens.push(token);
-        token = "";
+    if (char === "\\") {
+      if (next !== undefined) {
+        value += next;
+        hasChar = true;
+        index += 1;
       }
       continue;
     }
 
-    token += char;
+    // Command substitution: treat the inner command as its own segment.
+    if (char === "$" && next === "(") {
+      endSegment();
+      index += 1;
+      continue;
+    }
+
+    // Shell operators / redirections separate one simple command from another.
+    if (
+      char === ";" ||
+      char === "\n" ||
+      char === "&" ||
+      char === "|" ||
+      char === "(" ||
+      char === ")" ||
+      char === "<" ||
+      char === ">" ||
+      char === "`"
+    ) {
+      endSegment();
+      if ((char === "&" || char === "|" || char === ">") && next === char) index += 1;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      endToken();
+      continue;
+    }
+
+    value += char;
+    hasChar = true;
   }
 
   if (quote) return undefined;
-  if (token) tokens.push(token);
-  return tokens;
+  endSegment();
+  return segments;
+}
+
+// Text used for pattern matching: quoted tokens are dropped so that data
+// (e.g. a grep pattern containing "rm -rf") never trips the gate.
+function segmentMatchText(segment: Token[]): string {
+  return segment
+    .filter((token) => !token.quoted)
+    .map((token) => token.value)
+    .join(" ");
 }
 
 function isAllowedRmOption(option: string): boolean {
@@ -94,26 +161,27 @@ function isDirectTmpChild(path: string): boolean {
   return Boolean(child) && child !== "." && child !== ".." && !child?.includes("/");
 }
 
-function isTmpRmCommand(command: string): boolean {
-  const tokens = tokenizeSimpleCommand(command.trim());
-  if (!tokens || tokens[0] !== "rm") return false;
-
+// True when an `rm` segment only removes direct children of /tmp using
+// recursive/force flags — safe enough to skip the prompt. Uses unquoted token
+// values, so quoting flags or paths cannot smuggle a dangerous rm past us.
+function isSafeTmpRm(segment: Token[]): boolean {
   let sawPath = false;
   let parsingOptions = true;
 
-  for (const token of tokens.slice(1)) {
-    if (parsingOptions && token === "--") {
+  for (const token of segment.slice(1)) {
+    const value = token.value;
+    if (parsingOptions && value === "--") {
       parsingOptions = false;
       continue;
     }
 
-    if (parsingOptions && token.startsWith("-") && token !== "-") {
-      if (!isAllowedRmOption(token)) return false;
+    if (parsingOptions && value.startsWith("-") && value !== "-") {
+      if (!isAllowedRmOption(value)) return false;
       continue;
     }
 
     sawPath = true;
-    if (!isDirectTmpChild(token)) return false;
+    if (!isDirectTmpChild(value)) return false;
   }
 
   return sawPath;
@@ -128,13 +196,39 @@ export default function permissionGate(pi: ExtensionAPI): void {
     const blockPatterns = compilePatterns(settings.block);
     const askPatterns = compilePatterns(settings.ask);
 
+    // Block list is matched against the raw command (no quote stripping) so an
+    // explicit deny cannot be evaded by quoting.
     if (blockPatterns.some((pattern) => pattern.test(command))) {
       return { block: true, reason: "Command blocked by permissionGate.bash.block" };
     }
 
-    if (!askPatterns.some((pattern) => pattern.test(command))) return undefined;
+    const askCommands = new Set(settings.askCommands ?? []);
+    const segments = parseSegments(command.trim());
 
-    if (isTmpRmCommand(command)) return undefined;
+    let needsAsk: boolean;
+    if (!segments) {
+      // Unparseable (unterminated quote): fall back to whole-command matching.
+      needsAsk = askPatterns.some((pattern) => pattern.test(command));
+    } else {
+      needsAsk = segments.some((segment) => {
+        const first = segment[0];
+        if (!first || first.quoted) return false;
+
+        // `rm` has path semantics: ask unless it is a proven-safe /tmp cleanup.
+        if (first.value === "rm" && askCommands.has("rm")) {
+          return !isSafeTmpRm(segment);
+        }
+
+        // Other command rules are structural: only the command position counts,
+        // so grep/echo data containing "sudo" never trips the gate.
+        if (askCommands.has(first.value)) return true;
+
+        const text = segmentMatchText(segment);
+        return text.length > 0 && askPatterns.some((pattern) => pattern.test(text));
+      });
+    }
+
+    if (!needsAsk) return undefined;
 
     if (!ctx.hasUI) {
       return { block: true, reason: "Dangerous command blocked without interactive confirmation" };
