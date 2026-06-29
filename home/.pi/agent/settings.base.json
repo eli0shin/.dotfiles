@@ -31,8 +31,7 @@
     }
   },
   "packages": [
-    "npm:pi-web-access",
-    "npm:@benvargas/pi-exa-mcp"
+    "npm:pi-exa"
   ],
   "extensions": [
     "-extensions/otel-tracing/index.ts"

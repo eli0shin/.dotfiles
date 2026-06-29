@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-QUERY='is:pr state:open -is:draft archived:false (user-review-requested:@me OR team-review-requested:fanatics-gaming/ffs-engineering) -author:@me'
+USER_REVIEW_QUERY='is:pr state:open -is:draft archived:false user-review-requested:@me -author:@me'
+TEAM_REVIEW_QUERY='is:pr state:open -is:draft archived:false team-review-requested:fanatics-gaming/ffs-engineering -author:@me'
 REVIEWS_URL='https://github.com/pulls/reviews?q=is%3Apr+state%3Aopen+-is%3Adraft+archived%3Afalse+sort%3Aupdated-desc+%28user-review-requested%3A%40me+OR+team-review-requested%3Afanatics-gaming%2Fffs-engineering%29+-author%3A%40me'
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/github-pr-review-notifier"
 STATE_FILE="$STATE_DIR/pr-ids.txt"
@@ -15,13 +16,20 @@ command -v terminal-notifier >/dev/null 2>&1 || exit 0
 
 mkdir -p "$STATE_DIR"
 
-if ! gh api -X GET search/issues \
-  -f q="$QUERY" \
-  -f sort=updated \
-  -f order=desc \
-  --paginate \
-  --jq '.items[].node_id' \
-  | sort -u > "$TMP_FILE"; then
+if ! {
+  gh api -X GET search/issues \
+    -f q="$USER_REVIEW_QUERY" \
+    -f sort=updated \
+    -f order=desc \
+    --paginate \
+    --jq '.items[].node_id'
+  gh api -X GET search/issues \
+    -f q="$TEAM_REVIEW_QUERY" \
+    -f sort=updated \
+    -f order=desc \
+    --paginate \
+    --jq '.items[].node_id'
+} | sort -u > "$TMP_FILE"; then
   rm -f "$TMP_FILE"
   exit 0
 fi
