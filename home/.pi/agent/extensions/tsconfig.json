@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "moduleResolution": "node",
+    "module": "esnext",
+    "target": "es2022",
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "types": ["node"],
+    "typeRoots": ["otel-tracing/node_modules/@types"],
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/opt/homebrew/Cellar/pi-coding-agent/0.79.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ]
+    }
+  },
+  "include": ["*.ts", "test/**/*.ts"],
+  "exclude": ["otel-tracing/node_modules"]
+}

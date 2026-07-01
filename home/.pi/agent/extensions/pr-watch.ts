@@ -8,10 +8,16 @@ type WatchedPr = {
   headSha: string;
 };
 
+type WatchedSha = {
+  repo: string;
+  sha: string;
+};
+
 type WatchState = {
   enabled: boolean;
   active: boolean;
   watchedPr?: WatchedPr;
+  watchedSha?: WatchedSha;
   seenActivityIds: string[];
   notifiedChecksKey?: string;
   lastPollAt?: number;
@@ -26,6 +32,17 @@ type Check = {
   workflow?: string;
   link?: string;
   completedAt?: string;
+};
+
+type WorkflowRun = {
+  databaseId?: number;
+  name?: string;
+  workflowName?: string;
+  status?: string;
+  conclusion?: string;
+  url?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 type Activity = {
@@ -78,11 +95,16 @@ export default function prWatch(pi: ExtensionAPI): void {
       return;
     }
 
+    if (state.active && state.watchedSha) {
+      ctx.ui.setStatus("pr-watch", `SHA ${state.watchedSha.sha.slice(0, 7)} watch`);
+      return;
+    }
+
     ctx.ui.setStatus("pr-watch", undefined);
   }
 
   function startPolling(ctx: ExtensionContext): void {
-    if (interval || !state.enabled || !state.active || !state.watchedPr) return;
+    if (interval || !state.enabled || !state.active || (!state.watchedPr && !state.watchedSha)) return;
     interval = setInterval(() => void poll(ctx), POLL_INTERVAL_MS);
     setStatus(ctx);
   }
@@ -107,6 +129,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   async function discover(ctx: ExtensionContext, reason: string, notify = true): Promise<boolean> {
     if (!state.enabled) return false;
 
+    const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
+    if (!repo?.nameWithOwner) return false;
+
     const pr = await execJson<{
       number: number;
       url: string;
@@ -115,34 +140,46 @@ export default function prWatch(pi: ExtensionAPI): void {
       state: string;
     }>("gh", ["pr", "view", "--json", "number,url,headRefName,headRefOid,state"], ctx);
 
-    if (!pr || pr.state !== "OPEN") {
-      state.active = false;
-      state.watchedPr = undefined;
-      stopPolling(ctx);
+    if (pr?.state === "OPEN") {
+      state.active = true;
+      state.watchedSha = undefined;
+      state.watchedPr = {
+        repo: repo.nameWithOwner,
+        number: pr.number,
+        url: pr.url,
+        branch: pr.headRefName,
+        headSha: pr.headRefOid,
+      };
+
+      await baselineCurrentPrState(ctx);
+
+      state.lastError = undefined;
       save();
-      if (notify) ctx.ui.notify("PR watch is armed; no open PR found for this branch.", "info");
-      return false;
+      startPolling(ctx);
+      if (notify) ctx.ui.notify(`PR watch active for #${pr.number} (${reason}).`, "info");
+      return true;
     }
 
-    const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
-    if (!repo?.nameWithOwner) return false;
+    const sha = await currentSha();
+    if (!sha) return false;
 
     state.active = true;
-    state.watchedPr = {
-      repo: repo.nameWithOwner,
-      number: pr.number,
-      url: pr.url,
-      branch: pr.headRefName,
-      headSha: pr.headRefOid,
-    };
-
-    await baselineCurrentPrState(ctx);
+    state.watchedPr = undefined;
+    state.watchedSha = { repo: repo.nameWithOwner, sha };
+    await baselineCurrentShaState(ctx);
 
     state.lastError = undefined;
     save();
     startPolling(ctx);
-    if (notify) ctx.ui.notify(`PR watch active for #${pr.number} (${reason}).`, "info");
+    if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
     return true;
+  }
+
+  async function currentSha(): Promise<string | undefined> {
+    const result = await pi.exec("git", ["rev-parse", "HEAD"], { timeout: 30_000 });
+    const sha = result.stdout.trim();
+    if (result.code !== 0 || !sha) return undefined;
+    return sha;
   }
 
   async function fetchChecks(ctx: ExtensionContext): Promise<Check[]> {
@@ -153,6 +190,19 @@ export default function prWatch(pi: ExtensionAPI): void {
       "name,state,bucket,workflow,link,completedAt",
     ], ctx);
     return checks ?? [];
+  }
+
+  async function fetchRunsForSha(ctx: ExtensionContext): Promise<WorkflowRun[]> {
+    if (!state.watchedSha) return [];
+    const runs = await execJson<WorkflowRun[]>("gh", [
+      "run",
+      "list",
+      "--commit",
+      state.watchedSha.sha,
+      "--json",
+      "databaseId,name,workflowName,status,conclusion,url,createdAt,updatedAt",
+    ], ctx);
+    return runs ?? [];
   }
 
   function isApprovalWaitingCheck(check: Check): boolean {
@@ -188,6 +238,18 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `${headSha}:${checkSignature}`;
   }
 
+  function isTerminalRun(run: WorkflowRun): boolean {
+    return (run.status ?? "").toLowerCase() === "completed";
+  }
+
+  function runsCompletionKey(sha: string, runs: WorkflowRun[]): string {
+    const runSignature = runs
+      .map((run) => [run.databaseId, run.workflowName, run.name, run.status, run.conclusion, run.url].join("|"))
+      .sort()
+      .join(";");
+    return `${sha}:${runSignature}`;
+  }
+
   async function baselineCurrentPrState(ctx: ExtensionContext): Promise<void> {
     const checks = await fetchChecks(ctx);
     state.notifiedChecksKey =
@@ -195,6 +257,13 @@ export default function prWatch(pi: ExtensionAPI): void {
         ? checksCompletionKey(state.watchedPr?.headSha ?? "", checks)
         : undefined;
     state.seenActivityIds = await fetchActivityIds(ctx);
+  }
+
+  async function baselineCurrentShaState(ctx: ExtensionContext): Promise<void> {
+    const runs = await fetchRunsForSha(ctx);
+    state.notifiedChecksKey =
+      runs.length > 0 && runs.every(isTerminalRun) ? runsCompletionKey(state.watchedSha?.sha ?? "", runs) : undefined;
+    state.seenActivityIds = [];
   }
 
   async function fetchActivityIds(ctx: ExtensionContext): Promise<string[]> {
@@ -227,10 +296,17 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function poll(ctx: ExtensionContext): Promise<void> {
-    if (polling || !state.enabled || !state.active || !state.watchedPr) return;
+    if (polling || !state.enabled || !state.active || (!state.watchedPr && !state.watchedSha)) return;
     polling = true;
 
     try {
+      if (state.watchedSha) {
+        await pollSha(ctx);
+        return;
+      }
+
+      if (!state.watchedPr) return;
+
       const latest = await execJson<{
         headRefOid: string;
         state: string;
@@ -286,6 +362,28 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
   }
 
+  async function pollSha(ctx: ExtensionContext): Promise<void> {
+    if (!state.watchedSha) return;
+
+    const runs = await fetchRunsForSha(ctx);
+    const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
+    const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
+
+    if (allRunsTerminal && state.notifiedChecksKey !== runsKey) {
+      state.notifiedChecksKey = runsKey;
+      state.lastNotifyAt = Date.now();
+      await notifyAgent(
+        ctx,
+        `CI finished for the current SHA.\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the run logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the runs passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nRepo: ${state.watchedSha.repo}\nSHA: ${state.watchedSha.sha}`,
+      );
+    }
+
+    state.lastPollAt = Date.now();
+    state.lastError = undefined;
+    save();
+    setStatus(ctx);
+  }
+
   function isActivationCommand(command: string): boolean {
     return /(^|[;&|\n]\s*)gh\s+pr\s+(create|view|ready|edit|checkout)\b/.test(command);
   }
@@ -302,7 +400,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     }
 
-    if (state.enabled && state.active && state.watchedPr) {
+    if (state.enabled && state.active && (state.watchedPr || state.watchedSha)) {
       await discover(ctx, "startup", false);
     }
   });
@@ -365,12 +463,14 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
 
       const watched = state.watchedPr
-        ? `#${state.watchedPr.number} ${state.watchedPr.url}\nbranch: ${state.watchedPr.branch}\nhead: ${state.watchedPr.headSha}`
-        : "none";
+        ? `PR #${state.watchedPr.number} ${state.watchedPr.url}\nbranch: ${state.watchedPr.branch}\nhead: ${state.watchedPr.headSha}`
+        : state.watchedSha
+          ? `SHA ${state.watchedSha.sha}\nrepo: ${state.watchedSha.repo}`
+          : "none";
       const lines = [
         `PR watch: ${state.enabled ? "enabled" : "disabled"}`,
-        `mode: ${state.active && state.watchedPr ? "active" : "dormant"}`,
-        `watched PR: ${watched}`,
+        `mode: ${state.active && (state.watchedPr || state.watchedSha) ? "active" : "dormant"}`,
+        `watched target: ${watched}`,
         `seen human activity: ${state.seenActivityIds.length}`,
         `last poll: ${state.lastPollAt ? new Date(state.lastPollAt).toLocaleString() : "never"}`,
         `last notify: ${state.lastNotifyAt ? new Date(state.lastNotifyAt).toLocaleString() : "never"}`,

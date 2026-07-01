@@ -1,9 +1,10 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function statusLine(pi: ExtensionAPI): void {
   let turnCount = 0;
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason === "new") turnCount = 0;
     ctx.ui.setStatus("turn-status", ctx.ui.theme.fg("dim", "ready"));
   });
 
@@ -20,10 +21,4 @@ export default function statusLine(pi: ExtensionAPI): void {
     ctx.ui.setStatus("turn-status", prefix + text);
   });
 
-  pi.on("session_switch", async (event, ctx) => {
-    if (event.reason !== "new") return;
-
-    turnCount = 0;
-    ctx.ui.setStatus("turn-status", ctx.ui.theme.fg("dim", "ready"));
-  });
 }
