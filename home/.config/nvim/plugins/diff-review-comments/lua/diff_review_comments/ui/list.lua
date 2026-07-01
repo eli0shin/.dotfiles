@@ -153,8 +153,11 @@ function M.open(opts)
   end
 
   local function comments_from_visual_selection()
-    local start_line = vim.fn.line "'<"
-    local end_line = vim.fn.line "'>"
+    -- Read the live selection from within the Visual-mode mapping. The '< and
+    -- '> marks are only updated when leaving Visual mode, so they hold the
+    -- previous selection here; getpos('v')/getpos('.') give the current bounds.
+    local start_line = vim.fn.getpos('v')[2]
+    local end_line = vim.fn.getpos('.')[2]
     local comments = find_comments_in_range(start_line, end_line)
     if #comments == 0 then
       local c = find_comment_at_cursor()

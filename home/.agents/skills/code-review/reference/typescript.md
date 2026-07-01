@@ -26,7 +26,7 @@ function processData(data: any) {
 }
 
 // ✅ Use proper types
-interface DataPayload {
+type DataPayload  ={
   value: string;
 }
 function processData(data: DataPayload) {
@@ -59,8 +59,8 @@ function getLength(value: string | string[]): number {
 }
 
 // ✅ Use the in operator
-interface Dog { bark(): void }
-interface Cat { meow(): void }
+type Dog = { bark(): void }
+type Cat = { meow(): void }
 
 function speak(animal: Dog | Cat) {
   if ('bark' in animal) {
@@ -135,7 +135,7 @@ getProperty(user, 'foo');   // Error: 'foo' is not in keyof User
 
 ```typescript
 // ✅ Provide a sensible default type
-interface ApiResponse<T = unknown> {
+type ApiResponse<T = unknown> = {
   data: T;
   status: number;
   message: string;
@@ -151,7 +151,7 @@ const userResponse: ApiResponse<User> = { ... };
 
 ```typescript
 // ✅ Make good use of built-in utility types
-interface User {
+type User = {
   id: number;
   name: string;
   email: string;
