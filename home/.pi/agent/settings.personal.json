@@ -3,8 +3,9 @@
   "defaultModel": "gpt-5.5",
   "enabledModels": [
     "openai-codex/gpt-5.5",
-    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-sonnet-5",
     "anthropic/claude-opus-4-8",
+    "anthropic/claude-fable-5",
     "zai/glm-5.2"
   ]
 }
