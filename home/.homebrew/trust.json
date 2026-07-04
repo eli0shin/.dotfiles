@@ -1,0 +1,10 @@
+{
+  "trustedtaps": [
+    "anomalyco/tap",
+    "hashicorp/tap",
+    "jnsahaj/lumen",
+    "nikitabobko/tap",
+    "opencode-ai/tap",
+    "sst/tap"
+  ]
+}
