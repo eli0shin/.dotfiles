@@ -41,6 +41,24 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Check if command exists
 has() { command -v "$1" &>/dev/null; }
 
+_brew_shellenv_path() {
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        echo /opt/homebrew/bin/brew
+    elif [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+        echo /home/linuxbrew/.linuxbrew/bin/brew
+    elif command -v brew >/dev/null 2>&1; then
+        command -v brew
+    fi
+}
+
+_load_brew_shellenv() {
+    local brew_bin
+    brew_bin="$(_brew_shellenv_path)"
+    if [[ -n "$brew_bin" ]]; then
+        eval "$("$brew_bin" shellenv)"
+    fi
+}
+
 # =============================================================================
 # Bash Package Helpers
 # =============================================================================
@@ -830,10 +848,12 @@ cmd_init() {
     if ! has brew; then
         info "Installing Homebrew..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        eval "$(/opt/homebrew/bin/brew shellenv)"
+        _load_brew_shellenv
     else
         success "Homebrew already installed"
     fi
+
+    _load_brew_shellenv
 
     # Install stow if needed
     if ! has stow; then
@@ -870,7 +890,7 @@ cmd_init() {
     _install_git_hooks
 
     # Stow dotfiles (includes merge)
-    cmd_stow
+    cmd_stow --clean
 
     # Start managed services
     _start_services
