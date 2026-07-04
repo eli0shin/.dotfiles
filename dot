@@ -863,6 +863,11 @@ cmd_init() {
         success "GNU Stow already installed"
     fi
 
+    if has brew; then
+        brew tap hashicorp/tap >/dev/null 2>&1 || true
+        brew trust hashicorp/tap >/dev/null 2>&1 || true
+    fi
+
     # Install brew packages
     if [[ -f "$PACKAGES_DIR/Brewfile" ]]; then
         info "Installing packages from Brewfile..."
