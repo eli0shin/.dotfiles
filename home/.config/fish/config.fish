@@ -1,8 +1,10 @@
-fish_add_path --prepend --path /opt/homebrew/opt/git/bin
+if test -d /opt/homebrew/opt/git/bin
+    fish_add_path --prepend --path /opt/homebrew/opt/git/bin
+end
 fish_add_path --path "$HOME/go/bin"
 fish_add_path --path /usr/local/go/bin
 fish_add_path --path "$HOME/.local/bin/"
-fish_add_path --path "$HOCE/Library/pnpm/bin"
+fish_add_path --path "$HOME/Library/pnpm/bin"
 
 # bun
 set --export BUN_INSTALL "$HOME/.bun"
@@ -29,10 +31,14 @@ set -gx TURBO_TOKEN c2F2ZS11cy10dXJibw==
 
 if status is-interactive
     # setup zoxide
-    zoxide init fish | source
+    if command -q zoxide
+        zoxide init fish | source
+    end
 
     # setup fzf
-    fzf --fish | source
+    if command -q fzf
+        fzf --fish | source
+    end
 end
 
 # Emulates vim's cursor shape behavior
@@ -58,7 +64,9 @@ test -r $local_vars; and source $local_vars
 fish_add_path $HOME/.opencode/bin
 
 # repos CLI work command
-repos init --print | source
+if command -q repos
+    repos init --print | source
+end
 
 # sst
-fish_add_path $HONE/.sst/bin
+fish_add_path $HOME/.sst/bin

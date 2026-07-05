@@ -898,6 +898,8 @@ cmd_init() {
     # Stow dotfiles (includes merge)
     cmd_stow --clean
 
+    _install_omf_bundle
+
     # Start managed services
     _start_services
 
@@ -953,6 +955,23 @@ _install_git_hooks() {
             info "Installed $hook hook"
         fi
     done
+}
+
+_install_omf_bundle() {
+    if ! has fish; then
+        return 0
+    fi
+
+    if [[ ! -f "$HOME/.config/omf/bundle" ]]; then
+        return 0
+    fi
+
+    info "Installing Oh My Fish bundle..."
+    if fish -lc 'type -q omf; and omf install'; then
+        success "Installed Oh My Fish bundle"
+    else
+        warn "Failed to install Oh My Fish bundle"
+    fi
 }
 
 cmd_stow() {
