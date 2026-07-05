@@ -7,7 +7,7 @@ complete -c dot -f
 complete -c dot -n "__fish_use_subcommand" -a "init" -d "Full setup: brew, packages, stow, settings"
 complete -c dot -n "__fish_use_subcommand" -a "stow" -d "Create symlinks with GNU Stow"
 complete -c dot -n "__fish_use_subcommand" -a "unstow" -d "Remove symlinks"
-complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and re-stow"
+complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and run init"
 complete -c dot -n "__fish_use_subcommand" -a "doctor" -d "Check installation health"
 complete -c dot -n "__fish_use_subcommand" -a "edit" -d "Open dotfiles in editor"
 complete -c dot -n "__fish_use_subcommand" -a "package" -d "Manage packages"
@@ -26,9 +26,6 @@ complete -c dot -n "__fish_use_subcommand" -a "help" -d "Show help message"
 
 # stow options
 complete -c dot -n "__fish_seen_subcommand_from stow" -s c -l clean -d "Remove dirs before stowing"
-
-# update options
-complete -c dot -n "__fish_seen_subcommand_from update" -l packages -d "Also update Homebrew packages"
 
 # package subcommands
 complete -c dot -n "__fish_seen_subcommand_from package; and not __fish_seen_subcommand_from add remove install list" -a "add" -d "Add a package"

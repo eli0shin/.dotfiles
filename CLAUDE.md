@@ -13,8 +13,7 @@ dot init              # Full setup: brew, packages, stow, services, system setti
 dot stow              # Create symlinks to ~ (runs merge first)
 dot stow --clean      # Remove dirs before stowing (use when stow conflicts)
 dot unstow            # Remove symlinks
-dot update            # Pull repo and re-stow
-dot update --packages # Also update Homebrew packages
+dot update            # Pull repo and run init
 dot doctor            # Check installation health
 dot merge             # Merge config files (*.base.json -> *.json)
 dot edit              # Open dotfiles in $EDITOR

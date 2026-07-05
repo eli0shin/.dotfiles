@@ -18,8 +18,7 @@ git clone git@github.com:eli0shin/.dotfiles.git ~/.dotfiles
 dot init              # Full setup: brew, packages, stow
 dot stow              # Create symlinks
 dot unstow            # Remove symlinks
-dot update            # Pull repo and re-stow
-dot update --packages # Also update Homebrew packages
+dot update            # Pull repo and run init
 dot doctor            # Check installation health
 dot edit              # Open dotfiles in editor
 dot benchmark-shell   # Benchmark Fish shell startup performance

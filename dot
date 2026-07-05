@@ -1047,55 +1047,17 @@ cmd_unstow() {
 }
 
 cmd_update() {
+    if [[ $# -gt 0 ]]; then
+        error "Usage: dot update"
+        return 1
+    fi
+
     info "Updating dotfiles..."
 
     cd "$DOTFILES_DIR"
 
-    # Pull latest changes
-    if git diff-index --quiet HEAD --; then
-        git pull --rebase
-    else
-        warn "Local changes detected, stashing..."
-        git stash
-        git pull --rebase
-        git stash pop
-    fi
-
-    # Update packages if requested
-    if [[ "${1:-}" == "--packages" ]]; then
-        local profile
-
-        info "Updating Homebrew packages..."
-        brew update || warn "Homebrew update failed"
-
-        if [[ -f "$PACKAGES_DIR/Brewfile" ]]; then
-            brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some Brewfile packages failed to update"
-        fi
-
-        profile=$(_get_profile)
-        if [[ "$profile" == "personal" && -f "$PACKAGES_DIR/Brewfile.personal" ]]; then
-            brew bundle --file="$PACKAGES_DIR/Brewfile.personal" || warn "Some personal Brewfile packages failed to update"
-        elif [[ "$profile" == "work" && -f "$PACKAGES_DIR/Brewfile.work" ]]; then
-            brew bundle --file="$PACKAGES_DIR/Brewfile.work" || warn "Some work Brewfile packages failed to update"
-        fi
-
-        if has bun; then
-            info "Updating npm registry packages with Bun..."
-            _process_npm_packages_file "$NPM_PACKAGES_FILE" update
-
-            if [[ "$profile" == "personal" && -f "$NPM_PACKAGES_PERSONAL_FILE" ]]; then
-                _process_npm_packages_file "$NPM_PACKAGES_PERSONAL_FILE" update
-            elif [[ "$profile" == "work" && -f "$NPM_PACKAGES_WORK_FILE" ]]; then
-                _process_npm_packages_file "$NPM_PACKAGES_WORK_FILE" update
-            fi
-        else
-            warn "Bun is not installed, skipping npm registry package updates"
-        fi
-    fi
-
-    # Merge configs and re-stow
-    cmd_merge || warn "Config merge had issues"
-    cmd_stow
+    git pull
+    cmd_init
 
     success "Update complete"
 }
@@ -1666,7 +1628,7 @@ complete -c dot -f
 complete -c dot -n "__fish_use_subcommand" -a "init" -d "Full setup: brew, packages, stow, settings"
 complete -c dot -n "__fish_use_subcommand" -a "stow" -d "Create symlinks with GNU Stow"
 complete -c dot -n "__fish_use_subcommand" -a "unstow" -d "Remove symlinks"
-complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and re-stow"
+complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and run init"
 complete -c dot -n "__fish_use_subcommand" -a "doctor" -d "Check installation health"
 complete -c dot -n "__fish_use_subcommand" -a "edit" -d "Open dotfiles in editor"
 complete -c dot -n "__fish_use_subcommand" -a "package" -d "Manage packages"
@@ -1686,9 +1648,6 @@ complete -c dot -n "__fish_use_subcommand" -a "help" -d "Show help message"
 
 # stow options
 complete -c dot -n "__fish_seen_subcommand_from stow" -s c -l clean -d "Remove dirs before stowing"
-
-# update options
-complete -c dot -n "__fish_seen_subcommand_from update" -l packages -d "Also update Homebrew packages"
 
 # package subcommands
 complete -c dot -n "__fish_seen_subcommand_from package; and not __fish_seen_subcommand_from add remove install list" -a "add" -d "Add a package"
@@ -1932,7 +1891,7 @@ Commands:
   init              Full setup: brew, packages, stow, config
   stow [-c|--clean] Create symlinks (--clean removes dirs first)
   unstow            Remove symlinks
-  update [--packages]  Pull repo, optionally update packages, re-stow
+  update            Pull repo and run init
   doctor            Check installation health
   edit              Open dotfiles in editor
   package <subcmd>  Manage packages (brew and bash)
