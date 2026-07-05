@@ -958,7 +958,9 @@ _set_login_shell() {
     fi
 
     info "Setting login shell to fish..."
-    if chsh -s "$fish_path"; then
+    if sudo -n chsh -s "$fish_path" "$USER"; then
+        success "Login shell set to $fish_path"
+    elif [[ -t 0 ]] && chsh -s "$fish_path"; then
         success "Login shell set to $fish_path"
     else
         warn "Failed to set login shell"
