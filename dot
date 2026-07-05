@@ -42,6 +42,10 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Check if command exists
 has() { command -v "$1" &>/dev/null; }
 
+_is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+_has_systemd() { [[ -d /run/systemd/system ]] && has systemctl; }
+
 _brew_shellenv_path() {
     if [[ -x /opt/homebrew/bin/brew ]]; then
         echo /opt/homebrew/bin/brew
@@ -297,6 +301,11 @@ LAUNCH_AGENTS_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/launch-a
 LAUNCH_AGENTS_LABELS_FILE="$LAUNCH_AGENTS_STATE_DIR/labels.txt"
 
 _start_services() {
+    if ! _is_macos && ! _has_systemd; then
+        warn "Skipping brew services: requires macOS or Linux with systemd"
+        return 0
+    fi
+
     if [[ ! -f "$SERVICES_FILE" ]]; then
         return 0
     fi
@@ -909,10 +918,14 @@ cmd_init() {
     # Set login shell
     _set_login_shell
 
-    # Apply system settings
-    cmd_pmset apply || warn "pmset settings could not be applied"
-    cmd_defaults apply || warn "macOS defaults could not be applied"
-    cmd_keyboard apply || warn "keyboard remappings could not be applied"
+    # Apply macOS system settings
+    if _is_macos; then
+        cmd_pmset apply || warn "pmset settings could not be applied"
+        cmd_defaults apply || warn "macOS defaults could not be applied"
+        cmd_keyboard apply || warn "keyboard remappings could not be applied"
+    else
+        warn "Skipping macOS system settings on $(uname -s)"
+    fi
 
     success "Initialization complete!"
 }
@@ -926,8 +939,16 @@ _set_login_shell() {
         return 0
     fi
 
-    if [[ "$SHELL" == "$fish_path" ]]; then
+    local current_shell
+    current_shell="$(getent passwd "$USER" 2>/dev/null | cut -d: -f7 || true)"
+
+    if [[ "$SHELL" == "$fish_path" || "$current_shell" == "$fish_path" ]]; then
         success "Login shell already set to fish"
+        return 0
+    fi
+
+    if [[ ! -t 0 ]]; then
+        warn "Skipping login shell setup: chsh may prompt without an interactive TTY"
         return 0
     fi
 
