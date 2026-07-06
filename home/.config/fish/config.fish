@@ -1,6 +1,10 @@
 if test -d /opt/homebrew/opt/git/bin
     fish_add_path --prepend --path /opt/homebrew/opt/git/bin
 end
+if test -d /home/linuxbrew/.linuxbrew/bin
+    fish_add_path --prepend --path /home/linuxbrew/.linuxbrew/bin
+    fish_add_path --prepend --path /home/linuxbrew/.linuxbrew/sbin
+end
 fish_add_path --path "$HOME/go/bin"
 fish_add_path --path /usr/local/go/bin
 fish_add_path --path "$HOME/.local/bin/"
