@@ -46,6 +46,14 @@ _is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 
 _has_systemd() { [[ -d /run/systemd/system ]] && has systemctl; }
 
+_current_platform() {
+    case "$(uname -s)" in
+        Darwin) echo "darwin" ;;
+        Linux) echo "linux" ;;
+        *) echo "" ;;
+    esac
+}
+
 _brew_shellenv_path() {
     if [[ -x /opt/homebrew/bin/brew ]]; then
         echo /opt/homebrew/bin/brew
@@ -74,6 +82,7 @@ BASH_PACKAGES_WORK_FILE="$PACKAGES_DIR/bash-packages.work.json"
 NPM_PACKAGES_FILE="$PACKAGES_DIR/npm-packages"
 NPM_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/npm-packages.personal"
 NPM_PACKAGES_WORK_FILE="$PACKAGES_DIR/npm-packages.work"
+BASH_PACKAGES_UNKNOWN_PLATFORM_WARNED=0
 
 _ensure_bash_packages_file() {
     local file="$1"
@@ -257,14 +266,21 @@ _process_bash_packages_file() {
 
     info "Processing $(basename "$file")..."
 
+    local platform
+    platform="$(_current_platform)"
+    if [[ -z "$platform" && "$BASH_PACKAGES_UNKNOWN_PLATFORM_WARNED" -eq 0 ]]; then
+        warn "Unsupported platform; using top-level bash package commands only"
+        BASH_PACKAGES_UNKNOWN_PLATFORM_WARNED=1
+    fi
+
     local packages
     packages=$(jq -c '.[]' "$file")
 
     while IFS= read -r pkg_json; do
         local cmd install_script update_cmd check_cmd
         cmd=$(echo "$pkg_json" | jq -r '.command')
-        install_script=$(echo "$pkg_json" | jq -r '.install')
-        update_cmd=$(echo "$pkg_json" | jq -r '.update // empty')
+        install_script=$(echo "$pkg_json" | jq -r --arg platform "$platform" '(.platforms[$platform].install | select(. != "")) // .install // empty')
+        update_cmd=$(echo "$pkg_json" | jq -r --arg platform "$platform" '(.platforms[$platform].update | select(. != "")) // .update // empty')
         check_cmd=$(echo "$pkg_json" | jq -r '.check // empty')
 
         if { [[ -n "$check_cmd" ]] && eval "$check_cmd"; } || { [[ -z "$check_cmd" ]] && has "$cmd"; }; then
@@ -280,6 +296,10 @@ _process_bash_packages_file() {
                 success "$cmd already installed"
             fi
         else
+            if [[ -z "$install_script" ]]; then
+                warn "No install command for $cmd on ${platform:-this platform} (continuing...)"
+                continue
+            fi
             info "Installing $cmd..."
             echo "  Running: $install_script"
             if eval "$install_script"; then
@@ -854,6 +874,11 @@ cmd_keyboard() {
 cmd_init() {
     info "Initializing dotfiles..."
 
+    # Load Homebrew from standard install paths before checking PATH. This avoids
+    # reinstalling Linuxbrew when brew exists but the current shell has not loaded
+    # its shellenv yet.
+    _load_brew_shellenv
+
     # Install Homebrew if needed
     if ! has brew; then
         info "Installing Homebrew..."
@@ -862,8 +887,6 @@ cmd_init() {
     else
         success "Homebrew already installed"
     fi
-
-    _load_brew_shellenv
 
     # Install stow if needed
     if ! has stow; then

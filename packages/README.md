@@ -48,3 +48,20 @@ dot package list             # Shows Brewfile contents
 ```
 
 Or manually edit the package files and run `dot package install`.
+
+### Platform-specific bash packages
+
+Bash packages may override `install` and/or `update` for `darwin` and `linux`:
+
+```json
+{
+  "command": "example",
+  "install": "common install command",
+  "platforms": {
+    "darwin": { "install": "macOS install command" },
+    "linux": { "install": "Linux install command" }
+  }
+}
+```
+
+Missing or empty platform commands fall back to the top-level command. If no command is available for the current platform, the package is skipped with a warning.

@@ -46,8 +46,16 @@
   },
   {
     "command": "pup",
-    "install": "mkdir -p ~/.local/bin && gh release download --repo DataDog/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup",
-    "update": "mkdir -p ~/.local/bin && gh release download --repo DataDog/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
+    "platforms": {
+      "darwin": {
+        "install": "mkdir -p ~/.local/bin && gh release download --repo datadog-labs/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup",
+        "update": "mkdir -p ~/.local/bin && gh release download --repo datadog-labs/pup --pattern 'pup_*_Darwin_arm64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
+      },
+      "linux": {
+        "install": "mkdir -p ~/.local/bin && gh release download --repo datadog-labs/pup --pattern 'pup_*_Linux_x86_64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup",
+        "update": "mkdir -p ~/.local/bin && gh release download --repo datadog-labs/pup --pattern 'pup_*_Linux_x86_64.tar.gz' --output /tmp/pup.tar.gz --clobber && tar xzf /tmp/pup.tar.gz -C /tmp && mv /tmp/pup ~/.local/bin/pup"
+      }
+    }
   },
   {
     "command": "omf",
@@ -62,12 +70,28 @@
   },
   {
     "command": "aws",
-    "install": "curl \"https://awscli.amazonaws.com/AWSCLIV2.pkg\" -o \"/tmp/AWSCLIV2.pkg\" && sudo installer -pkg /tmp/AWSCLIV2.pkg -target /"
+    "platforms": {
+      "darwin": {
+        "install": "curl \"https://awscli.amazonaws.com/AWSCLIV2.pkg\" -o \"/tmp/AWSCLIV2.pkg\" && sudo installer -pkg /tmp/AWSCLIV2.pkg -target /"
+      },
+      "linux": {
+        "install": "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"/tmp/awscliv2.zip\" && rm -rf /tmp/aws && unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install",
+        "update": "curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"/tmp/awscliv2.zip\" && rm -rf /tmp/aws && unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install --update"
+      }
+    }
   },
   {
     "command": "kubectl",
-    "install": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl\" && chmod +x ~/.local/bin/kubectl",
-    "update": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl\" && chmod +x ~/.local/bin/kubectl"
+    "platforms": {
+      "darwin": {
+        "install": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl\" && chmod +x ~/.local/bin/kubectl",
+        "update": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/arm64/kubectl\" && chmod +x ~/.local/bin/kubectl"
+      },
+      "linux": {
+        "install": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod +x ~/.local/bin/kubectl",
+        "update": "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod +x ~/.local/bin/kubectl"
+      }
+    }
   },
   {
     "command": "sst",
