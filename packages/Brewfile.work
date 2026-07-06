@@ -1,8 +1,8 @@
-tap "atlassian/homebrew-acli"
+tap "atlassian/homebrew-acli", trusted: true
 brew "acli"
-tap "tilt-dev/tap"
+tap "tilt-dev/tap", trusted: true
 brew "tilt-dev/tap/tilt"
-tap "launchdarkly/homebrew-tap"
+tap "launchdarkly/homebrew-tap", trusted: true
 brew "ldcli"
 # tap "fanatics-gaming/homebrew-tap", "https://github.com/fanatics-gaming/homebrew-tap.git"
 # brew "fanatics-gaming/homebrew-tap/fbg-platform-tools"

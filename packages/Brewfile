@@ -1,8 +1,8 @@
-tap "opencode-ai/tap"
-tap "nikitabobko/tap"
-tap "hashicorp/tap"
-tap "sst/tap"
-tap "jnsahaj/lumen"
+tap "opencode-ai/tap", trusted: true
+tap "nikitabobko/tap", trusted: true
+tap "hashicorp/tap", trusted: true
+tap "sst/tap", trusted: true
+tap "jnsahaj/lumen", trusted: true
 brew "gettext", args: ["build-from-source"]
 brew "ast-grep"
 brew "bash"
