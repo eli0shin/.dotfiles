@@ -6,8 +6,5 @@
     "nikitabobko/tap",
     "opencode-ai/tap",
     "sst/tap"
-  ],
-  "trustedformulae": [
-    "jnsahaj/lumen/lumen"
   ]
 }
