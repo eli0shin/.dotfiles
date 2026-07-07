@@ -2,6 +2,7 @@
   "trustedtaps": [
     "anomalyco/tap",
     "hashicorp/tap",
+    "https://github.com/anomalyco/homebrew-tap.git",
     "jnsahaj/lumen",
     "nikitabobko/tap",
     "opencode-ai/tap",
