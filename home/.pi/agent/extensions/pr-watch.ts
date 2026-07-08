@@ -19,6 +19,8 @@ type WatchState = {
   watchedPr?: WatchedPr;
   watchedSha?: WatchedSha;
   seenActivityIds: string[];
+  recentGhOutputs: string[];
+  selfLogin?: string;
   notifiedChecksKey?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -46,24 +48,34 @@ type WorkflowRun = {
 };
 
 type Activity = {
-  id: string;
+  id?: string | number;
   author?: { login?: string; type?: string; is_bot?: boolean };
   user?: { login?: string; type?: string; is_bot?: boolean };
+};
+
+type ActivityKind = "issue-comment" | "review" | "review-comment";
+
+type TrackedActivity = {
+  id: string;
+  authorLogin?: string;
 };
 
 type BashToolResultLike = {
   toolName: "bash";
   isError?: boolean;
   input: { command: string };
+  content?: unknown[];
 };
 
 const CUSTOM_STATE = "pr-watch-state";
 const POLL_INTERVAL_MS = 60_000;
+const MAX_RECENT_GH_OUTPUTS = 3;
 
 const initialState = (): WatchState => ({
   enabled: true,
   active: false,
   seenActivityIds: [],
+  recentGhOutputs: [],
 });
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -73,6 +85,22 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function isBashToolResultLike(event: unknown): event is BashToolResultLike {
   if (!isObject(event) || event.toolName !== "bash" || !isObject(event.input)) return false;
   return typeof event.input.command === "string";
+}
+
+function isTextContent(value: unknown): value is { text: string } {
+  return isObject(value) && typeof value.text === "string";
+}
+
+function commandUsesGh(command: string): boolean {
+  return command.startsWith("gh ") || command.includes(" gh ");
+}
+
+function textContent(content: unknown[] | undefined): string {
+  return (content ?? []).filter(isTextContent).map((item) => item.text).join("\n");
+}
+
+function bareActivityId(id: string): string {
+  return id.includes(":") ? id.slice(id.lastIndexOf(":") + 1) : id;
 }
 
 export default function prWatch(pi: ExtensionAPI): void {
@@ -141,6 +169,8 @@ export default function prWatch(pi: ExtensionAPI): void {
     }>("gh", ["pr", "view", "--json", "number,url,headRefName,headRefOid,state"], ctx);
 
     if (pr?.state === "OPEN") {
+      await refreshSelfLogin(ctx);
+
       state.active = true;
       state.watchedSha = undefined;
       state.watchedPr = {
@@ -163,6 +193,8 @@ export default function prWatch(pi: ExtensionAPI): void {
     const sha = await currentSha();
     if (!sha) return false;
 
+    await refreshSelfLogin(ctx);
+
     state.active = true;
     state.watchedPr = undefined;
     state.watchedSha = { repo: repo.nameWithOwner, sha };
@@ -180,6 +212,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     const sha = result.stdout.trim();
     if (result.code !== 0 || !sha) return undefined;
     return sha;
+  }
+
+  async function refreshSelfLogin(ctx: ExtensionContext): Promise<void> {
+    const user = await execJson<{ login?: string }>("gh", ["api", "user"], ctx);
+    state.selfLogin = user?.login || undefined;
   }
 
   async function fetchChecks(ctx: ExtensionContext): Promise<Check[]> {
@@ -256,7 +293,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       checks.length > 0 && checks.every(isTerminalCheck)
         ? checksCompletionKey(state.watchedPr?.headSha ?? "", checks)
         : undefined;
-    state.seenActivityIds = await fetchActivityIds(ctx);
+    state.seenActivityIds = (await fetchActivities(ctx)).map((activity) => activity.id);
   }
 
   async function baselineCurrentShaState(ctx: ExtensionContext): Promise<void> {
@@ -266,7 +303,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.seenActivityIds = [];
   }
 
-  async function fetchActivityIds(ctx: ExtensionContext): Promise<string[]> {
+  async function fetchActivities(ctx: ExtensionContext): Promise<TrackedActivity[]> {
     if (!state.watchedPr) return [];
     const { repo, number } = state.watchedPr;
     const [issueComments, reviews, reviewComments] = await Promise.all([
@@ -276,18 +313,39 @@ export default function prWatch(pi: ExtensionAPI): void {
     ]);
 
     return [
-      ...(issueComments ?? []).map((item) => ({ ...item, id: `issue-comment:${item.id}` })),
-      ...(reviews ?? []).map((item) => ({ ...item, id: `review:${item.id}` })),
-      ...(reviewComments ?? []).map((item) => ({ ...item, id: `review-comment:${item.id}` })),
-    ]
-      .filter((item) => item.id && !isBotActivity(item))
-      .map((item) => item.id);
+      ...trackActivities("issue-comment", issueComments),
+      ...trackActivities("review", reviews),
+      ...trackActivities("review-comment", reviewComments),
+    ];
+  }
+
+  function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
+    return (activities ?? [])
+      .filter((activity) => activity.id !== undefined && activity.id !== null && !isBotActivity(activity))
+      .map((activity) => ({
+        id: `${kind}:${activity.id}`,
+        authorLogin: activityAuthorLogin(activity),
+      }));
+  }
+
+  function activityAuthorLogin(activity: Activity): string | undefined {
+    return (activity.author ?? activity.user)?.login;
   }
 
   function isBotActivity(activity: Activity): boolean {
     const author = activity.author ?? activity.user;
     const login = author?.login ?? "";
     return author?.is_bot === true || author?.type === "Bot" || login.endsWith("[bot]");
+  }
+
+  function isSuppressedSelfActivity(activity: TrackedActivity): boolean {
+    if (!state.selfLogin || activity.authorLogin !== state.selfLogin) return false;
+    const bareId = bareActivityId(activity.id);
+    return Boolean(bareId) && state.recentGhOutputs.some((output) => output.includes(bareId));
+  }
+
+  function formatActivityList(activities: TrackedActivity[]): string {
+    return activities.map((activity) => `- ${activity.id} by ${activity.authorLogin ?? "unknown"}`).join("\n");
   }
 
   async function notifyAgent(ctx: ExtensionContext, message: string): Promise<void> {
@@ -337,15 +395,17 @@ export default function prWatch(pi: ExtensionAPI): void {
         );
       }
 
-      const currentActivityIds = await fetchActivityIds(ctx);
+      const currentActivities = await fetchActivities(ctx);
+      const currentActivityIds = currentActivities.map((activity) => activity.id);
       const seen = new Set(state.seenActivityIds);
-      const newActivityIds = currentActivityIds.filter((id) => !seen.has(id));
+      const newActivities = currentActivities.filter((activity) => !seen.has(activity.id));
+      const triggeringActivities = newActivities.filter((activity) => !isSuppressedSelfActivity(activity));
 
-      if (newActivityIds.length > 0) {
+      if (triggeringActivities.length > 0) {
         state.lastNotifyAt = Date.now();
         await notifyAgent(
           ctx,
-          `New PR feedback was added to the current PR.\n\nPlease inspect the latest PR comments, reviews, and review threads with gh, summarize the actionable feedback, and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`,
+          `New PR feedback was added to the current PR.\n\nTriggering activity:\n${formatActivityList(triggeringActivities)}\n\nPlease inspect these specific new feedback items first, then check any related unresolved review threads if needed. Summarize the actionable feedback and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`,
         );
       }
 
@@ -384,6 +444,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     setStatus(ctx);
   }
 
+  function recordRecentGhOutput(output: string): void {
+    state.recentGhOutputs = [...state.recentGhOutputs, output].slice(-MAX_RECENT_GH_OUTPUTS);
+  }
+
   function isActivationCommand(command: string): boolean {
     return /(^|[;&|\n]\s*)gh\s+pr\s+(create|view|ready|edit|checkout)\b/.test(command);
   }
@@ -399,6 +463,8 @@ export default function prWatch(pi: ExtensionAPI): void {
         state = { ...initialState(), ...(entry.data as WatchState) };
       }
     }
+    state.seenActivityIds ??= [];
+    state.recentGhOutputs ??= [];
 
     if (state.enabled && state.active && (state.watchedPr || state.watchedSha)) {
       await discover(ctx, "startup", false);
@@ -413,6 +479,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!state.enabled || !isBashToolResultLike(event) || event.isError) return;
     const command = event.input.command;
     if (!command) return;
+
+    if (commandUsesGh(command)) {
+      recordRecentGhOutput(textContent(event.content));
+      save();
+    }
 
     if (isActivationCommand(command)) {
       await discover(ctx, "gh pr command");
@@ -472,6 +543,8 @@ export default function prWatch(pi: ExtensionAPI): void {
         `mode: ${state.active && (state.watchedPr || state.watchedSha) ? "active" : "dormant"}`,
         `watched target: ${watched}`,
         `seen human activity: ${state.seenActivityIds.length}`,
+        `recent gh outputs: ${state.recentGhOutputs.length}`,
+        `self login: ${state.selfLogin ?? "unknown"}`,
         `last poll: ${state.lastPollAt ? new Date(state.lastPollAt).toLocaleString() : "never"}`,
         `last notify: ${state.lastNotifyAt ? new Date(state.lastNotifyAt).toLocaleString() : "never"}`,
       ];

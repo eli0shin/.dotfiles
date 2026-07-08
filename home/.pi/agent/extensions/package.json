@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -11,6 +12,7 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.3"
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "typescript": "^6.0.3"
   }
 }
