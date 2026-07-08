@@ -14,7 +14,7 @@
  * never blocks the agent.
  */
 
-import { convertToLlm, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const LAPDOG_URL = process.env.LAPDOG_URL || "http://localhost:8126";
 const HOOKS_ENDPOINT = `${LAPDOG_URL}/pi/hooks`;
