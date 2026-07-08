@@ -1,11 +1,17 @@
 {
   "trustedtaps": [
     "anomalyco/tap",
+    "atlassian/acli",
     "hashicorp/tap",
     "https://github.com/anomalyco/homebrew-tap.git",
     "jnsahaj/lumen",
+    "launchdarkly/tap",
     "nikitabobko/tap",
     "opencode-ai/tap",
-    "sst/tap"
+    "sst/tap",
+    "tilt-dev/tap"
+  ],
+  "trustedformulae": [
+    "datadog/lapdog/lapdog"
   ]
 }

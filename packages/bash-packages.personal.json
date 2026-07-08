@@ -1,10 +1,5 @@
 [
   {
-    "command": "toad",
-    "install": "curl -fsSL https://batrachian.ai/install | sh",
-    "update": "curl -fsSL https://batrachian.ai/install | sh"
-  },
-  {
     "command": "droid",
     "install": "curl -fsSL https://app.factory.ai/cli | sh"
   }
