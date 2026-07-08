@@ -345,7 +345,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.lastNotifyAt = Date.now();
         await notifyAgent(
           ctx,
-          `New human PR feedback was added to the current PR.\n\nPlease inspect the latest PR comments, reviews, and review threads with gh, summarize the actionable feedback, and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`,
+          `New PR feedback was added to the current PR.\n\nPlease inspect the latest PR comments, reviews, and review threads with gh, summarize the actionable feedback, and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`,
         );
       }
 
