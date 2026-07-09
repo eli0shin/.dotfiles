@@ -5,7 +5,7 @@ Tracked first-pass Pi extensions for this dotfiles setup.
 - `permission-gate.ts`: ask/block bash commands matching `permissionGate.bash` patterns in Pi settings
 - `protected-paths.ts`: block writes to secret or generated paths
 - `status-line.ts`: show simple turn progress in the footer
-- `model-status.ts`: show the active model in the footer
+- `model-status.ts`: notify when the active model changes
 - `pr-watch.ts`: dormant-by-default PR watcher that wakes after PR/git push activity and pings the agent on CI completion or new human PR feedback
 - `trust-all.ts`: automatically trust every project to bypass project trust prompts
 - `plan-mode/`: read-only planning mode with extracted steps and execution tracking

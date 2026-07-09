@@ -8,6 +8,5 @@ export default function modelStatus(pi: ExtensionAPI): void {
       ctx.ui.notify(`Model: ${next}`, "info");
     }
 
-    ctx.ui.setStatus("model-status", `model ${event.model.id}`);
   });
 }
