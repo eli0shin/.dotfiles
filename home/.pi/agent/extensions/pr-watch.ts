@@ -6,6 +6,7 @@ type WatchedPr = {
   url: string;
   branch: string;
   headSha: string;
+  authorLogin?: string;
 };
 
 type WatchedSha = {
@@ -119,7 +120,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (state.active && state.watchedPr) {
-      ctx.ui.setStatus("pr-watch", `PR #${state.watchedPr.number} watch`);
+      ctx.ui.setStatus("pr-watch", `PR #${state.watchedPr.number} watch: ${prWatchModeLabel()}`);
       return;
     }
 
@@ -166,7 +167,8 @@ export default function prWatch(pi: ExtensionAPI): void {
       headRefName: string;
       headRefOid: string;
       state: string;
-    }>("gh", ["pr", "view", "--json", "number,url,headRefName,headRefOid,state"], ctx);
+      author?: { login?: string };
+    }>("gh", ["pr", "view", "--json", "number,url,headRefName,headRefOid,state,author"], ctx);
 
     if (pr?.state === "OPEN") {
       await refreshSelfLogin(ctx);
@@ -179,6 +181,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         url: pr.url,
         branch: pr.headRefName,
         headSha: pr.headRefOid,
+        authorLogin: pr.author?.login,
       };
 
       await baselineCurrentPrState(ctx);
@@ -348,6 +351,49 @@ export default function prWatch(pi: ExtensionAPI): void {
     return activities.map((activity) => `- ${activity.id} by ${activity.authorLogin ?? "unknown"}`).join("\n");
   }
 
+  function prWatchMode(): "author" | "reviewer" | "unknown" {
+    if (!state.watchedPr?.authorLogin || !state.selfLogin) return "unknown";
+    return state.watchedPr.authorLogin === state.selfLogin ? "author" : "reviewer";
+  }
+
+  function prWatchModeLabel(): string {
+    return prWatchMode();
+  }
+
+  function reviewerSafetyNotice(): string {
+    const authorLogin = state.watchedPr?.authorLogin;
+    if (prWatchMode() === "reviewer") {
+      return `This PR is authored by ${authorLogin}, not you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.`;
+    }
+
+    return "I could not determine whether this PR is authored by you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.";
+  }
+
+  function buildPrChecksMessage(): string {
+    if (!state.watchedPr) return "";
+
+    if (prWatchMode() === "author") {
+      return `CI finished for the current PR.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing check is not sufficient on its own. If any check involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the check's logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the checks passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nPR: ${state.watchedPr.url}\nHead SHA: ${state.watchedPr.headSha}`;
+    }
+
+    const authorLogin = state.watchedPr.authorLogin ?? "unknown";
+    const headline = prWatchMode() === "reviewer" ? "CI finished for a PR you are reviewing." : "CI finished for a PR being watched.";
+    return `${headline}\n\n${reviewerSafetyNotice()}\n\nPlease inspect the CI result as reviewer context. Summarize whether CI passed or failed, whether the result affects your review, and whether you recommend any follow-up comment.\n\nPR: ${state.watchedPr.url}\nAuthor: ${authorLogin}\nHead SHA: ${state.watchedPr.headSha}`;
+  }
+
+  function buildPrFeedbackMessage(triggeringActivities: TrackedActivity[]): string {
+    if (!state.watchedPr) return "";
+    const activityList = formatActivityList(triggeringActivities);
+
+    if (prWatchMode() === "author") {
+      return `New PR feedback was added to the current PR.\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific new feedback items first, then check any related unresolved review threads if needed. Summarize the actionable feedback and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`;
+    }
+
+    const authorLogin = state.watchedPr.authorLogin ?? "unknown";
+    const headline = prWatchMode() === "reviewer" ? "New activity was added to a PR you are reviewing." : "New activity was added to a PR being watched.";
+    return `${headline}\n\n${reviewerSafetyNotice()}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\nPR: ${state.watchedPr.url}\nAuthor: ${authorLogin}`;
+  }
+
   async function notifyAgent(ctx: ExtensionContext, message: string): Promise<void> {
     if (ctx.isIdle()) pi.sendUserMessage(message);
     else pi.sendUserMessage(message, { deliverAs: "followUp" });
@@ -365,10 +411,13 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       if (!state.watchedPr) return;
 
+      await refreshSelfLogin(ctx);
+
       const latest = await execJson<{
         headRefOid: string;
         state: string;
-      }>("gh", ["pr", "view", String(state.watchedPr.number), "--json", "headRefOid,state"], ctx);
+        author?: { login?: string };
+      }>("gh", ["pr", "view", String(state.watchedPr.number), "--json", "headRefOid,state,author"], ctx);
 
       if (!latest || latest.state !== "OPEN") {
         state.active = false;
@@ -376,6 +425,8 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         return;
       }
+
+      if (latest.author?.login) state.watchedPr.authorLogin = latest.author.login;
 
       if (latest.headRefOid !== state.watchedPr.headSha) {
         state.watchedPr.headSha = latest.headRefOid;
@@ -389,10 +440,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (allChecksTerminal && state.notifiedChecksKey !== checksKey) {
         state.notifiedChecksKey = checksKey;
         state.lastNotifyAt = Date.now();
-        await notifyAgent(
-          ctx,
-          `CI finished for the current PR.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing check is not sufficient on its own. If any check involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the check's logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the checks passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nPR: ${state.watchedPr.url}\nHead SHA: ${state.watchedPr.headSha}`,
-        );
+        await notifyAgent(ctx, buildPrChecksMessage());
       }
 
       const currentActivities = await fetchActivities(ctx);
@@ -403,10 +451,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       if (triggeringActivities.length > 0) {
         state.lastNotifyAt = Date.now();
-        await notifyAgent(
-          ctx,
-          `New PR feedback was added to the current PR.\n\nTriggering activity:\n${formatActivityList(triggeringActivities)}\n\nPlease inspect these specific new feedback items first, then check any related unresolved review threads if needed. Summarize the actionable feedback and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\nPR: ${state.watchedPr.url}`,
-        );
+        await notifyAgent(ctx, buildPrFeedbackMessage(triggeringActivities));
       }
 
       state.seenActivityIds = Array.from(new Set([...state.seenActivityIds, ...currentActivityIds]));
@@ -534,7 +579,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
 
       const watched = state.watchedPr
-        ? `PR #${state.watchedPr.number} ${state.watchedPr.url}\nbranch: ${state.watchedPr.branch}\nhead: ${state.watchedPr.headSha}`
+        ? `PR #${state.watchedPr.number} ${state.watchedPr.url}\nbranch: ${state.watchedPr.branch}\nhead: ${state.watchedPr.headSha}\nauthor: ${state.watchedPr.authorLogin ?? "unknown"}\nwatch mode: ${prWatchModeLabel()}`
         : state.watchedSha
           ? `SHA ${state.watchedSha.sha}\nrepo: ${state.watchedSha.repo}`
           : "none";
