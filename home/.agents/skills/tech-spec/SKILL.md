@@ -8,8 +8,6 @@ disable-model-invocation: true
 
 A tech spec is a **typed call-stack architecture handoff**: code-shaped contracts plus execution flows. Prefer TypeScript pseudocode over prose wherever precision matters.
 
-Treat `../coding-standards/SKILL.md` as the standards source of truth and `../tdd/` as the testing workflow.
-
 This skill is design-only. Do not implement. Save a file only when the user asks for a file; otherwise return the spec inline.
 
 ## Branch selection
