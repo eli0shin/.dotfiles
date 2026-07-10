@@ -31,7 +31,8 @@
     }
   },
   "packages": [
-    "npm:pi-exa"
+    "npm:pi-exa",
+    "npm:@observal/pi-insights"
   ],
   "extensions": [
     "-extensions/otel-tracing/index.ts"
