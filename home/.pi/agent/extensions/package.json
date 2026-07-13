@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/*.test.ts"
   },
   "keywords": [],
   "author": "",

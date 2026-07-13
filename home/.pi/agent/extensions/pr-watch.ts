@@ -104,6 +104,17 @@ function bareActivityId(id: string): string {
   return id.includes(":") ? id.slice(id.lastIndexOf(":") + 1) : id;
 }
 
+export function shouldTrackActivity(kind: ActivityKind, activity: Activity): boolean {
+  if (activity.id === undefined || activity.id === null) return false;
+  return kind !== "issue-comment" || !isBotActivity(activity);
+}
+
+function isBotActivity(activity: Activity): boolean {
+  const author = activity.author ?? activity.user;
+  const login = author?.login ?? "";
+  return author?.is_bot === true || author?.type === "Bot" || login.endsWith("[bot]");
+}
+
 export default function prWatch(pi: ExtensionAPI): void {
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
@@ -324,7 +335,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
     return (activities ?? [])
-      .filter((activity) => activity.id !== undefined && activity.id !== null && !isBotActivity(activity))
+      .filter((activity) => shouldTrackActivity(kind, activity))
       .map((activity) => ({
         id: `${kind}:${activity.id}`,
         authorLogin: activityAuthorLogin(activity),
@@ -333,12 +344,6 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function activityAuthorLogin(activity: Activity): string | undefined {
     return (activity.author ?? activity.user)?.login;
-  }
-
-  function isBotActivity(activity: Activity): boolean {
-    const author = activity.author ?? activity.user;
-    const login = author?.login ?? "";
-    return author?.is_bot === true || author?.type === "Bot" || login.endsWith("[bot]");
   }
 
   function isSuppressedSelfActivity(activity: TrackedActivity): boolean {
@@ -541,7 +546,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("pr-watch", {
-    description: "Watch the current branch PR for CI completion and new human feedback",
+    description: "Watch the current branch PR for CI completion and relevant feedback",
     handler: async (args, ctx) => {
       const action = (args.trim().split(/\s+/)[0] || "status").toLowerCase();
 
@@ -587,7 +592,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         `PR watch: ${state.enabled ? "enabled" : "disabled"}`,
         `mode: ${state.active && (state.watchedPr || state.watchedSha) ? "active" : "dormant"}`,
         `watched target: ${watched}`,
-        `seen human activity: ${state.seenActivityIds.length}`,
+        `seen tracked activity: ${state.seenActivityIds.length}`,
         `recent gh outputs: ${state.recentGhOutputs.length}`,
         `self login: ${state.selfLogin ?? "unknown"}`,
         `last poll: ${state.lastPollAt ? new Date(state.lastPollAt).toLocaleString() : "never"}`,
