@@ -12,7 +12,7 @@ Use the `jira-acli` and `confluence-acli` skills for any Jira/Confluence reads. 
 
 1. Derive the ticket key from the branch name and read the story. If it belongs to an epic, read the epic for the larger goal — a small one-off may have none. Follow any doc links (Confluence, design docs, external references); for research/design tickets the real spec usually lives outside Jira.
 
-2. If the ticket is a jira ticket and it is not in the active sprint move it into the active sprint
+2. If the ticket is a jira ticket and it is not in the active sprint move it into the active sprint. If it is not yet assigned to me assign it to me.
 
 3. Explore the repo for the docs, existing implementation, and the pieces this ticket will touch or build on. Pull only what bears on this ticket; skip the rest. You're done when you can state what exists today and where this ticket fits, without guessing.
 
