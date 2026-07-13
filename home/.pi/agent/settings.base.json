@@ -1,5 +1,5 @@
 {
-  "defaultThinkingLevel": "low",
+  "defaultThinkingLevel": "medium",
   "quietStartup": true,
   "collapseChangelog": true,
   "doubleEscapeAction": "tree",
