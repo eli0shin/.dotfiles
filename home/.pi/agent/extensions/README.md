@@ -6,7 +6,7 @@ Tracked first-pass Pi extensions for this dotfiles setup.
 - `protected-paths.ts`: block writes to secret or generated paths
 - `status-line.ts`: show simple turn progress in the footer
 - `model-status.ts`: notify when the active model changes
-- `pr-watch.ts`: dormant-by-default PR watcher that wakes after PR/git push activity and pings the agent on CI completion, human PR feedback, or bot-authored reviews
+- `pr-watch.ts`: session-local multi-PR watcher that wakes after PR/git push activity and pings the agent on CI completion, human PR feedback, or bot-authored reviews
 - `trust-all.ts`: automatically trust every project to bypass project trust prompts
 - `plan-mode/`: read-only planning mode with extracted steps and execution tracking
 - `otel-tracing/`: export session, prompt, LLM, and tool traces over OpenTelemetry
