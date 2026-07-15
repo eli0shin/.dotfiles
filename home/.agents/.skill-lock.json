@@ -165,10 +165,10 @@
       "sourceType": "github",
       "sourceUrl": "https://github.com/mattpocock/skills.git",
       "skillPath": "skills/productivity/teach/SKILL.md",
-      "skillFolderHash": "3b6a4245e2aaeacb308ba6175ab3e7f2e43b0c47",
+      "skillFolderHash": "15f8c86d39ef834e643d092733ca899b59049067",
       "pluginName": "mattpocock-skills",
       "installedAt": "2026-06-23T20:07:37.168Z",
-      "updatedAt": "2026-06-23T20:07:37.168Z"
+      "updatedAt": "2026-07-15T17:27:02.828Z"
     },
     "writing-great-skills": {
       "source": "mattpocock/skills",
@@ -233,6 +233,16 @@
       "skillFolderHash": "d341694da9592d7251d0bf7523d8c28f4e853743",
       "installedAt": "2026-06-23T20:07:37.170Z",
       "updatedAt": "2026-06-23T20:07:37.170Z"
+    },
+    "wayfinder": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/mattpocock/skills.git",
+      "skillPath": "skills/engineering/wayfinder/SKILL.md",
+      "skillFolderHash": "33ed747fb30668c0e7b61698af5268c25c0d75cb",
+      "pluginName": "mattpocock-skills",
+      "installedAt": "2026-07-15T17:27:02.831Z",
+      "updatedAt": "2026-07-15T17:27:02.831Z"
     }
   },
   "dismissed": {
