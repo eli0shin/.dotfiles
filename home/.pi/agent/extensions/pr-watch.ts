@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type WatchedPr = {
@@ -21,12 +23,36 @@ type WatchedSha = {
   notifiedChecksKey?: string;
 };
 
+type WatchMode = "active" | "paused" | "off";
+
+type PendingPrUpdate = {
+  pr: WatchedPr;
+  checksHeadSha?: string;
+  checksKey?: string;
+  feedbackActivities: TrackedActivity[];
+};
+
+type PendingShaUpdate = {
+  repo: string;
+  sha: string;
+  runsKey: string;
+};
+
+type PendingDelivery = {
+  id: string;
+  message: string;
+  pendingPrUpdates: PendingPrUpdate[];
+  pendingShaUpdate?: PendingShaUpdate;
+};
+
 type WatchState = {
-  version: 2;
-  enabled: boolean;
-  active: boolean;
+  version: 3;
+  mode: WatchMode;
   watchedPrs: WatchedPrState[];
   watchedSha?: WatchedSha;
+  pendingPrUpdates: PendingPrUpdate[];
+  pendingShaUpdate?: PendingShaUpdate;
+  pendingDelivery?: PendingDelivery;
   recentGhOutputs: string[];
   selfLogin?: string;
   lastPollAt?: number;
@@ -75,7 +101,7 @@ type BashToolResultLike = {
 };
 
 type PrPollResult = {
-  messages: string[];
+  addedCount: number;
   remove?: boolean;
   error?: string;
 };
@@ -85,10 +111,10 @@ const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 
 const initialState = (): WatchState => ({
-  version: 2,
-  enabled: true,
-  active: false,
+  version: 3,
+  mode: "active",
   watchedPrs: [],
+  pendingPrUpdates: [],
   recentGhOutputs: [],
 });
 
@@ -97,7 +123,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isWatchState(value: unknown): value is WatchState {
-  return isObject(value) && value.version === 2 && Array.isArray(value.watchedPrs);
+  return (
+    isObject(value) &&
+    value.version === 3 &&
+    ["active", "paused", "off"].includes(String(value.mode)) &&
+    Array.isArray(value.watchedPrs) &&
+    Array.isArray(value.pendingPrUpdates)
+  );
 }
 
 function isBashToolResultLike(event: unknown): event is BashToolResultLike {
@@ -140,6 +172,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
   let polling = false;
+  let deliveryAttemptedId: string | undefined;
 
   function hasTargets(): boolean {
     return state.watchedPrs.length > 0 || Boolean(state.watchedSha);
@@ -149,25 +182,40 @@ export default function prWatch(pi: ExtensionAPI): void {
     pi.appendEntry(CUSTOM_STATE, state);
   }
 
-  function setStatus(ctx: ExtensionContext): void {
-    if (!state.enabled || !state.active || !hasTargets()) {
-      ctx.ui.setStatus("pr-watch", undefined);
-      return;
-    }
+  function pendingCount(): number {
+    return state.pendingPrUpdates.reduce(
+      (count, pending) => count + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
+      state.pendingShaUpdate ? 1 : 0,
+    );
+  }
+
+  function statusText(): string | undefined {
+    const pending = pendingCount();
+    const pendingSuffix = pending > 0 ? ` • ${pending} pending` : "";
+
+    if (state.mode === "off") return undefined;
+    if (state.mode === "paused") return `PR watch: paused${pendingSuffix}`;
+    if (!hasTargets() && pending === 0) return undefined;
 
     if (state.watchedPrs.length > 0) {
       const numbers = state.watchedPrs.map(({ pr }) => `#${pr.number}`).join(", ");
-      ctx.ui.setStatus("pr-watch", `PR watch: ${numbers}`);
-      return;
+      return `PR watch: ${numbers}${pendingSuffix}`;
     }
 
-    if (state.watchedSha) {
-      ctx.ui.setStatus("pr-watch", `SHA ${state.watchedSha.sha.slice(0, 7)} watch`);
-    }
+    if (state.watchedSha) return `SHA ${state.watchedSha.sha.slice(0, 7)} watch${pendingSuffix}`;
+    return `PR watch:${pendingSuffix}`;
+  }
+
+  function setStatus(ctx: ExtensionContext): void {
+    const text = statusText();
+    const highlighted = text && (state.mode === "paused" || pendingCount() > 0)
+      ? ctx.ui.theme?.fg?.("warning", text) ?? text
+      : text;
+    ctx.ui.setStatus("pr-watch", highlighted);
   }
 
   function startPolling(ctx: ExtensionContext): void {
-    if (interval || !state.enabled || !state.active || !hasTargets()) return;
+    if (interval || state.mode === "off" || !hasTargets()) return;
     interval = setInterval(() => poll(ctx), POLL_INTERVAL_MS);
     setStatus(ctx);
   }
@@ -190,7 +238,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function discover(ctx: ExtensionContext, reason: string, notify = true, prTarget?: string): Promise<boolean> {
-    if (!state.enabled) return false;
+    if (state.mode === "off") return false;
 
     const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
     if (!repo?.nameWithOwner) return false;
@@ -208,7 +256,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     }>("gh", prViewArgs, ctx);
 
     if (!pr && prTarget) {
-      state.active = hasTargets();
       state.lastError = `Could not resolve PR ${prTarget}`;
       save();
       setStatus(ctx);
@@ -234,9 +281,10 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.watchedPrs.push(added);
         await baselinePrState(added, ctx);
       }
+      reconcilePendingPr(watchedPr);
 
       state.watchedSha = undefined;
-      state.active = true;
+      state.pendingShaUpdate = undefined;
       state.lastError = undefined;
       save();
       startPolling(ctx);
@@ -248,7 +296,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (prTarget) {
       const number = pr?.number;
       if (number !== undefined) removePr(number);
-      state.active = hasTargets();
       save();
       setStatus(ctx);
       if (notify && pr) ctx.ui.notify(`PR #${pr.number} is not open; it was not added to PR watch.`, "info");
@@ -260,7 +307,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     await refreshSelfLogin(ctx);
 
-    state.active = true;
+    if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
     state.watchedSha = { repo: repo.nameWithOwner, sha };
     await baselineCurrentShaState(ctx);
 
@@ -271,8 +318,20 @@ export default function prWatch(pi: ExtensionAPI): void {
     return true;
   }
 
+  function reconcilePendingPr(pr: WatchedPr): void {
+    const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === pr.number);
+    if (!pending) return;
+    if (pending.checksHeadSha !== pr.headSha) {
+      pending.checksHeadSha = undefined;
+      pending.checksKey = undefined;
+    }
+    pending.pr = structuredClone(pr);
+    removeEmptyPendingPr(pr.number);
+  }
+
   function removePr(number: number): void {
     state.watchedPrs = state.watchedPrs.filter((candidate) => candidate.pr.number !== number);
+    state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => candidate.pr.number !== number);
   }
 
   async function currentSha(): Promise<string | undefined> {
@@ -287,20 +346,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.selfLogin = user?.login || undefined;
   }
 
-  async function fetchChecks(watched: WatchedPrState, ctx: ExtensionContext): Promise<Check[]> {
-    const checks = await execJson<Check[]>("gh", [
+  async function fetchChecks(watched: WatchedPrState, ctx: ExtensionContext): Promise<Check[] | undefined> {
+    return execJson<Check[]>("gh", [
       "pr",
       "checks",
       watched.pr.url,
       "--json",
       "name,state,bucket,workflow,link,completedAt",
     ], ctx);
-    return checks ?? [];
   }
 
-  async function fetchRunsForSha(ctx: ExtensionContext): Promise<WorkflowRun[]> {
-    if (!state.watchedSha) return [];
-    const runs = await execJson<WorkflowRun[]>("gh", [
+  async function fetchRunsForSha(ctx: ExtensionContext): Promise<WorkflowRun[] | undefined> {
+    if (!state.watchedSha) return undefined;
+    return execJson<WorkflowRun[]>("gh", [
       "run",
       "list",
       "--commit",
@@ -308,7 +366,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       "--json",
       "databaseId,name,workflowName,status,conclusion,url,createdAt,updatedAt",
     ], ctx);
-    return runs ?? [];
   }
 
   function isApprovalWaitingCheck(check: Check): boolean {
@@ -358,29 +415,40 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function baselinePrState(watched: WatchedPrState, ctx: ExtensionContext): Promise<void> {
     const checks = await fetchChecks(watched, ctx);
-    watched.notifiedChecksKey =
-      checks.length > 0 && checks.every(isTerminalCheck)
-        ? checksCompletionKey(watched.pr.headSha, checks)
-        : undefined;
-    watched.seenActivityIds = (await fetchActivities(watched, ctx)).map((activity) => activity.id);
+    if (checks) {
+      const checksKey = checksCompletionKey(watched.pr.headSha, checks);
+      const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
+      watched.notifiedChecksKey = allChecksTerminal ? checksKey : undefined;
+      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      if (pending?.checksKey && (!allChecksTerminal || pending.checksKey !== checksKey)) {
+        pending.checksHeadSha = undefined;
+        pending.checksKey = undefined;
+        removeEmptyPendingPr(watched.pr.number);
+      }
+    }
+    watched.seenActivityIds = ((await fetchActivities(watched, ctx)) ?? []).map((activity) => activity.id);
   }
 
   async function baselineCurrentShaState(ctx: ExtensionContext): Promise<void> {
     if (!state.watchedSha) return;
     const runs = await fetchRunsForSha(ctx);
-    state.watchedSha.notifiedChecksKey =
-      runs.length > 0 && runs.every(isTerminalRun)
-        ? runsCompletionKey(state.watchedSha.sha, runs)
-        : undefined;
+    if (!runs) return;
+    const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
+    const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
+    state.watchedSha.notifiedChecksKey = allRunsTerminal ? runsKey : undefined;
+    if (state.pendingShaUpdate && (!allRunsTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
+      state.pendingShaUpdate = undefined;
+    }
   }
 
-  async function fetchActivities(watched: WatchedPrState, ctx: ExtensionContext): Promise<TrackedActivity[]> {
+  async function fetchActivities(watched: WatchedPrState, ctx: ExtensionContext): Promise<TrackedActivity[] | undefined> {
     const { repo, number } = watched.pr;
     const [issueComments, reviews, reviewComments] = await Promise.all([
       execJson<Activity[]>("gh", ["api", `repos/${repo}/issues/${number}/comments?per_page=100`], ctx),
       execJson<Activity[]>("gh", ["api", `repos/${repo}/pulls/${number}/reviews?per_page=100`], ctx),
       execJson<Activity[]>("gh", ["api", `repos/${repo}/pulls/${number}/comments?per_page=100`], ctx),
     ]);
+    if (!issueComments || !reviews || !reviewComments) return undefined;
 
     return [
       ...trackActivities("issue-comment", issueComments),
@@ -470,9 +538,148 @@ export default function prWatch(pi: ExtensionAPI): void {
       .join("\n\n---\n\n")}`;
   }
 
-  async function notifyAgent(ctx: ExtensionContext, message: string): Promise<void> {
-    if (ctx.isIdle()) pi.sendUserMessage(message);
-    else pi.sendUserMessage(message, { deliverAs: "followUp" });
+  function pendingPr(watched: WatchedPrState): PendingPrUpdate {
+    let pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+    if (!pending) {
+      pending = { pr: structuredClone(watched.pr), feedbackActivities: [] };
+      state.pendingPrUpdates.push(pending);
+    } else {
+      pending.pr = structuredClone(watched.pr);
+    }
+    return pending;
+  }
+
+  function removeEmptyPendingPr(number: number): void {
+    state.pendingPrUpdates = state.pendingPrUpdates.filter(
+      (pending) => pending.pr.number !== number || Boolean(pending.checksKey) || pending.feedbackActivities.length > 0,
+    );
+  }
+
+  function buildShaChecksMessage(pending: PendingShaUpdate): string {
+    return `CI finished for SHA ${pending.sha.slice(0, 7)}.\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the run logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the runs passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
+  }
+
+  function buildPendingMessage(
+    pendingPrUpdates: PendingPrUpdate[],
+    pendingShaUpdate: PendingShaUpdate | undefined,
+  ): string {
+    const messages: string[] = [];
+    for (const pending of pendingPrUpdates) {
+      const watched: WatchedPrState = { pr: pending.pr, seenActivityIds: [] };
+      if (pending.checksKey) messages.push(buildPrChecksMessage(watched));
+      if (pending.feedbackActivities.length > 0) {
+        messages.push(buildPrFeedbackMessage(watched, pending.feedbackActivities));
+      }
+    }
+    if (pendingShaUpdate) messages.push(buildShaChecksMessage(pendingShaUpdate));
+    return buildBatchMessage(messages);
+  }
+
+  function deliveryMarker(id: string): string {
+    return `<!-- pr-watch-delivery:${id} -->`;
+  }
+
+  function sessionHasDelivery(ctx: ExtensionContext, delivery: PendingDelivery): boolean {
+    const marker = deliveryMarker(delivery.id);
+    return ctx.sessionManager.getBranch().some((entry) => {
+      if (entry.type !== "message" || entry.message.role !== "user") return false;
+      const content = Array.isArray(entry.message.content) ? entry.message.content : [];
+      return textContent(content).includes(marker);
+    });
+  }
+
+  function deliveryStillPending(delivery: PendingDelivery): boolean {
+    for (const delivered of delivery.pendingPrUpdates) {
+      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
+      if (!pending) return false;
+      if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
+      const pendingActivityIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
+      if (delivered.feedbackActivities.some((activity) => !pendingActivityIds.has(activity.id))) return false;
+    }
+    if (delivery.pendingShaUpdate) {
+      if (
+        state.pendingShaUpdate?.repo !== delivery.pendingShaUpdate.repo ||
+        state.pendingShaUpdate.sha !== delivery.pendingShaUpdate.sha ||
+        state.pendingShaUpdate.runsKey !== delivery.pendingShaUpdate.runsKey
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function flushPending(ctx: ExtensionContext): void {
+    if (state.mode !== "active" || !ctx.isIdle()) return;
+    if (state.pendingDelivery && !deliveryAttemptedId && !deliveryStillPending(state.pendingDelivery)) {
+      state.pendingDelivery = undefined;
+      save();
+    }
+    if (pendingCount() === 0) return;
+
+    if (!state.pendingDelivery) {
+      const id = randomUUID();
+      const pendingPrUpdates = structuredClone(state.pendingPrUpdates);
+      const pendingShaUpdate = structuredClone(state.pendingShaUpdate);
+      state.pendingDelivery = {
+        id,
+        message: `${buildPendingMessage(pendingPrUpdates, pendingShaUpdate)}\n\n${deliveryMarker(id)}`,
+        pendingPrUpdates,
+        pendingShaUpdate,
+      };
+      save();
+    }
+    if (deliveryAttemptedId === state.pendingDelivery.id) return;
+
+    deliveryAttemptedId = state.pendingDelivery.id;
+    try {
+      pi.sendUserMessage(state.pendingDelivery.message);
+    } catch (error) {
+      deliveryAttemptedId = undefined;
+      state.lastError = error instanceof Error ? error.message : String(error);
+      save();
+      setStatus(ctx);
+    }
+  }
+
+  function acknowledgeDelivery(ctx: ExtensionContext): void {
+    const delivery = state.pendingDelivery;
+    if (!delivery) return;
+
+    for (const delivered of delivery.pendingPrUpdates) {
+      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
+      if (!pending) continue;
+      if (delivered.checksKey && pending.checksKey === delivered.checksKey) {
+        pending.checksHeadSha = undefined;
+        pending.checksKey = undefined;
+      }
+      const deliveredActivityIds = new Set(delivered.feedbackActivities.map((activity) => activity.id));
+      pending.feedbackActivities = pending.feedbackActivities.filter((activity) => !deliveredActivityIds.has(activity.id));
+      removeEmptyPendingPr(delivered.pr.number);
+    }
+
+    if (
+      delivery.pendingShaUpdate &&
+      state.pendingShaUpdate?.repo === delivery.pendingShaUpdate.repo &&
+      state.pendingShaUpdate.sha === delivery.pendingShaUpdate.sha &&
+      state.pendingShaUpdate.runsKey === delivery.pendingShaUpdate.runsKey
+    ) {
+      state.pendingShaUpdate = undefined;
+    }
+
+    state.pendingDelivery = undefined;
+    deliveryAttemptedId = undefined;
+    state.lastNotifyAt = Date.now();
+    save();
+    setStatus(ctx);
+  }
+
+  function reconcileDelivery(ctx: ExtensionContext): void {
+    if (!state.pendingDelivery) return;
+    if (sessionHasDelivery(ctx, state.pendingDelivery)) {
+      acknowledgeDelivery(ctx);
+    } else if (deliveryAttemptedId && ctx.isIdle()) {
+      deliveryAttemptedId = undefined;
+    }
   }
 
   async function pollPr(watched: WatchedPrState, ctx: ExtensionContext): Promise<PrPollResult> {
@@ -483,49 +690,84 @@ export default function prWatch(pi: ExtensionAPI): void {
       author?: { login?: string };
     }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,state,author"], ctx);
 
-    if (!latest) return { messages: [], error: `Could not refresh watched PR ${watched.pr.url}` };
-    if (latest.state !== "OPEN") return { messages: [], remove: true };
+    if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
+    if (latest.state !== "OPEN") return { addedCount: 0, remove: true };
 
     if (latest.author?.login) watched.pr.authorLogin = latest.author.login;
     if (latest.headRefName) watched.pr.branch = latest.headRefName;
     if (latest.headRefOid !== watched.pr.headSha) {
       watched.pr.headSha = latest.headRefOid;
       watched.notifiedChecksKey = undefined;
+      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      if (pending) {
+        pending.checksHeadSha = undefined;
+        pending.checksKey = undefined;
+      }
+      removeEmptyPendingPr(watched.pr.number);
     }
 
-    const messages: string[] = [];
+    let addedCount = 0;
     const checks = await fetchChecks(watched, ctx);
-    const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
-    const checksKey = checksCompletionKey(watched.pr.headSha, checks);
-    if (allChecksTerminal && watched.notifiedChecksKey !== checksKey) {
-      watched.notifiedChecksKey = checksKey;
-      messages.push(buildPrChecksMessage(watched));
+    if (checks) {
+      const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
+      const checksKey = checksCompletionKey(watched.pr.headSha, checks);
+      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      if (pending?.checksKey && (!allChecksTerminal || pending.checksKey !== checksKey)) {
+        pending.checksHeadSha = undefined;
+        pending.checksKey = undefined;
+        removeEmptyPendingPr(watched.pr.number);
+      }
+      if (allChecksTerminal && watched.notifiedChecksKey !== checksKey) {
+        watched.notifiedChecksKey = checksKey;
+        const pendingUpdate = pendingPr(watched);
+        pendingUpdate.checksHeadSha = watched.pr.headSha;
+        pendingUpdate.checksKey = checksKey;
+        addedCount += 1;
+      }
     }
 
     const currentActivities = await fetchActivities(watched, ctx);
+    if (!currentActivities) return { addedCount };
     const currentActivityIds = currentActivities.map((activity) => activity.id);
+    const currentActivityIdSet = new Set(currentActivityIds);
+    const existingPending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+    if (existingPending) {
+      existingPending.pr = structuredClone(watched.pr);
+      existingPending.feedbackActivities = existingPending.feedbackActivities.filter((activity) =>
+        currentActivityIdSet.has(activity.id),
+      );
+      removeEmptyPendingPr(watched.pr.number);
+    }
+
     const seen = new Set(watched.seenActivityIds);
     const newActivities = currentActivities.filter((activity) => !seen.has(activity.id));
     const triggeringActivities = newActivities.filter((activity) => !isSuppressedSelfActivity(activity));
-    if (triggeringActivities.length > 0) messages.push(buildPrFeedbackMessage(watched, triggeringActivities));
+    if (triggeringActivities.length > 0) {
+      const pending = pendingPr(watched);
+      const pendingIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
+      const uniqueActivities = triggeringActivities.filter((activity) => !pendingIds.has(activity.id));
+      pending.feedbackActivities.push(...uniqueActivities);
+      addedCount += uniqueActivities.length;
+    }
 
     watched.seenActivityIds = Array.from(new Set([...watched.seenActivityIds, ...currentActivityIds]));
-    return { messages };
+    return { addedCount };
   }
 
   async function poll(ctx: ExtensionContext): Promise<void> {
-    if (polling || !state.enabled || !state.active || !hasTargets()) return;
+    if (polling || state.mode === "off" || !hasTargets()) return;
     polling = true;
 
     try {
+      reconcileDelivery(ctx);
       await refreshSelfLogin(ctx);
-      const messages: string[] = [];
+      let addedCount = 0;
       const errors: string[] = [];
 
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
-          messages.push(...result.messages);
+          addedCount += result.addedCount;
           if (result.error) errors.push(result.error);
           if (result.remove) removePr(watched.pr.number);
         } catch (error) {
@@ -533,20 +775,17 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
       }
 
-      const shaMessage = await pollSha(ctx);
-      if (shaMessage) messages.push(shaMessage);
-
-      if (messages.length > 0) {
-        state.lastNotifyAt = Date.now();
-        await notifyAgent(ctx, buildBatchMessage(messages));
-      }
-
-      state.active = hasTargets();
+      addedCount += await pollSha(ctx);
       state.lastPollAt = Date.now();
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
-      if (!state.active) stopPolling(ctx);
+      if (!hasTargets()) stopPolling(ctx);
       save();
       setStatus(ctx);
+
+      if (addedCount > 0) {
+        ctx.ui.notify(`PR Watch buffered ${addedCount} update${addedCount === 1 ? "" : "s"} (${pendingCount()} pending).`, "info");
+      }
+      flushPending(ctx);
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
       save();
@@ -555,16 +794,21 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
   }
 
-  async function pollSha(ctx: ExtensionContext): Promise<string | undefined> {
-    if (!state.watchedSha) return undefined;
+  async function pollSha(ctx: ExtensionContext): Promise<number> {
+    if (!state.watchedSha) return 0;
 
     const runs = await fetchRunsForSha(ctx);
+    if (!runs) return 0;
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
-    if (!allRunsTerminal || state.watchedSha.notifiedChecksKey === runsKey) return undefined;
+    if (state.pendingShaUpdate && (!allRunsTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
+      state.pendingShaUpdate = undefined;
+    }
+    if (!allRunsTerminal || state.watchedSha.notifiedChecksKey === runsKey) return 0;
 
     state.watchedSha.notifiedChecksKey = runsKey;
-    return `CI finished for SHA ${state.watchedSha.sha.slice(0, 7)}.\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the run logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the runs passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nRepo: ${state.watchedSha.repo}\nSHA: ${state.watchedSha.sha}`;
+    state.pendingShaUpdate = { repo: state.watchedSha.repo, sha: state.watchedSha.sha, runsKey };
+    return 1;
   }
 
   function recordRecentGhOutput(output: string): void {
@@ -581,14 +825,21 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     state = initialState();
-    for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type === "custom" && entry.customType === CUSTOM_STATE && isWatchState(entry.data)) {
-        state = { ...entry.data, watchedPrs: structuredClone(entry.data.watchedPrs) };
-      }
+    deliveryAttemptedId = undefined;
+    const savedEntry = [...ctx.sessionManager.getBranch()]
+      .reverse()
+      .find((entry) => entry.type === "custom" && entry.customType === CUSTOM_STATE);
+    if (savedEntry?.type === "custom" && isWatchState(savedEntry.data)) {
+      state = structuredClone(savedEntry.data);
     }
-    state.recentGhOutputs ??= [];
+    reconcileDelivery(ctx);
 
-    if (!state.enabled || !state.active || !hasTargets()) return;
+    if (state.mode === "off" || !hasTargets()) {
+      save();
+      setStatus(ctx);
+      flushPending(ctx);
+      return;
+    }
 
     const savedPrs = [...state.watchedPrs];
     const savedSha = state.watchedSha;
@@ -599,22 +850,29 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (state.watchedPrs.length === 0 && savedSha) {
       state.watchedSha = { repo: savedSha.repo, sha: savedSha.sha };
       await baselineCurrentShaState(ctx);
-      state.active = true;
-      save();
-      startPolling(ctx);
     }
 
-    state.active = hasTargets();
     save();
+    startPolling(ctx);
     setStatus(ctx);
+    flushPending(ctx);
   });
 
   pi.on("session_shutdown", async () => {
     stopPolling();
   });
 
+  pi.on("agent_settled", async (_event, ctx) => {
+    reconcileDelivery(ctx);
+    flushPending(ctx);
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    reconcileDelivery(ctx);
+  });
+
   pi.on("tool_result", async (event, ctx) => {
-    if (!state.enabled || !isBashToolResultLike(event) || event.isError) return;
+    if (state.mode === "off" || !isBashToolResultLike(event) || event.isError) return;
     const command = event.input.command;
     if (!command) return;
 
@@ -639,21 +897,32 @@ export default function prWatch(pi: ExtensionAPI): void {
       const action = rawAction.toLowerCase();
       const target = rest.join(" ");
 
-      if (action === "on") {
-        state.enabled = true;
-        state.active = true;
+      if (action === "on" || action === "resume") {
+        state.mode = "active";
         save();
-        const found = await discover(ctx, "manual on");
-        if (!found && !hasTargets()) {
-          state.active = false;
-          save();
+        if (hasTargets()) {
+          startPolling(ctx);
+          await poll(ctx);
+        } else {
+          await discover(ctx, `manual ${action}`);
+          flushPending(ctx);
         }
+        setStatus(ctx);
+        ctx.ui.notify(`PR watch ${action === "on" ? "enabled" : "resumed"}.`, "info");
+        return;
+      }
+
+      if (action === "pause") {
+        state.mode = "paused";
+        save();
+        startPolling(ctx);
+        setStatus(ctx);
+        ctx.ui.notify("PR watch notifications paused; polling continues.", "info");
         return;
       }
 
       if (action === "off") {
-        state.enabled = false;
-        state.active = false;
+        state.mode = "off";
         stopPolling(ctx);
         save();
         ctx.ui.notify("PR watch disabled for this session.", "info");
@@ -665,10 +934,10 @@ export default function prWatch(pi: ExtensionAPI): void {
           ctx.ui.notify("Usage: /pr-watch add <number-or-url>", "warning");
           return;
         }
-        state.enabled = true;
-        state.active = true;
+        state.mode = "active";
         save();
         await discover(ctx, "manual add", true, target);
+        flushPending(ctx);
         return;
       }
 
@@ -680,8 +949,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
         const existed = state.watchedPrs.some((watched) => watched.pr.number === number);
         removePr(number);
-        state.active = hasTargets();
-        if (!state.active) stopPolling(ctx);
+        if (!hasTargets()) stopPolling(ctx);
         save();
         setStatus(ctx);
         ctx.ui.notify(existed ? `Removed PR #${number} from PR watch.` : `PR #${number} was not being watched.`, "info");
@@ -689,14 +957,15 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
 
       if (action === "reset") {
-        state = { ...initialState(), enabled: state.enabled, active: true };
+        stopPolling(ctx);
+        state = initialState();
         save();
         await discover(ctx, "manual reset");
         return;
       }
 
       if (action !== "status") {
-        ctx.ui.notify("Usage: /pr-watch [status|on|off|add <number-or-url>|remove <number-or-url>|reset]", "warning");
+        ctx.ui.notify("Usage: /pr-watch [status|on|off|pause|resume|add <number-or-url>|remove <number-or-url>|reset]", "warning");
         return;
       }
 
@@ -712,9 +981,22 @@ export default function prWatch(pi: ExtensionAPI): void {
       const watchedSha = state.watchedSha
         ? `SHA ${state.watchedSha.sha}\nrepo: ${state.watchedSha.repo}`
         : "none";
+      const pendingSummary = [
+        ...state.pendingPrUpdates.map((pending) => {
+          const updates = [
+            pending.checksKey ? "CI complete" : undefined,
+            pending.feedbackActivities.length > 0
+              ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`
+              : undefined,
+          ].filter(Boolean);
+          return `  PR #${pending.pr.number}: ${updates.join(", ")}`;
+        }),
+        ...(state.pendingShaUpdate ? [`  SHA ${state.pendingShaUpdate.sha.slice(0, 7)}: CI complete`] : []),
+      ];
       const lines = [
-        `PR watch: ${state.enabled ? "enabled" : "disabled"}`,
-        `mode: ${state.active && hasTargets() ? "active" : "dormant"}`,
+        `PR watch mode: ${state.mode}`,
+        `pending updates: ${pendingCount()}`,
+        ...(pendingSummary.length > 0 ? pendingSummary : []),
         `watched PRs:\n${watchedPrs}`,
         `watched SHA: ${watchedSha}`,
         `recent gh outputs: ${state.recentGhOutputs.length}`,
