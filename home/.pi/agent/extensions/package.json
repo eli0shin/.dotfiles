@@ -13,6 +13,7 @@
   "type": "module",
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.7",
+    "@types/node": "^24.13.3",
     "typescript": "^6.0.3"
   }
 }
