@@ -60,13 +60,13 @@ Load `datadog-mcp/SKILL.md`.
 Examples:
 
 ```bash
-${CLAUDE_SKILL_DIR}/../datadog-mcp/scripts/datadog-mcp get-datadog-metric-context \
+../datadog-mcp/scripts/datadog-mcp get-datadog-metric-context \
   --metric-name trace.http.request.duration \
   --include-tag-values \
   --scope-tags '["env:prod"]' \
   --telemetry '{}'
 
-${CLAUDE_SKILL_DIR}/../datadog-mcp/scripts/datadog-mcp search-datadog-spans \
+../datadog-mcp/scripts/datadog-mcp search-datadog-spans \
   --query 'service:api' \
   --custom-attributes '["*"]' \
   --from now-1h \
@@ -99,7 +99,7 @@ ${CLAUDE_SKILL_DIR}/../datadog-mcp/scripts/datadog-mcp search-datadog-spans \
 1. Use MCP:
 
 ```bash
-${CLAUDE_SKILL_DIR}/../datadog-mcp/scripts/datadog-mcp get-datadog-metric-context \
+../datadog-mcp/scripts/datadog-mcp get-datadog-metric-context \
   --metric-name '<metric>' \
   --include-tag-values \
   --scope-tags '["env:prod"]' \
@@ -117,7 +117,7 @@ pup metrics query --query='avg:<metric>{env:prod} by {service}' --from=1h
 1. Use MCP:
 
 ```bash
-${CLAUDE_SKILL_DIR}/../datadog-mcp/scripts/datadog-mcp search-datadog-spans \
+../datadog-mcp/scripts/datadog-mcp search-datadog-spans \
   --query 'service:<service>' \
   --custom-attributes '["*"]' \
   --from now-1h \

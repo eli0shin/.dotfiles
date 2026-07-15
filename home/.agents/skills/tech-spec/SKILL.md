@@ -25,7 +25,6 @@ Completion criterion: the branch is chosen from actual available context; missin
 
 Read:
 
-- `../coding-standards/SKILL.md`
 - `../tdd/SKILL.md`
 
 Inspect existing code and docs for local vocabulary, module layout, domain concepts, errors, adapters, observability, runtime patterns, and test style.
@@ -176,8 +175,8 @@ Completion criterion: the output follows the outline below and is implementation
    - State that there is not enough context for an implementation-ready tech spec.
    - Completion criterion: the agent has not invented requirements, APIs, files, or call stacks.
 2. Start a grilling interview.
-   - Use `../grill-with-docs/` when the user wants docs, ADRs, glossary/domain language, or durable design artifacts created during discovery.
-   - Otherwise use `../grill-me/`.
+   - Use `/grilling` for the interview.
+   - Also use `/domain-modeling` when the user wants ADRs, glossary/domain language, or durable design artifacts created during discovery.
    - Ask one question at a time and provide the recommended answer with each question.
    - If a question can be answered by exploring the codebase, inspect the codebase instead of asking.
    - Completion criterion: the interview has enough context for Path A: problem, users/callers, constraints, affected systems, desired behavior, boundaries, likely APIs, invariants, risks, and acceptance tests.

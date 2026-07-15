@@ -631,7 +631,7 @@ function factorial(n) {
 
 ## Low-Level Efficiency Anti-Patterns
 
-Code-level efficiency mistakes, separate from architectural performance issues. This complements the resource-management and concurrency issues covered in [common-bugs-checklist.md](common-bugs-checklist.md).
+Code-level efficiency mistakes, separate from architectural performance issues.
 
 ### Unnecessary Repeated Work
 
@@ -672,8 +672,6 @@ const [user, posts] = await Promise.all([fetchUser(id), fetchPosts(id)]);
 - [ ] Does startup code block the first request?
 
 ### Unbounded Data Structures
-
-> Resource lifecycle bugs (unclosed connections, unremoved listeners, uncleared timers) are covered in [common-bugs-checklist.md → Resource Management](common-bugs-checklist.md#resource-management). This section focuses on capacity bounds.
 
 - [ ] Do global dicts/lists/caches have a max size or TTL?
 - [ ] Do accumulating structures (queues, logs, metrics buffers) have upper bounds?

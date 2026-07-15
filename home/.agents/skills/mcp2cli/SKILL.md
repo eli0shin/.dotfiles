@@ -288,28 +288,27 @@ When the user asks to create a skill from an MCP server, OpenAPI spec, or GraphQ
 
 5. **Install** the wrapper into the skill's scripts directory:
    ```bash
-   uvx mcp2cli bake install myapi --dir .claude/skills/myapi/scripts/
+   uvx mcp2cli bake install myapi --dir <skills-dir>/myapi/scripts/
    ```
 
-6. **Create a SKILL.md** in `.claude/skills/myapi/` that teaches another AI agent how to use this API. The SKILL.md must go beyond `--help` output — focus on knowledge that can only be learned through testing and reading documentation.
+6. **Create a SKILL.md** in `<skills-dir>/myapi/` that teaches another AI agent how to use this API. Resolve `<skills-dir>` from the active harness. The SKILL.md must go beyond `--help` output — focus on knowledge that can only be learned through testing and reading documentation.
 
    **Frontmatter:**
    ```yaml
    ---
    name: myapi
    description: Interact with the MyAPI service
-   allowed-tools: Bash(bash *)
    ---
    ```
 
    **Core Workflow** (discovery + execution):
    ```bash
    # List available commands
-   ${CLAUDE_SKILL_DIR}/scripts/myapi --list
+   scripts/myapi --list
    # Get help for a command
-   ${CLAUDE_SKILL_DIR}/scripts/myapi <command> --help
+   scripts/myapi <command> --help
    # Run a command
-   ${CLAUDE_SKILL_DIR}/scripts/myapi <command> --param value --pretty
+   scripts/myapi <command> --param value --pretty
    ```
 
    **Before Querying** checklist — include a decision framework:
@@ -328,17 +327,17 @@ When the user asks to create a skill from an MCP server, OpenAPI spec, or GraphQ
    **Output Processing** — use `--pretty` for readable JSON, `--head` to limit results, or pipe to `jq` for filtering:
    ```bash
    # Pretty-print results
-   ${CLAUDE_SKILL_DIR}/scripts/myapi list-records --pretty
+   scripts/myapi list-records --pretty
    # Limit large datasets
-   ${CLAUDE_SKILL_DIR}/scripts/myapi list-records --head 5
+   scripts/myapi list-records --head 5
    # Filter with jq (pipe)
-   ${CLAUDE_SKILL_DIR}/scripts/myapi list-records | jq '.[].name'
+   scripts/myapi list-records | jq '.[].name'
    ```
 
    **Export Formats** (if the API supports multiple output types):
    - List supported formats (JSON, CSV, xlsx, parquet, etc.)
    - Note which are text-safe vs binary
-   - For binary formats: `${CLAUDE_SKILL_DIR}/scripts/myapi export --format xlsx --raw > output.xlsx`
+   - For binary formats: `scripts/myapi export --format xlsx --raw > output.xlsx`
 
    **Knowledge Delta Principle:** Do not duplicate parameter listings from `--help`. Instead, document which parameters actually matter for common tasks, default behaviors that are surprising, combinations that don't work, and rate limits or response size limits.
 

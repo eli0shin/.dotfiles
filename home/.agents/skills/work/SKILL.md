@@ -22,4 +22,4 @@ Use the `jira-acli` and `confluence-acli` skills for any Jira/Confluence reads. 
  - **Problem** — a sentence or two.
  - **Building** — the core thing this ticket delivers, a few tight lines.
 
- Check this with the user. Once they've confirmed or corrected it, run a `/grilling` session to sharpen the approach, then hand off to `/to-prd` or `/implement` when the approach is agreed.
+ Check this with the user. Once they've confirmed or corrected it, run a `/grilling` session to sharpen the approach, then hand off when the approach is agreed.

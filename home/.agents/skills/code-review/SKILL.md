@@ -270,7 +270,6 @@ Language-agnostic patterns applicable to all code reviews:
 
 - [Architecture Review Guide](reference/architecture-review-guide.md) - Architecture review guide (SOLID, anti-patterns, coupling)
 - [Performance Review Guide](reference/performance-review-guide.md) - Performance review guide (Web Vitals, N+1, complexity)
-- [Common Bugs Checklist](reference/common-bugs-checklist.md) - Common bug checklist by language
 - [Security Review Guide](reference/security-review-guide.md) - Security review guide
 - [Code Review Best Practices](reference/code-review-best-practices.md) - Code review best practices
 - [PR Review Template](assets/pr-review-template.md) - PR review comment template

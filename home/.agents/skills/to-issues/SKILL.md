@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan into independently-grabbable issues using vertical slices (tracer bullets).
 
-The issue tracker and triage label vocabulary should have been provided to you — run `/setup-matt-pocock-skills` if not.
+Publish to the tracker established by the user's request or current project context. Infer it from explicit project docs, configured integrations, remotes, or issue references; ask if more than one tracker remains plausible.
 
 ## Process
 

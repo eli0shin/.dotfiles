@@ -9,9 +9,9 @@ Datadog MCP is the discovery/enrichment/validation layer for Datadog. It complem
 Use the bundled wrapper instead of repeating the long MCP URL:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp --list
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp --search metric
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp <tool> --help
+scripts/datadog-mcp --list
+scripts/datadog-mcp --search metric
+scripts/datadog-mcp <tool> --help
 ```
 
 Most Datadog MCP tools require telemetry; pass an empty object unless you have a reason to include more:
@@ -41,14 +41,14 @@ Workflow rule: **MCP to discover; pup to operationalize**.
 
 ```bash
 # list/search tools
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp --list
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp --search ddsql
+scripts/datadog-mcp --list
+scripts/datadog-mcp --search ddsql
 
 # inspect one tool
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context --help
+scripts/datadog-mcp get-datadog-metric-context --help
 
 # execute
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context \
+scripts/datadog-mcp get-datadog-metric-context \
   --metric-name system.cpu.user \
   --telemetry '{}'
 ```
@@ -60,7 +60,7 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context \
 Use this before writing metric queries if you do not know available dimensions.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context \
+scripts/datadog-mcp get-datadog-metric-context \
   --metric-name trace.http.request.duration \
   --include-tag-values \
   --scope-tags '["env:prod"]' \
@@ -72,12 +72,12 @@ Useful variants:
 
 ```bash
 # cheaper: tag keys only
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context \
+scripts/datadog-mcp get-datadog-metric-context \
   --metric-name system.cpu.user \
   --telemetry '{}'
 
 # find related dashboards/monitors/notebooks/SLOs
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-metric-context \
+scripts/datadog-mcp get-datadog-metric-context \
   --metric-name system.cpu.user \
   --include-related-assets \
   --telemetry '{}'
@@ -94,7 +94,7 @@ pup metrics query --query='avg:trace.http.request.duration{env:prod} by {service
 Use `search-datadog-spans` with `custom-attributes` to sample available attributes.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-spans \
+scripts/datadog-mcp search-datadog-spans \
   --query 'service:checkout' \
   --from now-1h \
   --custom-attributes '["*"]' \
@@ -105,7 +105,7 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-spans \
 Then validate candidate dimensions with aggregation:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp aggregate-spans \
+scripts/datadog-mcp aggregate-spans \
   --query 'service:checkout' \
   --from now-1h \
   --group-by '{"fields":["@http.status_code"]}' \
@@ -124,14 +124,14 @@ pup traces aggregate --query='service:checkout' --compute='count' --group-by='@h
 For raw event inspection/discovery, use search tools with narrow windows and token caps. For counts or grouped analysis, use aggregate/analyze tools instead of fetching raw events.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-logs \
+scripts/datadog-mcp search-datadog-logs \
   --query 'service:checkout status:error' \
   --from now-1h \
   --extra-fields '["*"]' \
   --max-tokens 12000 \
   --telemetry '{}'
 
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-rum-events \
+scripts/datadog-mcp search-datadog-rum-events \
   --query '@type:error env:prod' \
   --from now-1h \
   --detailed-output \
@@ -144,10 +144,10 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-rum-events \
 DDSQL is MCP-first. Use the discovery sequence before writing non-trivial SQL:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp ddsql-get-spec --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp ddsql-schema-search-tables --query logs --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp ddsql-schema-get-table-columns --table-name '<table>' --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp ddsql-run-query --sql-query 'SELECT ...' --telemetry '{}'
+scripts/datadog-mcp ddsql-get-spec --telemetry '{}'
+scripts/datadog-mcp ddsql-schema-search-tables --query logs --telemetry '{}'
+scripts/datadog-mcp ddsql-schema-get-table-columns --table-name '<table>' --telemetry '{}'
+scripts/datadog-mcp ddsql-run-query --sql-query 'SELECT ...' --telemetry '{}'
 ```
 
 Gotchas from the MCP tool descriptions:
@@ -163,7 +163,7 @@ Gotchas from the MCP tool descriptions:
 Use MCP instead of `kubectl` when you need Datadog's cross-cluster/enriched resource view or do not have local kubeconfig.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-k8s-resources \
+scripts/datadog-mcp search-datadog-k8s-resources \
   --kind pod \
   --query 'pod_status:crashloopbackoff team:$team' \
   --include-tags 'team,service,env,kube_cluster_name,kube_namespace' \
@@ -173,8 +173,8 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-k8s-resources \
 Then drill in:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp describe-datadog-k8s-resource --help
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-k8s-manifest --help
+scripts/datadog-mcp describe-datadog-k8s-resource --help
+scripts/datadog-mcp get-datadog-k8s-manifest --help
 ```
 
 ### Monitor authoring/validation
@@ -182,10 +182,10 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-datadog-k8s-manifest --help
 Use MCP before creating or changing monitors:
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-monitor-templates --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp recommend-monitor-threshold --help
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp generate-monitor-message --help
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp validate-monitor-definition \
+scripts/datadog-mcp get-monitor-templates --telemetry '{}'
+scripts/datadog-mcp recommend-monitor-threshold --help
+scripts/datadog-mcp generate-monitor-message --help
+scripts/datadog-mcp validate-monitor-definition \
   --monitor-definition '<json>' \
   --telemetry '{}'
 ```
@@ -195,18 +195,18 @@ ${CLAUDE_SKILL_DIR}/scripts/datadog-mcp validate-monitor-definition \
 Use MCP for widget rendering/conversion/visualization and notebook cell validation. Use pup for durable notebook CRUD flows.
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp get-widget --help
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp visualize-tabular-data --help
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp validate-notebook-cells --help
+scripts/datadog-mcp get-widget --help
+scripts/datadog-mcp visualize-tabular-data --help
+scripts/datadog-mcp validate-notebook-cells --help
 ```
 
 ### Incidents, services, dependencies, error tracking
 
 ```bash
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-incidents --query 'state:(active OR stable)' --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-services --query 'team:payments' --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-service-dependencies --service checkout --telemetry '{}'
-${CLAUDE_SKILL_DIR}/scripts/datadog-mcp search-datadog-error-tracking-issues --help
+scripts/datadog-mcp search-datadog-incidents --query 'state:(active OR stable)' --telemetry '{}'
+scripts/datadog-mcp search-datadog-services --query 'team:payments' --telemetry '{}'
+scripts/datadog-mcp search-datadog-service-dependencies --service checkout --telemetry '{}'
+scripts/datadog-mcp search-datadog-error-tracking-issues --help
 ```
 
 ## Output and safety gotchas
