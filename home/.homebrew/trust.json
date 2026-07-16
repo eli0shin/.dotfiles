@@ -13,5 +13,8 @@
   ],
   "trustedformulae": [
     "datadog/lapdog/lapdog"
+  ],
+  "trustedcasks": [
+    "nkzw-tech/tap/codiff"
   ]
 }
