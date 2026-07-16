@@ -274,6 +274,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         authorLogin: pr.author?.login,
       };
       const existing = state.watchedPrs.find((candidate) => candidate.pr.number === pr.number);
+      const wasAlreadyWatched = existing?.pr.repo === watchedPr.repo;
       if (existing) {
         existing.pr = watchedPr;
       } else {
@@ -289,7 +290,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
       startPolling(ctx);
       setStatus(ctx);
-      if (notify) ctx.ui.notify(`PR watch added #${pr.number} (${reason}).`, "info");
+      if (notify && !wasAlreadyWatched) ctx.ui.notify(`PR watch added #${pr.number} (${reason}).`, "info");
       return true;
     }
 

@@ -281,6 +281,18 @@ test("adds PRs created in multiple worktrees without replacing earlier watches",
   );
 });
 
+test("repeated gh pr activity does not notify for an already watched PR", async () => {
+  const harness = createHarness();
+
+  await harness.activate(104);
+  assert.deepEqual(harness.notifications, ["PR watch added #104 (gh pr command)."]);
+
+  await harness.activate(104, "view");
+  assert.equal(harness.notifications.length, 1);
+
+  await harness.shutdown();
+});
+
 test("gh pr view adds an open PR to the watch list", async () => {
   const harness = createHarness();
 
