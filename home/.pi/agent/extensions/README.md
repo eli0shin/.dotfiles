@@ -2,7 +2,7 @@
 
 Tracked first-pass Pi extensions for this dotfiles setup.
 
-- `permission-gate.ts`: ask/block bash commands matching `permissionGate.bash` patterns in Pi settings
+- `permission-gate.ts`: ask/block bash commands matching `permissionGate.bash` patterns; its `rmPolicy` allows removal in Git repositories and temporary directories, blocks direct removal of home or `/`, blocks recursive removal elsewhere, and asks for non-recursive removal elsewhere
 - `protected-paths.ts`: block writes to secret or generated paths
 - `status-line.ts`: show simple turn progress in the footer
 - `model-status.ts`: notify when the active model changes

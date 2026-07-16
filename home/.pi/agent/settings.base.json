@@ -22,6 +22,12 @@
         "rm",
         "sudo"
       ],
+      "rmPolicy": {
+        "allowGitRepositories": true,
+        "allowTempDirectories": true,
+        "blockHome": true,
+        "blockRecursiveOutsideAllowedLocations": true
+      },
       "ask": [
         "\\bgit\\s+push\\b(?:(?![;&|]).)*(?:(?:^|\\s)(?:refs/heads/)?(?:main|master)(?=$|\\s)|:(?:refs/heads/)?(?:main|master)(?=$|\\s))",
         "\\bgit\\s+reset\\s+--hard\\b",
