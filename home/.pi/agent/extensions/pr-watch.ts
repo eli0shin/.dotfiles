@@ -27,6 +27,7 @@ type WatchMode = "active" | "paused" | "off";
 
 type PendingPrUpdate = {
   pr: WatchedPr;
+  discovered?: boolean;
   checksHeadSha?: string;
   checksKey?: string;
   feedbackActivities: TrackedActivity[];
@@ -54,6 +55,8 @@ type WatchState = {
   pendingShaUpdate?: PendingShaUpdate;
   pendingDelivery?: PendingDelivery;
   recentGhOutputs: string[];
+  orchestrationSessionId?: string;
+  ignoredOrchestrationPrNumbers?: number[];
   selfLogin?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -109,6 +112,7 @@ type PrPollResult = {
 const CUSTOM_STATE = "pr-watch-state";
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
+const ORCHESTRATION_LABEL = "pi-orchestrated";
 
 const initialState = (): WatchState => ({
   version: 3,
@@ -116,6 +120,7 @@ const initialState = (): WatchState => ({
   watchedPrs: [],
   pendingPrUpdates: [],
   recentGhOutputs: [],
+  ignoredOrchestrationPrNumbers: [],
 });
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -175,7 +180,31 @@ export default function prWatch(pi: ExtensionAPI): void {
   let deliveryAttemptedId: string | undefined;
 
   function hasTargets(): boolean {
-    return state.watchedPrs.length > 0 || Boolean(state.watchedSha);
+    return state.watchedPrs.length > 0 || Boolean(state.watchedSha) || Boolean(state.orchestrationSessionId);
+  }
+
+  function orchestrationMarker(): string | undefined {
+    return state.orchestrationSessionId
+      ? `<!-- pi-orchestration-run: ${state.orchestrationSessionId} -->`
+      : undefined;
+  }
+
+  function repositoryFromPrUrl(url: string): string | undefined {
+    try {
+      const [owner, repo, kind] = new URL(url).pathname.split("/").filter(Boolean);
+      return owner && repo && kind === "pull" ? `${owner}/${repo}` : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function isOrchestrationPr(pr: { body?: string; labels?: Array<{ name?: string }> }): boolean {
+    const marker = orchestrationMarker();
+    return Boolean(
+      marker &&
+        pr.body?.includes(marker) &&
+        pr.labels?.some((label) => label.name === ORCHESTRATION_LABEL),
+    );
   }
 
   function save(): void {
@@ -184,7 +213,8 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function pendingCount(): number {
     return state.pendingPrUpdates.reduce(
-      (count, pending) => count + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
+      (count, pending) =>
+        count + (pending.discovered ? 1 : 0) + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
       state.pendingShaUpdate ? 1 : 0,
     );
   }
@@ -237,7 +267,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
   }
 
-  async function discover(ctx: ExtensionContext, reason: string, notify = true, prTarget?: string): Promise<boolean> {
+  async function discover(
+    ctx: ExtensionContext,
+    reason: string,
+    notify = true,
+    prTarget?: string,
+    alreadyEnrolled = false,
+  ): Promise<boolean> {
     if (state.mode === "off") return false;
 
     const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
@@ -245,7 +281,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const prViewArgs = ["pr", "view"];
     if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author");
+    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,body,labels");
     const pr = await execJson<{
       number: number;
       url: string;
@@ -253,6 +289,8 @@ export default function prWatch(pi: ExtensionAPI): void {
       headRefOid: string;
       state: string;
       author?: { login?: string };
+      body?: string;
+      labels?: Array<{ name?: string }>;
     }>("gh", prViewArgs, ctx);
 
     if (!pr && prTarget) {
@@ -263,6 +301,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (pr?.state === "OPEN") {
+      if (
+        state.orchestrationSessionId &&
+        !alreadyEnrolled &&
+        (!isOrchestrationPr(pr) || repositoryFromPrUrl(pr.url)?.toLowerCase() !== repo.nameWithOwner.toLowerCase())
+      ) {
+        return false;
+      }
       await refreshSelfLogin(ctx);
 
       const watchedPr: WatchedPr = {
@@ -277,6 +322,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       const wasAlreadyWatched = existing?.pr.repo === watchedPr.repo;
       if (existing) {
         existing.pr = watchedPr;
+        if (alreadyEnrolled) await baselinePrState(existing, ctx);
       } else {
         const added: WatchedPrState = { pr: watchedPr, seenActivityIds: [] };
         state.watchedPrs.push(added);
@@ -303,6 +349,8 @@ export default function prWatch(pi: ExtensionAPI): void {
       return false;
     }
 
+    if (state.orchestrationSessionId) return false;
+
     const sha = await currentSha();
     if (!sha) return false;
 
@@ -317,6 +365,41 @@ export default function prWatch(pi: ExtensionAPI): void {
     startPolling(ctx);
     if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
     return true;
+  }
+
+  async function discoverOrchestrationPrs(ctx: ExtensionContext): Promise<void> {
+    if (!state.orchestrationSessionId || state.mode === "off") return;
+    const candidates =
+      (await execJson<
+        Array<{ number: number; url: string; body?: string; labels?: Array<{ name?: string }> }>
+      >(
+        "gh",
+        [
+          "pr",
+          "list",
+          "--state",
+          "open",
+          "--label",
+          ORCHESTRATION_LABEL,
+          "--limit",
+          "100",
+          "--json",
+          "number,url,body,labels",
+        ],
+        ctx,
+      )) ?? [];
+
+    const ignored = new Set(state.ignoredOrchestrationPrNumbers ?? []);
+    for (const candidate of candidates.filter(isOrchestrationPr)) {
+      if (ignored.has(candidate.number)) continue;
+      const alreadyWatched = state.watchedPrs.some(({ pr }) => pr.number === candidate.number);
+      if (alreadyWatched) continue;
+      if (await discover(ctx, "orchestration discovery", false, candidate.url)) {
+        const watched = state.watchedPrs.find(({ pr }) => pr.number === candidate.number);
+        if (watched) pendingPr(watched).discovered = true;
+        save();
+      }
+    }
   }
 
   function reconcilePendingPr(pr: WatchedPr): void {
@@ -503,6 +586,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     const identity = prIdentity(watched);
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}\nHead SHA: ${watched.pr.headSha}`;
 
+    if (state.orchestrationSessionId) {
+      return `CI finished for worker PR #${watched.pr.number} in orchestration session ${state.orchestrationSessionId}.\n\nPlease inspect the checks and generated outputs with gh as the orchestrator. Determine whether the result changes merge readiness or requires feedback through a PR comment or review. Do not modify or push to the worker branch.\n\n${details}`;
+    }
+
     if (prWatchMode(watched) === "author") {
       return `CI finished for ${identity}.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing check is not sufficient on its own. If any check involves a generated diff (e.g. a "diff", "codegen", "inferred types", "snapshot", or "generated files" step), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the check's logs, or the committed generated files) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes (e.g. unexpected inferred-type or schema changes) before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the checks passed AND any generated diffs are correct and intentional, briefly summarize that.\n\n${details}`;
     }
@@ -519,6 +606,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     const identity = prIdentity(watched);
     const activityList = formatActivityList(triggeringActivities);
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}`;
+
+    if (state.orchestrationSessionId) {
+      return `New activity was added to worker PR #${watched.pr.number} in orchestration session ${state.orchestrationSessionId}.\n\nTriggering activity:\n${activityList}\n\nPlease inspect these items as the orchestrator and determine whether they affect review or merge readiness. Communicate any required worker changes through a PR comment or review; do not modify or push to the worker branch.\n\n${details}`;
+    }
 
     if (prWatchMode(watched) === "author") {
       return `New PR feedback was added for ${identity}.\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific new feedback items first, then check any related unresolved review threads if needed. Summarize the actionable feedback and address it. If something is ambiguous but a reasonable low-risk interpretation exists, make that change and explain your assumption. Only stop for user input if proceeding could invalidate the existing design or cause broad rework.\n\n${details}`;
@@ -552,8 +643,16 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function removeEmptyPendingPr(number: number): void {
     state.pendingPrUpdates = state.pendingPrUpdates.filter(
-      (pending) => pending.pr.number !== number || Boolean(pending.checksKey) || pending.feedbackActivities.length > 0,
+      (pending) =>
+        pending.pr.number !== number ||
+        Boolean(pending.discovered) ||
+        Boolean(pending.checksKey) ||
+        pending.feedbackActivities.length > 0,
     );
+  }
+
+  function buildDiscoveryMessage(pending: PendingPrUpdate): string {
+    return `A new PR was detected from a worker agent for orchestration session ${state.orchestrationSessionId}.\n\nPR: ${pending.pr.url}`;
   }
 
   function buildShaChecksMessage(pending: PendingShaUpdate): string {
@@ -567,6 +666,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const messages: string[] = [];
     for (const pending of pendingPrUpdates) {
       const watched: WatchedPrState = { pr: pending.pr, seenActivityIds: [] };
+      if (pending.discovered) messages.push(buildDiscoveryMessage(pending));
       if (pending.checksKey) messages.push(buildPrChecksMessage(watched));
       if (pending.feedbackActivities.length > 0) {
         messages.push(buildPrFeedbackMessage(watched, pending.feedbackActivities));
@@ -593,6 +693,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const delivered of delivery.pendingPrUpdates) {
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
       if (!pending) return false;
+      if (delivered.discovered && !pending.discovered) return false;
       if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
       const pendingActivityIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
       if (delivered.feedbackActivities.some((activity) => !pendingActivityIds.has(activity.id))) return false;
@@ -649,6 +750,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const delivered of delivery.pendingPrUpdates) {
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
       if (!pending) continue;
+      if (delivered.discovered && pending.discovered) pending.discovered = undefined;
       if (delivered.checksKey && pending.checksKey === delivered.checksKey) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
@@ -765,6 +867,8 @@ export default function prWatch(pi: ExtensionAPI): void {
       let addedCount = 0;
       const errors: string[] = [];
 
+      await discoverOrchestrationPrs(ctx);
+
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
@@ -830,8 +934,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     const savedEntry = [...ctx.sessionManager.getBranch()]
       .reverse()
       .find((entry) => entry.type === "custom" && entry.customType === CUSTOM_STATE);
+    let restoredSavedState = false;
     if (savedEntry?.type === "custom" && isWatchState(savedEntry.data)) {
       state = structuredClone(savedEntry.data);
+      restoredSavedState = true;
+    } else {
+      state.orchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    }
+    if (state.orchestrationSessionId) {
+      process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
+    } else if (restoredSavedState) {
+      delete process.env.PI_ORCHESTRATION_SESSION_ID;
     }
     reconcileDelivery(ctx);
 
@@ -844,11 +957,11 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const savedPrs = [...state.watchedPrs];
     const savedSha = state.watchedSha;
-    state.watchedPrs = [];
     state.watchedSha = undefined;
-    for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url);
+    for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url, true);
+    await discoverOrchestrationPrs(ctx);
 
-    if (state.watchedPrs.length === 0 && savedSha) {
+    if (!state.orchestrationSessionId && state.watchedPrs.length === 0 && savedSha) {
       state.watchedSha = { repo: savedSha.repo, sha: savedSha.sha };
       await baselineCurrentShaState(ctx);
     }
@@ -936,6 +1049,12 @@ export default function prWatch(pi: ExtensionAPI): void {
           return;
         }
         state.mode = "active";
+        const number = Number(target.match(/\d+$/)?.[0]);
+        if (Number.isInteger(number) && number > 0) {
+          state.ignoredOrchestrationPrNumbers = (state.ignoredOrchestrationPrNumbers ?? []).filter(
+            (candidate) => candidate !== number,
+          );
+        }
         save();
         await discover(ctx, "manual add", true, target);
         flushPending(ctx);
@@ -950,6 +1069,9 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
         const existed = state.watchedPrs.some((watched) => watched.pr.number === number);
         removePr(number);
+        if (existed && state.orchestrationSessionId) {
+          state.ignoredOrchestrationPrNumbers = [...new Set([...(state.ignoredOrchestrationPrNumbers ?? []), number])];
+        }
         if (!hasTargets()) stopPolling(ctx);
         save();
         setStatus(ctx);
@@ -959,9 +1081,16 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       if (action === "reset") {
         stopPolling(ctx);
+        const orchestrationSessionId = state.orchestrationSessionId;
         state = initialState();
+        state.orchestrationSessionId = orchestrationSessionId;
         save();
-        await discover(ctx, "manual reset");
+        if (state.orchestrationSessionId) {
+          await discoverOrchestrationPrs(ctx);
+          startPolling(ctx);
+        } else {
+          await discover(ctx, "manual reset");
+        }
         return;
       }
 
@@ -985,6 +1114,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       const pendingSummary = [
         ...state.pendingPrUpdates.map((pending) => {
           const updates = [
+            pending.discovered ? "worker PR discovered" : undefined,
             pending.checksKey ? "CI complete" : undefined,
             pending.feedbackActivities.length > 0
               ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`

@@ -1,0 +1,230 @@
+import assert from "node:assert/strict";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import test from "node:test";
+
+const functionsDir = resolve(import.meta.dirname, "../../../../.config/fish/functions");
+
+async function executable(path: string, content: string): Promise<void> {
+  await writeFile(path, content, "utf8");
+  await chmod(path, 0o755);
+}
+
+async function fixture(): Promise<{ root: string; fakeBin: string }> {
+  const root = await mkdtemp(join(tmpdir(), "orchestration-command-"));
+  const fakeBin = join(root, "bin");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(fakeBin));
+  return { root, fakeBin };
+}
+
+test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async () => {
+  const { root, fakeBin } = await fixture();
+  const output = join(root, "pi-output");
+  await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nprintf '123e4567-e89b-12d3-a456-426614174000\\n'\n");
+  await executable(
+    join(fakeBin, "pi"),
+    `#!/bin/sh\nprintf '%s\\n' "$PI_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
+  );
+
+  try {
+    const result = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; orchestrate-pi $argv[2..-1]",
+        join(functionsDir, "orchestrate-pi.fish"),
+        "--model",
+        "test-model",
+        "hello world",
+      ],
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
+    );
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    assert.equal(
+      await readFile(output, "utf8"),
+      "123e4567-e89b-12d3-a456-426614174000\n--model\ntest-model\nhello world\n",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("orchestrate-pi does not start Pi when UUID generation fails", async () => {
+  const { root, fakeBin } = await fixture();
+  const piRan = join(root, "pi-ran");
+  await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nexit 1\n");
+  await executable(join(fakeBin, "pi"), `#!/bin/sh\ntouch ${JSON.stringify(piRan)}\n`);
+
+  try {
+    const result = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; orchestrate-pi", join(functionsDir, "orchestrate-pi.fish")],
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
+    );
+
+    assert.notEqual(result.status, 0);
+    await assert.rejects(readFile(piRan));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker creates one repos worker with the exact ticket handoff", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "calls");
+  const sessionCreated = join(root, "session-created");
+  const ticket = "042-implement-widget";
+
+  await executable(join(fakeBin, "tickets"), `#!/bin/sh\nprintf 'tickets %s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
+  await executable(
+    join(fakeBin, "git"),
+    `#!/bin/sh\nprintf 'git %s\\n' "$*" >> ${JSON.stringify(calls)}\nprintf 'git@github.com:eli0shin/example.git\\n'\n`,
+  );
+  await executable(
+    join(fakeBin, "repos"),
+    `#!/bin/sh\nprintf 'repos %s\\n' "$*" >> ${JSON.stringify(calls)}\ntouch ${JSON.stringify(sessionCreated)}\n`,
+  );
+  await executable(
+    join(fakeBin, "tmux"),
+    `#!/bin/sh\nprintf 'tmux' >> ${JSON.stringify(calls)}\nfor arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done\nprintf '\\n' >> ${JSON.stringify(calls)}\nif [ "$1" = "list-sessions" ]; then\n  if [ -f ${JSON.stringify(sessionCreated)} ]; then printf 'configured-repo@042-implement-widget\\n'; fi\n  exit 0\nfi\nif [ "$1" = "has-session" ]; then test -f ${JSON.stringify(sessionCreated)}; fi\n`,
+  );
+
+  try {
+    const result = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; spawn-worker $argv[2]", join(functionsDir, "spawn-worker.fish"), ticket],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    assert.equal(
+      await readFile(calls, "utf8"),
+      "tickets show 042-implement-widget\n" +
+        "tmux <list-sessions> <-F> <#{session_name}>\n" +
+        "repos work 042-implement-widget\n" +
+        "tmux <list-sessions> <-F> <#{session_name}>\n" +
+        "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> <env -u PI_ORCHESTRATION_SESSION_ID pi>\n" +
+        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n" +
+        "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
+        "</skill:ticket-worker\n\n" +
+        "Ticket: 042-implement-widget\n" +
+        "Worker identity: configured-repo@042-implement-widget\n" +
+        "PR marker: <!-- pi-orchestration-run: session-123 -->>\n" +
+        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker fails without a second handoff when repos resumes an existing tmux session", async () => {
+  const { root, fakeBin } = await fixture();
+  const reposRan = join(root, "repos-ran");
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(join(fakeBin, "git"), "#!/bin/sh\nprintf 'https://github.com/eli0shin/example.git\\n'\n");
+  await executable(
+    join(fakeBin, "tmux"),
+    "#!/bin/sh\nif [ \"$1\" = \"list-sessions\" ]; then printf 'example@042-implement-widget\\n'; fi\n",
+  );
+  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(reposRan)}\n`);
+
+  try {
+    const result = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; spawn-worker 042-implement-widget",
+        join(functionsDir, "spawn-worker.fish"),
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /repos did not create exactly one new worker session/);
+    await readFile(reposRan);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker rejects invalid handoffs before calling dependencies", async () => {
+  const { root, fakeBin } = await fixture();
+  const called = join(root, "called");
+  for (const command of ["tickets", "repos", "tmux"]) {
+    await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
+  }
+  const source = join(functionsDir, "spawn-worker.fish");
+
+  try {
+    const cases = [
+      { args: [] as string[], sessionId: "session-123" },
+      { args: ["one", "two"], sessionId: "session-123" },
+      { args: ["one"], sessionId: undefined },
+    ];
+    for (const fixtureCase of cases) {
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` };
+      if (fixtureCase.sessionId === undefined) delete env.PI_ORCHESTRATION_SESSION_ID;
+      else env.PI_ORCHESTRATION_SESSION_ID = fixtureCase.sessionId;
+      const result = spawnSync(
+        "fish",
+        ["--no-config", "-c", "source $argv[1]; spawn-worker $argv[2..-1]", source, ...fixtureCase.args],
+        { encoding: "utf8", env },
+      );
+      assert.equal(result.status, 2);
+    }
+    await assert.rejects(readFile(called));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("setup-orchestration-repo idempotently ensures the repository label", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "gh-calls");
+  await executable(
+    join(fakeBin, "gh"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\nif [ "$1 $2" = "repo view" ]; then printf 'eli0shin/example\\n'; fi\n`,
+  );
+
+  try {
+    const result = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; setup-orchestration-repo $argv[2]",
+        join(functionsDir, "setup-orchestration-repo.fish"),
+        "https://github.com/eli0shin/example.git",
+      ],
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
+    );
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    assert.equal(
+      await readFile(calls, "utf8"),
+      "repo view https://github.com/eli0shin/example.git --json nameWithOwner --jq .nameWithOwner\n" +
+        "label create pi-orchestrated --repo eli0shin/example --force --color 8250df --description Pull request created by a Pi orchestration worker\n",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

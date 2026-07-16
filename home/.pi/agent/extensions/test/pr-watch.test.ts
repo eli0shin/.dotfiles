@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 
 import prWatch, { pullRequestUrlFromText, shouldTrackActivity } from "../pr-watch.ts";
 
@@ -15,6 +16,8 @@ type PrFixture = {
   headSha: string;
   state: string;
   authorLogin: string;
+  body?: string;
+  labels?: string[];
 };
 
 function createHarness() {
@@ -28,6 +31,7 @@ function createHarness() {
   const statuses: Array<string | undefined> = [];
   const reviews = new Map<number, unknown[]>();
   const checks = new Map<number, unknown[]>();
+  const unavailablePrs = new Set<number>();
   const prs = new Map<number, PrFixture>([
     [
       104,
@@ -88,9 +92,26 @@ function createHarness() {
       if (command === "gh" && args[0] === "repo") {
         return { code: 0, stdout: JSON.stringify({ nameWithOwner: "eli0shin/repos" }), stderr: "" };
       }
+      if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            [...prs.values()].map((pr) => ({
+              number: pr.number,
+              url: pr.url,
+              body: pr.body ?? "",
+              labels: (pr.labels ?? []).map((name) => ({ name })),
+            })),
+          ),
+          stderr: "",
+        };
+      }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {
-        const pr = prs.get(prNumberFromArgs(args) ?? -1);
-        if (!pr) return { code: 1, stdout: "", stderr: "no pull request found" };
+        const number = prNumberFromArgs(args) ?? -1;
+        const pr = prs.get(number);
+        if (!pr || unavailablePrs.has(number)) {
+          return { code: 1, stdout: "", stderr: "no pull request found" };
+        }
         return {
           code: 0,
           stdout: JSON.stringify({
@@ -100,6 +121,8 @@ function createHarness() {
             headRefOid: pr.headSha,
             state: pr.state,
             author: { login: pr.authorLogin },
+            body: pr.body ?? "",
+            labels: (pr.labels ?? []).map((name) => ({ name })),
           }),
           stderr: "",
         };
@@ -199,6 +222,7 @@ function createHarness() {
     reviews,
     checks,
     prs,
+    unavailablePrs,
     ctx,
     activate,
     runPoll,
@@ -484,6 +508,341 @@ test("only the latest state entry is considered and version 2 is not migrated", 
   assert.equal(harness.savedStates.at(-1)?.version, 3);
   assert.equal(harness.savedStates.at(-1)?.mode, "active");
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+});
+
+test("orchestration startup discovers only a matching worker PR", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "Summary\n\n<!-- pi-orchestration-run: session-123 -->";
+  harness.prs.get(105)!.labels = ["pi-orchestrated"];
+  harness.prs.get(105)!.body = "<!-- pi-orchestration-run: another-session -->";
+
+  try {
+    await harness.startSession();
+
+    assert.deepEqual(
+      harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
+      [104],
+    );
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(
+      harness.sentMessages[0] ?? "",
+      /^A new PR was detected from a worker agent for orchestration session session-123\.\n\nPR: https:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
+    );
+    assert.doesNotMatch(harness.sentMessages[0] ?? "", /Branch:|Title:|pi-orchestrated|orchestration-run/);
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("worker PR discovery queues safely while the orchestrator is busy", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.startSession();
+    harness.setIdle(false);
+    harness.prs.get(104)!.labels = ["pi-orchestrated"];
+    harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 0);
+
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessageOptions[0], undefined);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("paused orchestration buffers discovery until resume", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.startSession();
+    await harness.commands.get("pr-watch")?.handler("pause", harness.ctx);
+    harness.prs.get(104)!.labels = ["pi-orchestrated"];
+    harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 0);
+
+    await harness.commands.get("pr-watch")?.handler("resume", harness.ctx);
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /PR: https:\/\/github\.com\/eli0shin\/repos\/pull\/104/);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("reset preserves environment-activated orchestration mode", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.startSession();
+    await harness.commands.get("pr-watch")?.handler("reset", harness.ctx);
+    await harness.shutdown();
+
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "session-123");
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("manually removed orchestration PR stays removed on later polls", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+
+  try {
+    await harness.startSession();
+    await harness.commands.get("pr-watch")?.handler("remove 104", harness.ctx);
+    await harness.runPoll();
+
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+    assert.equal(harness.sentMessages.length, 1, "removal must not trigger a second discovery event");
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration scope rejects an unrelated PR activated through gh", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.startSession();
+    await harness.activate(104, "view");
+
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration scope rejects matching PRs from another repository", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.startSession();
+    harness.prs.get(104)!.url = "https://github.com/another/repository/pull/104";
+    harness.prs.get(104)!.labels = ["pi-orchestrated"];
+    harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+    await harness.activate(104, "view");
+
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration sessions receive orchestrator CI wording", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+
+  try {
+    await harness.startSession();
+    harness.checks.set(104, [terminalCheck("104")]);
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 2);
+    assert.match(harness.sentMessages[1] ?? "", /worker PR #104/);
+    assert.match(harness.sentMessages[1] ?? "", /as the orchestrator/);
+    assert.doesNotMatch(harness.sentMessages[1] ?? "", /diagnose and fix them|authored by you/);
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("persisted orchestration session wins and restores the process environment", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "environment-session";
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 3,
+        mode: "active",
+        orchestrationSessionId: "persisted-session",
+        watchedPrs: [],
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "persisted-session");
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "persisted-session");
+    assert.equal(
+      execFileSync(process.execPath, ["-e", "process.stdout.write(process.env.PI_ORCHESTRATION_SESSION_ID ?? '')"], {
+        encoding: "utf8",
+      }),
+      "persisted-session",
+    );
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("persisted ordinary state clears a stale orchestration environment", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "stale-session";
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 3,
+        mode: "active",
+        watchedPrs: [],
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+    assert.equal(
+      execFileSync(process.execPath, ["-e", "process.stdout.write(process.env.PI_ORCHESTRATION_SESSION_ID ?? '')"], {
+        encoding: "utf8",
+      }),
+      "",
+    );
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("transient refresh failure does not drop a persisted orchestration watch", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  const pr = harness.prs.get(104)!;
+  harness.unavailablePrs.add(104);
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 3,
+        mode: "active",
+        orchestrationSessionId: "persisted-session",
+        watchedPrs: [
+          {
+            pr: {
+              repo: "eli0shin/repos",
+              number: pr.number,
+              url: pr.url,
+              branch: pr.branch,
+              headSha: pr.headSha,
+              authorLogin: pr.authorLogin,
+            },
+            seenActivityIds: [],
+          },
+        ],
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+
+    assert.deepEqual(
+      harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
+      [104],
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration enrollment stays sticky across resume", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  const pr = harness.prs.get(104)!;
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 3,
+        mode: "active",
+        orchestrationSessionId: "persisted-session",
+        watchedPrs: [
+          {
+            pr: {
+              repo: "eli0shin/repos",
+              number: pr.number,
+              url: pr.url,
+              branch: pr.branch,
+              headSha: pr.headSha,
+              authorLogin: pr.authorLogin,
+            },
+            seenActivityIds: [],
+          },
+        ],
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+
+    assert.deepEqual(
+      harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
+      [104],
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
 });
 
 test("version 3 paused pending state survives session restart", async () => {
