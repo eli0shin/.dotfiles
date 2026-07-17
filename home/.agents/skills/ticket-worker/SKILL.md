@@ -9,7 +9,7 @@ Implement the handed-off ticket. Follow the repository’s tracker instructions:
 
 Work only on this ticket. Follow its accepted contracts and the repository’s existing skills and conventions. Run the relevant checks and `run_code_review`.
 
-Commit and push the changes, then open a PR using the `creating-prs` skill. Add the `pi-orchestrated` label and append the supplied PR marker exactly to the PR body.
+Commit and push the changes, then open a PR against the supplied PR base using the `creating-prs` skill and `gh pr create --base <supplied-pr-base>`. Add the `pi-orchestrated` label and append the supplied PR marker exactly to the PR body.
 
 Do not merge the PR or resolve the ticket; the orchestrator owns that.
 

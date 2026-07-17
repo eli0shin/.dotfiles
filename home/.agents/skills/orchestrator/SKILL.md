@@ -5,7 +5,7 @@ description: Coordinate parallel ticket workers as an event-driven control plane
 
 # Orchestrator
 
-Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one `repos` worktree, and one pull request. The harness watches matching worker PRs and injects notifications into this session for relevant PR events; this facility is called PR Watch. **Yield** by ending the turn without polling; PR Watch re-enters on relevant activity.
+Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. The harness watches matching worker PRs and injects notifications into this session for relevant PR events; this facility is called PR Watch. **Yield** by ending the turn without polling; PR Watch re-enters on relevant activity.
 
 ## Hard boundary
 
@@ -19,9 +19,9 @@ If information is missing, ask for it in a concise PR comment, wait for an event
 
 ## Establish the run
 
-Read `PI_ORCHESTRATION_SESSION_ID` before doing anything else. Stop clearly if it is absent. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
+Read `PI_ORCHESTRATION_SESSION_ID` before doing anything else. Stop clearly if it is absent. Treat the current named branch as the landing branch for the entire run; stop if HEAD is detached and never switch branches. All worker branches stack on the landing branch and all worker PRs target it. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
 
-Read repository instructions and the configured tracker instructions. Use the Tickets CLI with concise human-readable output to inspect tickets, assignment, blockers, and status. Never request JSON from Tickets. Use `tickets --help` when command syntax is uncertain.
+Read repository instructions and the configured tracker instructions, then update the landing branch with a fast-forward-only pull. Before spawning, require it to track a same-named remote branch at exactly the same commit so every PR has a published base. Use the Tickets CLI with concise human-readable output to inspect tickets, assignment, blockers, and status. Never request JSON from Tickets. Use `tickets --help` when command syntax is uncertain.
 
 This step is complete when the requested effort and its executable frontier are known.
 
@@ -42,6 +42,7 @@ Do not claim worker tickets; `spawn-worker` supplies the worker identity and han
 On each PR Watch event, read the PR description and current comments and reviews without opening the diff or changed files. Then call `run_code_review`. In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering event, and relevant feedback, with this required return contract:
 
 - reviewed head commit SHA;
+- confirmation that the PR targets the landing branch;
 - ticket and contract compliance;
 - complete actionable findings and unresolved feedback;
 - required-check and generated-output verdict;
@@ -58,24 +59,24 @@ Act as the final authority on review feedback. Assess delegated findings and exi
 
 - `WAIT`: yield.
 - `FEEDBACK`: publish the delegated actionable findings through one ordinary PR comment, or a GitHub review when grouping multiple or inline findings is clearer. Never request review by tagging a bot. Then yield.
-- `MERGE`: only when the delegated verdict confirms the reviewed head satisfies the ticket, required checks passed, generated changes are intentional, actionable findings are resolved, and the PR is mergeable, squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, yield until a fresh verdict; otherwise resolve the merge.
+- `MERGE`: only when the delegated verdict confirms the PR targets the landing branch, the reviewed head satisfies the ticket, required checks passed, generated changes are intentional, actionable findings are resolved, and the PR is mergeable, squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, yield until a fresh verdict; otherwise resolve the merge.
 
 ## Resolve a merge
 
 After each merge, follow the repository's demonstrated tracker resolution process without redesigning it:
 
-1. Update the main worktree with a fast-forward-only pull.
+1. Update the landing-branch worktree with a fast-forward-only pull.
 2. Append the required concise resolution and merged PR/commit evidence to the ticket.
 3. Run `tickets done <ticket-name>` so downstream blockers are removed.
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
-6. Run `repos clean <ticket-name>` to remove the merged worktree and worker session.
+6. Run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
 7. Find and spawn the newly unblocked frontier immediately.
 
 This step is complete when tracker evidence is recorded, cleanup succeeds, lint passes, and every newly executable ticket has a worker. Then yield.
 
 ## Recovery
 
-After interruption, use `repos list` and tracker state to reconstruct tickets and workers. Let PR Watch rediscover matching PRs. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the hard boundary.
+After interruption, resume in the landing-branch worktree, then use `repos list` and tracker state to reconstruct tickets and workers. Let PR Watch rediscover matching PRs. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the hard boundary.
 
-The run is complete when the requested effort has no unresolved executable tickets and required container bookkeeping is resolved.
+The run is complete when the requested effort has no unresolved executable tickets, required container bookkeeping is resolved, and all completed ticket changes have landed on the landing branch.

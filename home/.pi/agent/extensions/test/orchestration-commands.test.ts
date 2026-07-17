@@ -82,7 +82,7 @@ test("spawn-worker creates one repos worker with the exact ticket handoff", asyn
   await executable(join(fakeBin, "tickets"), `#!/bin/sh\nprintf 'tickets %s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
   await executable(
     join(fakeBin, "git"),
-    `#!/bin/sh\nprintf 'git %s\\n' "$*" >> ${JSON.stringify(calls)}\nprintf 'git@github.com:eli0shin/example.git\\n'\n`,
+    `#!/bin/sh\nprintf 'git %s\\n' "$*" >> ${JSON.stringify(calls)}\ncase "$*" in\n  "branch --show-current") printf 'integration/epic\\n' ;;\n  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") printf 'origin/integration/epic\\n' ;;\n  "rev-parse HEAD"|"rev-parse @{upstream}") printf 'abc123\\n' ;;\nesac\n`,
   );
   await executable(
     join(fakeBin, "repos"),
@@ -110,9 +110,13 @@ test("spawn-worker creates one repos worker with the exact ticket handoff", asyn
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
     assert.equal(
       await readFile(calls, "utf8"),
-      "tickets show 042-implement-widget\n" +
+      "git branch --show-current\n" +
+        "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}\n" +
+        "git rev-parse HEAD\n" +
+        "git rev-parse @{upstream}\n" +
+        "tickets show 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
-        "repos work 042-implement-widget\n" +
+        "repos stack --no-focus 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> <env -u PI_ORCHESTRATION_SESSION_ID pi>\n" +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n" +
@@ -120,6 +124,7 @@ test("spawn-worker creates one repos worker with the exact ticket handoff", asyn
         "</skill:ticket-worker\n\n" +
         "Ticket: 042-implement-widget\n" +
         "Worker identity: configured-repo@042-implement-widget\n" +
+        "PR base: integration/epic\n" +
         "PR marker: <!-- pi-orchestration-run: session-123 -->>\n" +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n",
     );
@@ -132,7 +137,10 @@ test("spawn-worker fails without a second handoff when repos resumes an existing
   const { root, fakeBin } = await fixture();
   const reposRan = join(root, "repos-ran");
   await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
-  await executable(join(fakeBin, "git"), "#!/bin/sh\nprintf 'https://github.com/eli0shin/example.git\\n'\n");
+  await executable(
+    join(fakeBin, "git"),
+    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\nesac\n",
+  );
   await executable(
     join(fakeBin, "tmux"),
     "#!/bin/sh\nif [ \"$1\" = \"list-sessions\" ]; then printf 'example@042-implement-widget\\n'; fi\n",
@@ -169,7 +177,7 @@ test("spawn-worker fails without a second handoff when repos resumes an existing
 test("spawn-worker rejects invalid handoffs before calling dependencies", async () => {
   const { root, fakeBin } = await fixture();
   const called = join(root, "called");
-  for (const command of ["tickets", "repos", "tmux"]) {
+  for (const command of ["git", "tickets", "repos", "tmux"]) {
     await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
   }
   const source = join(functionsDir, "spawn-worker.fish");
@@ -191,6 +199,79 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       );
       assert.equal(result.status, 2);
     }
+    await assert.rejects(readFile(called));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker rejects an unpublished landing branch before creating a worker", async () => {
+  const cases = [
+    {
+      git: "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'integration/epic\\n' ;;\n  *) exit 1 ;;\nesac\n",
+      error: /track a same-named remote branch/,
+    },
+    {
+      git: "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'integration/epic\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/integration/epic\\n' ;;\n  \"rev-parse HEAD\") printf 'local-sha\\n' ;;\n  \"rev-parse @{upstream}\") printf 'remote-sha\\n' ;;\nesac\n",
+      error: /exactly match its upstream/,
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    const { root, fakeBin } = await fixture();
+    const called = join(root, "called");
+    await executable(join(fakeBin, "git"), fixtureCase.git);
+    for (const command of ["tickets", "repos", "tmux"]) {
+      await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
+    }
+
+    try {
+      const result = spawnSync(
+        "fish",
+        ["--no-config", "-c", "source $argv[1]; spawn-worker one", join(functionsDir, "spawn-worker.fish")],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${fakeBin}:/usr/bin:/bin`,
+            PI_ORCHESTRATION_SESSION_ID: "session-123",
+          },
+        },
+      );
+
+      assert.equal(result.status, 2);
+      assert.match(result.stderr, fixtureCase.error);
+      await assert.rejects(readFile(called));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("spawn-worker rejects a detached HEAD before creating a worker", async () => {
+  const { root, fakeBin } = await fixture();
+  const called = join(root, "called");
+  await executable(join(fakeBin, "git"), "#!/bin/sh\nexit 0\n");
+  for (const command of ["tickets", "repos", "tmux"]) {
+    await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
+  }
+
+  try {
+    const result = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; spawn-worker one", join(functionsDir, "spawn-worker.fish")],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /requires a named current Git branch/);
     await assert.rejects(readFile(called));
   } finally {
     await rm(root, { recursive: true, force: true });
