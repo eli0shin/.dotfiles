@@ -37,7 +37,7 @@
     }
   },
   "packages": [
-    "npm:pi-exa",
+    "git:https://github.com/d-b/pi-exa.git@e06fb2fa6fb731b80a3a392939830cdd3267b2f4",
     "npm:@observal/pi-insights"
   ],
   "extensions": [

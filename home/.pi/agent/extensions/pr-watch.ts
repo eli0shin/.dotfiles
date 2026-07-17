@@ -27,7 +27,6 @@ type WatchMode = "active" | "paused" | "off";
 
 type PendingPrUpdate = {
   pr: WatchedPr;
-  discovered?: boolean;
   checksHeadSha?: string;
   checksKey?: string;
   feedbackActivities: TrackedActivity[];
@@ -214,7 +213,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   function pendingCount(): number {
     return state.pendingPrUpdates.reduce(
       (count, pending) =>
-        count + (pending.discovered ? 1 : 0) + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
+        count + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
       state.pendingShaUpdate ? 1 : 0,
     );
   }
@@ -394,11 +393,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (ignored.has(candidate.number)) continue;
       const alreadyWatched = state.watchedPrs.some(({ pr }) => pr.number === candidate.number);
       if (alreadyWatched) continue;
-      if (await discover(ctx, "orchestration discovery", false, candidate.url)) {
-        const watched = state.watchedPrs.find(({ pr }) => pr.number === candidate.number);
-        if (watched) pendingPr(watched).discovered = true;
-        save();
-      }
+      await discover(ctx, "orchestration discovery", false, candidate.url);
     }
   }
 
@@ -477,6 +472,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     );
   }
 
+  function isFailingCheck(check: Check): boolean {
+    const stateValue = (check.state ?? "").toLowerCase();
+    const bucketValue = (check.bucket ?? "").toLowerCase();
+    return [stateValue, bucketValue].some((value) =>
+      ["fail", "failure", "cancel", "cancelled", "timed_out", "action_required", "startup_failure"].includes(value),
+    );
+  }
+
+  function checksAreNotifiable(checks: Check[]): boolean {
+    const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
+    return allChecksTerminal && (!state.orchestrationSessionId || !checks.some(isFailingCheck));
+  }
+
   function checksCompletionKey(headSha: string, checks: Check[]): string {
     const checkSignature = checks
       .map((check) => [check.workflow, check.name, check.state, check.bucket, check.completedAt, check.link].join("|"))
@@ -501,13 +509,20 @@ export default function prWatch(pi: ExtensionAPI): void {
     const checks = await fetchChecks(watched, ctx);
     if (checks) {
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
-      const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
-      watched.notifiedChecksKey = allChecksTerminal ? checksKey : undefined;
+      const checksNotifiable = checksAreNotifiable(checks);
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
-      if (pending?.checksKey && (!allChecksTerminal || pending.checksKey !== checksKey)) {
+      if (pending?.checksKey && (!checksNotifiable || pending.checksKey !== checksKey)) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
         removeEmptyPendingPr(watched.pr.number);
+      }
+      if (state.orchestrationSessionId && checksNotifiable && watched.notifiedChecksKey !== checksKey) {
+        watched.notifiedChecksKey = checksKey;
+        const pendingUpdate = pendingPr(watched);
+        pendingUpdate.checksHeadSha = watched.pr.headSha;
+        pendingUpdate.checksKey = checksKey;
+      } else {
+        watched.notifiedChecksKey = checksNotifiable ? checksKey : undefined;
       }
     }
     watched.seenActivityIds = ((await fetchActivities(watched, ctx)) ?? []).map((activity) => activity.id);
@@ -587,7 +602,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}\nHead SHA: ${watched.pr.headSha}`;
 
     if (state.orchestrationSessionId) {
-      return `CI finished for worker PR #${watched.pr.number} in orchestration session ${state.orchestrationSessionId}.\n\nPlease inspect the checks and generated outputs with gh as the orchestrator. Determine whether the result changes merge readiness or requires feedback through a PR comment or review. Do not modify or push to the worker branch.\n\n${details}`;
+      return `CI finished for worker PR #${watched.pr.number}.\n\n${watched.pr.url}`;
     }
 
     if (prWatchMode(watched) === "author") {
@@ -608,7 +623,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}`;
 
     if (state.orchestrationSessionId) {
-      return `New activity was added to worker PR #${watched.pr.number} in orchestration session ${state.orchestrationSessionId}.\n\nTriggering activity:\n${activityList}\n\nPlease inspect these items as the orchestrator and determine whether they affect review or merge readiness. Communicate any required worker changes through a PR comment or review; do not modify or push to the worker branch.\n\n${details}`;
+      return `New activity on worker PR #${watched.pr.number}:\n${activityList}\n\n${watched.pr.url}`;
     }
 
     if (prWatchMode(watched) === "author") {
@@ -645,14 +660,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.pendingPrUpdates = state.pendingPrUpdates.filter(
       (pending) =>
         pending.pr.number !== number ||
-        Boolean(pending.discovered) ||
         Boolean(pending.checksKey) ||
         pending.feedbackActivities.length > 0,
     );
-  }
-
-  function buildDiscoveryMessage(pending: PendingPrUpdate): string {
-    return `A new PR was detected from a worker agent for orchestration session ${state.orchestrationSessionId}.\n\nPR: ${pending.pr.url}`;
   }
 
   function buildShaChecksMessage(pending: PendingShaUpdate): string {
@@ -666,7 +676,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     const messages: string[] = [];
     for (const pending of pendingPrUpdates) {
       const watched: WatchedPrState = { pr: pending.pr, seenActivityIds: [] };
-      if (pending.discovered) messages.push(buildDiscoveryMessage(pending));
       if (pending.checksKey) messages.push(buildPrChecksMessage(watched));
       if (pending.feedbackActivities.length > 0) {
         messages.push(buildPrFeedbackMessage(watched, pending.feedbackActivities));
@@ -693,7 +702,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const delivered of delivery.pendingPrUpdates) {
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
       if (!pending) return false;
-      if (delivered.discovered && !pending.discovered) return false;
       if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
       const pendingActivityIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
       if (delivered.feedbackActivities.some((activity) => !pendingActivityIds.has(activity.id))) return false;
@@ -750,7 +758,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const delivered of delivery.pendingPrUpdates) {
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
       if (!pending) continue;
-      if (delivered.discovered && pending.discovered) pending.discovered = undefined;
       if (delivered.checksKey && pending.checksKey === delivered.checksKey) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
@@ -812,15 +819,15 @@ export default function prWatch(pi: ExtensionAPI): void {
     let addedCount = 0;
     const checks = await fetchChecks(watched, ctx);
     if (checks) {
-      const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
+      const checksNotifiable = checksAreNotifiable(checks);
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
-      if (pending?.checksKey && (!allChecksTerminal || pending.checksKey !== checksKey)) {
+      if (pending?.checksKey && (!checksNotifiable || pending.checksKey !== checksKey)) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
         removeEmptyPendingPr(watched.pr.number);
       }
-      if (allChecksTerminal && watched.notifiedChecksKey !== checksKey) {
+      if (checksNotifiable && watched.notifiedChecksKey !== checksKey) {
         watched.notifiedChecksKey = checksKey;
         const pendingUpdate = pendingPr(watched);
         pendingUpdate.checksHeadSha = watched.pr.headSha;
@@ -1114,7 +1121,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       const pendingSummary = [
         ...state.pendingPrUpdates.map((pending) => {
           const updates = [
-            pending.discovered ? "worker PR discovered" : undefined,
             pending.checksKey ? "CI complete" : undefined,
             pending.feedbackActivities.length > 0
               ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`

@@ -249,6 +249,14 @@ function terminalCheck(name: string) {
   };
 }
 
+function failingCheck(name: string) {
+  return {
+    ...terminalCheck(name),
+    state: "FAILURE",
+    bucket: "fail",
+  };
+}
+
 test("tracks human feedback of every activity kind", () => {
   assert.equal(shouldTrackActivity("issue-comment", humanActivity), true);
   assert.equal(shouldTrackActivity("review", humanActivity), true);
@@ -343,10 +351,10 @@ test("does not add a PR that is not open", async () => {
   );
 });
 
-test("CI notification identifies the watched branch", async () => {
+test("standard PR watch notifies when failing CI finishes", async () => {
   const harness = createHarness();
   await harness.activate(104);
-  harness.checks.set(104, [terminalCheck("104")]);
+  harness.checks.set(104, [failingCheck("104")]);
 
   await harness.runPoll();
   await harness.shutdown();
@@ -526,19 +534,14 @@ test("orchestration startup discovers only a matching worker PR", async () => {
       harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
       [104],
     );
-    assert.equal(harness.sentMessages.length, 1);
-    assert.match(
-      harness.sentMessages[0] ?? "",
-      /^A new PR was detected from a worker agent for orchestration session session-123\.\n\nPR: https:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
-    );
-    assert.doesNotMatch(harness.sentMessages[0] ?? "", /Branch:|Title:|pi-orchestrated|orchestration-run/);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
   }
 });
 
-test("worker PR discovery queues safely while the orchestrator is busy", async () => {
+test("worker PR discovery stays silent while the orchestrator is busy", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
@@ -553,8 +556,7 @@ test("worker PR discovery queues safely while the orchestrator is busy", async (
 
     harness.setIdle(true);
     await harness.settleAgent();
-    assert.equal(harness.sentMessages.length, 1);
-    assert.equal(harness.sentMessageOptions[0], undefined);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -562,7 +564,7 @@ test("worker PR discovery queues safely while the orchestrator is busy", async (
   }
 });
 
-test("paused orchestration buffers discovery until resume", async () => {
+test("paused orchestration discovery stays silent after resume", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
@@ -576,8 +578,7 @@ test("paused orchestration buffers discovery until resume", async () => {
     assert.equal(harness.sentMessages.length, 0);
 
     await harness.commands.get("pr-watch")?.handler("resume", harness.ctx);
-    assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /PR: https:\/\/github\.com\/eli0shin\/repos\/pull\/104/);
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -615,7 +616,7 @@ test("manually removed orchestration PR stays removed on later polls", async () 
     await harness.runPoll();
 
     assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
-    assert.equal(harness.sentMessages.length, 1, "removal must not trigger a second discovery event");
+    assert.equal(harness.sentMessages.length, 0);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -660,7 +661,45 @@ test("orchestration scope rejects matching PRs from another repository", async (
   }
 });
 
-test("orchestration sessions receive orchestrator CI wording", async () => {
+test("orchestration discovery notifies when checks are already passing", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+  harness.checks.set(104, [terminalCheck("104")]);
+
+  try {
+    await harness.startSession();
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /^CI finished for worker PR #104\./);
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration sessions do not receive failed CI notifications", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+
+  try {
+    await harness.startSession();
+    harness.checks.set(104, [failingCheck("104")]);
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration sessions receive a concise CI notification", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
@@ -672,10 +711,42 @@ test("orchestration sessions receive orchestrator CI wording", async () => {
     harness.checks.set(104, [terminalCheck("104")]);
     await harness.runPoll();
 
-    assert.equal(harness.sentMessages.length, 2);
-    assert.match(harness.sentMessages[1] ?? "", /worker PR #104/);
-    assert.match(harness.sentMessages[1] ?? "", /as the orchestrator/);
-    assert.doesNotMatch(harness.sentMessages[1] ?? "", /diagnose and fix them|authored by you/);
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(
+      harness.sentMessages[0] ?? "",
+      /^CI finished for worker PR #104\.\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
+    );
+    assert.doesNotMatch(
+      harness.sentMessages[0] ?? "",
+      /Branch:|SHA|session-123|Please|inspect|determine|diagnose|authored by you/,
+    );
+  } finally {
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration sessions receive a concise activity notification", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+
+  try {
+    await harness.startSession();
+    harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(
+      harness.sentMessages[0] ?? "",
+      /^New activity on worker PR #104:\n- review:77 by reviewer\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
+    );
+    assert.doesNotMatch(
+      harness.sentMessages[0] ?? "",
+      /Branch:|SHA|session-123|Please|inspect|determine|communicate/,
+    );
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;

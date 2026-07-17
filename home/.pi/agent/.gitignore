@@ -10,6 +10,7 @@
 !models.base.json
 !models.personal.json
 !models.work.json
+!pi-exa.json
 !extensions/
 !extensions/**
 !skills/
