@@ -1,7 +1,19 @@
 function spawn-worker --description "Create a Pi worker for one Tickets ticket"
-    if test (count $argv) -ne 1
-        echo "Usage: spawn-worker <ticket-name>" >&2
+    if test (count $argv) -ne 1; and test (count $argv) -ne 3
+        echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
         return 2
+    end
+    if test (count $argv) -eq 3; and test "$argv[2]" != "--context"
+        echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
+        return 2
+    end
+
+    set -l context
+    if test (count $argv) -eq 3
+        set context (string trim -- "$argv[3]" | string collect)
+    else if not test -t 0
+        read -z context
+        set context (string trim -- "$context" | string collect)
     end
     if not set -q PI_ORCHESTRATION_SESSION_ID; or test -z "$PI_ORCHESTRATION_SESSION_ID"
         echo "spawn-worker requires PI_ORCHESTRATION_SESSION_ID" >&2
@@ -48,13 +60,17 @@ function spawn-worker --description "Create a Pi worker for one Tickets ticket"
     end
     set -l session $new_sessions[1]
 
-    set -l prompt (string join \n \
+    set -l prompt_lines \
         '/skill:ticket-worker' \
         '' \
         "Ticket: $ticket" \
         "Worker identity: $session" \
         "PR base: $landing_branch" \
-        "PR marker: <!-- pi-orchestration-run: $PI_ORCHESTRATION_SESSION_ID -->" | string collect)
+        "PR marker: <!-- pi-orchestration-run: $PI_ORCHESTRATION_SESSION_ID -->"
+    if test -n "$context"
+        set -a prompt_lines '' 'Context:' "$context"
+    end
+    set -l prompt (string join \n $prompt_lines | string collect)
 
     tmux send-keys -l -t "$session:0" -- "env -u PI_ORCHESTRATION_SESSION_ID pi"; or return
     tmux send-keys -t "$session:0" C-m; or return

@@ -33,7 +33,11 @@ Start all independent frontier tickets without waiting between them:
 
 ```text
 spawn-worker <ticket-name>
+spawn-worker <ticket-name> --context "<steering context>"
+printf '%s\n' "<steering context>" | spawn-worker <ticket-name>
 ```
+
+Optionally provide concise steering context that is not already captured in the ticket. Do not summarize or restate existing instructions. `--context` accepts quoted text; when it is omitted, `spawn-worker` reads piped stdin if present.
 
 Do not claim worker tickets; `spawn-worker` supplies the worker identity and handoff. This step is complete when every currently executable frontier ticket has a worker. Then yield.
 

@@ -73,7 +73,7 @@ test("orchestrate-pi does not start Pi when UUID generation fails", async () => 
   }
 });
 
-test("spawn-worker creates one repos worker with the exact ticket handoff", async () => {
+test("spawn-worker adds explicit context to the exact ticket handoff", async () => {
   const { root, fakeBin } = await fixture();
   const calls = join(root, "calls");
   const sessionCreated = join(root, "session-created");
@@ -96,9 +96,18 @@ test("spawn-worker creates one repos worker with the exact ticket handoff", asyn
   try {
     const result = spawnSync(
       "fish",
-      ["--no-config", "-c", "source $argv[1]; spawn-worker $argv[2]", join(functionsDir, "spawn-worker.fish"), ticket],
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; spawn-worker $argv[2..-1]",
+        join(functionsDir, "spawn-worker.fish"),
+        ticket,
+        "--context",
+        "  Keep API stable.\nAvoid migrations.  ",
+      ],
       {
         encoding: "utf8",
+        input: "This piped text must be ignored.\n",
         env: {
           ...process.env,
           PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -125,9 +134,94 @@ test("spawn-worker creates one repos worker with the exact ticket handoff", asyn
         "Ticket: 042-implement-widget\n" +
         "Worker identity: configured-repo@042-implement-widget\n" +
         "PR base: integration/epic\n" +
-        "PR marker: <!-- pi-orchestration-run: session-123 -->>\n" +
+        "PR marker: <!-- pi-orchestration-run: session-123 -->\n\n" +
+        "Context:\n" +
+        "Keep API stable.\n" +
+        "Avoid migrations.>\n" +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n",
     );
+
+    await rm(calls, { force: true });
+    await rm(sessionCreated, { force: true });
+    const emptyContextResult = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; spawn-worker $argv[2..-1]",
+        join(functionsDir, "spawn-worker.fish"),
+        ticket,
+        "--context",
+        "  \n",
+      ],
+      {
+        encoding: "utf8",
+        input: "This piped text must still be ignored.\n",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+    assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
+    assert.doesNotMatch(await readFile(calls, "utf8"), /Context:/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker uses non-empty piped stdin as context", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "calls");
+  const sessionCreated = join(root, "session-created");
+
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(
+    join(fakeBin, "git"),
+    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\nesac\n",
+  );
+  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(sessionCreated)}\n`);
+  await executable(
+    join(fakeBin, "tmux"),
+    `#!/bin/sh\nprintf 'tmux' >> ${JSON.stringify(calls)}\nfor arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done\nprintf '\\n' >> ${JSON.stringify(calls)}\nif [ "$1" = "list-sessions" ]; then\n  if [ -f ${JSON.stringify(sessionCreated)} ]; then printf 'repo@ticket-one\\n'; fi\n  exit 0\nfi\n`,
+  );
+
+  try {
+    const result = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; spawn-worker ticket-one", join(functionsDir, "spawn-worker.fish")],
+      {
+        encoding: "utf8",
+        input: "  Prefer the existing adapter.\nKeep the constructor.  \n",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    assert.match(await readFile(calls, "utf8"), /\n\nContext:\nPrefer the existing adapter\.\nKeep the constructor\.>/);
+
+    await rm(calls, { force: true });
+    await rm(sessionCreated, { force: true });
+    const emptyContextResult = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; spawn-worker ticket-one", join(functionsDir, "spawn-worker.fish")],
+      {
+        encoding: "utf8",
+        input: "  \n",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PI_ORCHESTRATION_SESSION_ID: "session-123",
+        },
+      },
+    );
+    assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
+    assert.doesNotMatch(await readFile(calls, "utf8"), /Context:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
