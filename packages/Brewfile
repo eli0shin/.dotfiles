@@ -74,6 +74,7 @@ cask "vlc"
 cask "t3-code"
 cask "logitune"
 cask "superwhisper"
+cask "kitlangton-hex"
 
 
 go "github.com/air-verse/air"
