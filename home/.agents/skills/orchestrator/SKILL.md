@@ -5,14 +5,14 @@ description: Coordinate parallel ticket workers as an event-driven control plane
 
 # Orchestrator
 
-Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn without polling; PR Watch re-enters on relevant activity.
+Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn instead of blocking on a watch command or repeatedly checking for changes; PR Watch re-enters on relevant activity.
 
 ## Hard boundary
 
 Never implement ticket changes yourself. After spawning a worker:
 
-- Never poll GitHub, CI, a worker session, or a worker worktree.
-- Never read a worker diff, changed file, or worker worktree yourself; delegate change inspection to `run_code_review`. You may read the PR description, comments, and reviews to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts.
+- Never block the orchestration loop with `gh pr watch`, `gh run watch`, repeated `sleep`/status loops, or manual watching of GitHub, CI, worker sessions, or worker worktrees. One-shot state retrieval is not polling: use `gh pr list`, `gh pr view`, `gh run view`, and equivalent metadata queries whenever needed to reconcile state, respond to the user, or direct a review.
+- Never read a worker diff, changed file, or worker worktree yourself; delegate change inspection to `run_code_review`. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts.
 - Never edit, commit, or push a worker branch, and never send manual instructions into a healthy worker's tmux session.
 
 If information is missing, ask for it in a concise PR comment, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.
@@ -43,27 +43,26 @@ Do not claim worker tickets; the script supplies the worker identity and handoff
 
 ## Dispatch PR events
 
-On each PR Watch event, read the PR description and current comments and reviews without opening the diff or changed files. Then call `run_code_review`. In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering event, and relevant feedback, with this required return contract:
+On each PR Watch event, and whenever the user asks for current PR status, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files. Then call `run_code_review` for every PR whose current head or landing-base compatibility needs inspection. In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering event, and relevant feedback, with this required return contract:
 
 - reviewed head commit SHA;
 - confirmation that the PR targets the landing branch;
 - ticket and contract compliance;
 - complete actionable findings and unresolved feedback;
 - required-check and generated-output verdict;
-- mergeability verdict;
-- one recommendation: `WAIT`, `FEEDBACK`, or `MERGE`.
+- mergeability verdict.
 
-The reviewer inspects the complete diff, files, PR metadata, comments, threads, checks, and actual generated outputs. When multiple PR events arrive together, emit one `run_code_review` call per PR in the same response so reviews run concurrently.
+The reviewer inspects the complete diff, files, PR metadata, comments, threads, checks, and actual generated outputs. When multiple PRs need review together, emit one `run_code_review` call per PR in the same response so reviews run concurrently.
 
-A review cycle is complete only when a delegated verdict covers the current head commit and every item in the return contract. If the result is incomplete, delegate a follow-up review.
+A review cycle is complete only when delegated evidence covers the current head commit and every item in the return contract. If the result is incomplete, delegate a follow-up review.
 
-## Route the verdict
+## Act on the review
 
-Act as the final authority on review feedback. Assess delegated findings and existing PR feedback against the ticket, ADRs, designs, and repository contracts using the returned evidence and allowed PR context; do not pass through feedback that conflicts with those sources. Workers receive accepted feedback through their own PR Watch, make fixes, and push. Every new head or relevant activity requires a fresh delegated verdict.
+Act as the final authority on review feedback. Assess delegated findings and existing PR feedback against the ticket, ADRs, designs, and repository contracts using the returned evidence and allowed PR context; do not pass through feedback that conflicts with those sources. Derive the next action from the evidence rather than asking the reviewer for a routing label.
 
-- `WAIT`: yield.
-- `FEEDBACK`: publish the delegated actionable findings through one ordinary PR comment, or a GitHub review when grouping multiple or inline findings is clearer. Never request review by tagging a bot. Then yield.
-- `MERGE`: only when the delegated verdict confirms the PR targets the landing branch, the reviewed head satisfies the ticket, required checks passed, generated changes are intentional, actionable findings are resolved, and the PR is mergeable, squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, yield until a fresh verdict; otherwise resolve the merge.
+- If the worker must change code, resolve conflicts, update onto the current landing branch, regenerate outputs, or initiate missing verification, publish all accepted actionable findings through one ordinary PR comment or a GitHub review. Never request review by tagging a bot. Then yield for the worker's update.
+- If no worker action is needed but checks or another external operation are already running, yield for the next event.
+- Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed against the current landing base, generated changes are intentional, actionable findings are resolved, and the PR is mergeable. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
 
 ## Resolve a merge
 
@@ -75,12 +74,13 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
 6. Run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
-7. Find and spawn the newly unblocked frontier immediately.
+7. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls. A landing merge may make another PR conflicted, behind, or leave its green checks tied to an obsolete merge base without producing a PR Watch event. Immediately comment on each affected PR asking its worker to update onto the current landing branch, preserve already-merged contracts, resolve conflicts, and rerun the relevant checks.
+8. Find and spawn the newly unblocked frontier immediately.
 
-This step is complete when tracker evidence is recorded, cleanup succeeds, lint passes, and every newly executable ticket has a worker. Then yield.
+This step is complete when tracker evidence is recorded, cleanup succeeds, lint passes, remaining PRs have been reconciled, and every newly executable ticket has a worker. Then yield.
 
 ## Recovery
 
-After interruption, resume in the landing-branch worktree, then use `repos list` and tracker state to reconstruct tickets and workers. Let PR Watch restore worker-published membership. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the hard boundary.
+After interruption, resume in the landing-branch worktree, then use `repos list`, tracker state, `gh pr list`, and one-shot `gh pr view` calls to reconstruct tickets, workers, PR heads, comments, checks, and mergeability. Let PR Watch restore worker-published membership, but do not assume it replayed events that occurred during the interruption. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the boundary against inspecting or modifying worker changes directly.
 
 The run is complete when the requested effort has no unresolved executable tickets, required container bookkeeping is resolved, and all completed ticket changes have landed on the landing branch.
