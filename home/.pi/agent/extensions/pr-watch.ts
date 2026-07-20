@@ -15,6 +15,7 @@ type WatchedPrState = {
   pr: WatchedPr;
   seenActivityIds: string[];
   notifiedChecksKey?: string;
+  mergeable?: string;
 };
 
 type WatchedSha = {
@@ -29,6 +30,7 @@ type PendingPrUpdate = {
   pr: WatchedPr;
   checksHeadSha?: string;
   checksKey?: string;
+  conflictsKey?: string;
   feedbackActivities: TrackedActivity[];
 };
 
@@ -145,6 +147,10 @@ function isTextContent(value: unknown): value is { text: string } {
   return isObject(value) && typeof value.text === "string";
 }
 
+function isDefinitiveMergeable(value: string | undefined): value is "MERGEABLE" | "CONFLICTING" {
+  return value === "MERGEABLE" || value === "CONFLICTING";
+}
+
 function commandUsesGh(command: string): boolean {
   return command.startsWith("gh ") || command.includes(" gh ");
 }
@@ -213,7 +219,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   function pendingCount(): number {
     return state.pendingPrUpdates.reduce(
       (count, pending) =>
-        count + (pending.checksKey ? 1 : 0) + pending.feedbackActivities.length,
+        count + (pending.checksKey ? 1 : 0) + (pending.conflictsKey ? 1 : 0) + pending.feedbackActivities.length,
       state.pendingShaUpdate ? 1 : 0,
     );
   }
@@ -280,7 +286,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const prViewArgs = ["pr", "view"];
     if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,body,labels");
+    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,body,labels,mergeable");
     const pr = await execJson<{
       number: number;
       url: string;
@@ -288,6 +294,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       headRefOid: string;
       state: string;
       author?: { login?: string };
+      mergeable?: string;
       body?: string;
       labels?: Array<{ name?: string }>;
     }>("gh", prViewArgs, ctx);
@@ -321,9 +328,17 @@ export default function prWatch(pi: ExtensionAPI): void {
       const wasAlreadyWatched = existing?.pr.repo === watchedPr.repo;
       if (existing) {
         existing.pr = watchedPr;
-        if (alreadyEnrolled) await baselinePrState(existing, ctx);
+        if (alreadyEnrolled) {
+          if (pr.mergeable === "MERGEABLE") clearPendingConflict(existing.pr.number);
+          if (isDefinitiveMergeable(pr.mergeable)) existing.mergeable = pr.mergeable;
+          await baselinePrState(existing, ctx);
+        }
       } else {
-        const added: WatchedPrState = { pr: watchedPr, seenActivityIds: [] };
+        const added: WatchedPrState = {
+          pr: watchedPr,
+          seenActivityIds: [],
+          mergeable: isDefinitiveMergeable(pr.mergeable) ? pr.mergeable : undefined,
+        };
         state.watchedPrs.push(added);
         await baselinePrState(added, ctx);
       }
@@ -661,8 +676,24 @@ export default function prWatch(pi: ExtensionAPI): void {
       (pending) =>
         pending.pr.number !== number ||
         Boolean(pending.checksKey) ||
+        Boolean(pending.conflictsKey) ||
         pending.feedbackActivities.length > 0,
     );
+  }
+
+  function clearPendingConflict(number: number): void {
+    const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === number);
+    if (!pending?.conflictsKey) return;
+    pending.conflictsKey = undefined;
+    removeEmptyPendingPr(number);
+  }
+
+  function buildPrConflictsMessage(watched: WatchedPrState): string {
+    const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}`;
+    if (prWatchMode(watched) === "author") {
+      return `PR #${watched.pr.number} now has merge conflicts that need to be resolved.\n\nUse repos to resolve the conflicts, then push the resolved branch.\n\n${details}`;
+    }
+    return `PR #${watched.pr.number} now has merge conflicts.\n\n${reviewerSafetyNotice(watched)}\n\nInspect the conflict status as reviewer context and summarize the follow-up needed; do not resolve or push the conflicts yourself.\n\n${details}`;
   }
 
   function buildShaChecksMessage(pending: PendingShaUpdate): string {
@@ -677,6 +708,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const pending of pendingPrUpdates) {
       const watched: WatchedPrState = { pr: pending.pr, seenActivityIds: [] };
       if (pending.checksKey) messages.push(buildPrChecksMessage(watched));
+      if (pending.conflictsKey) messages.push(buildPrConflictsMessage(watched));
       if (pending.feedbackActivities.length > 0) {
         messages.push(buildPrFeedbackMessage(watched, pending.feedbackActivities));
       }
@@ -703,6 +735,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
       if (!pending) return false;
       if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
+      if (delivered.conflictsKey && pending.conflictsKey !== delivered.conflictsKey) return false;
       const pendingActivityIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
       if (delivered.feedbackActivities.some((activity) => !pendingActivityIds.has(activity.id))) return false;
     }
@@ -762,6 +795,9 @@ export default function prWatch(pi: ExtensionAPI): void {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
       }
+      if (delivered.conflictsKey && pending.conflictsKey === delivered.conflictsKey) {
+        pending.conflictsKey = undefined;
+      }
       const deliveredActivityIds = new Set(delivered.feedbackActivities.map((activity) => activity.id));
       pending.feedbackActivities = pending.feedbackActivities.filter((activity) => !deliveredActivityIds.has(activity.id));
       removeEmptyPendingPr(delivered.pr.number);
@@ -798,13 +834,30 @@ export default function prWatch(pi: ExtensionAPI): void {
       headRefName?: string;
       state: string;
       author?: { login?: string };
-    }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,state,author"], ctx);
+      mergeable?: string;
+    }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,state,author,mergeable"], ctx);
 
     if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
     if (latest.state !== "OPEN") return { addedCount: 0, remove: true };
 
     if (latest.author?.login) watched.pr.authorLogin = latest.author.login;
     if (latest.headRefName) watched.pr.branch = latest.headRefName;
+
+    let addedCount = 0;
+    if (isDefinitiveMergeable(latest.mergeable)) {
+      if (
+        !state.orchestrationSessionId &&
+        watched.mergeable === "MERGEABLE" &&
+        latest.mergeable === "CONFLICTING"
+      ) {
+        pendingPr(watched).conflictsKey = randomUUID();
+        addedCount += 1;
+      } else if (latest.mergeable === "MERGEABLE") {
+        clearPendingConflict(watched.pr.number);
+      }
+      watched.mergeable = latest.mergeable;
+    }
+
     if (latest.headRefOid !== watched.pr.headSha) {
       watched.pr.headSha = latest.headRefOid;
       watched.notifiedChecksKey = undefined;
@@ -816,7 +869,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       removeEmptyPendingPr(watched.pr.number);
     }
 
-    let addedCount = 0;
     const checks = await fetchChecks(watched, ctx);
     if (checks) {
       const checksNotifiable = checksAreNotifiable(checks);
@@ -1122,6 +1174,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         ...state.pendingPrUpdates.map((pending) => {
           const updates = [
             pending.checksKey ? "CI complete" : undefined,
+            pending.conflictsKey ? "merge conflicts" : undefined,
             pending.feedbackActivities.length > 0
               ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`
               : undefined,

@@ -16,6 +16,7 @@ type PrFixture = {
   headSha: string;
   state: string;
   authorLogin: string;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   body?: string;
   labels?: string[];
 };
@@ -42,6 +43,7 @@ function createHarness() {
         headSha: "abc104",
         state: "OPEN",
         authorLogin: "eli0shin",
+        mergeable: "MERGEABLE",
       },
     ],
     [
@@ -53,6 +55,7 @@ function createHarness() {
         headSha: "abc105",
         state: "OPEN",
         authorLogin: "eli0shin",
+        mergeable: "MERGEABLE",
       },
     ],
   ]);
@@ -121,6 +124,7 @@ function createHarness() {
             headRefOid: pr.headSha,
             state: pr.state,
             author: { login: pr.authorLogin },
+            mergeable: pr.mergeable,
             body: pr.body ?? "",
             labels: (pr.labels ?? []).map((name) => ({ name })),
           }),
@@ -362,6 +366,144 @@ test("standard PR watch notifies when failing CI finishes", async () => {
   assert.equal(harness.sentMessages.length, 1);
   assert.match(harness.sentMessages[0] ?? "", /CI finished for branch remove-collapse-command \(PR #104\)/);
   assert.match(harness.sentMessages[0] ?? "", /Branch: remove-collapse-command/);
+});
+
+test("standard PR watch notifies when a previously mergeable PR develops conflicts", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts that need to be resolved/);
+  assert.match(harness.sentMessages[0] ?? "", /Use repos to resolve the conflicts/);
+});
+
+test("standard PR watch retains the last definitive status through an unknown mergeability poll", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  harness.prs.get(104)!.mergeable = "UNKNOWN";
+  await harness.runPoll();
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts/);
+});
+
+test("standard PR watch does not notify when conflicts existed before watching", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.activate(104);
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 0);
+});
+
+test("buffered conflict notification is discarded when the conflicts are resolved", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  await harness.commands.get("pr-watch")?.handler("pause", harness.ctx);
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+  await harness.runPoll();
+  assert.equal(typeof harness.savedStates.at(-1)?.pendingPrUpdates[0]?.conflictsKey, "string");
+
+  harness.prs.get(104)!.mergeable = "MERGEABLE";
+  await harness.runPoll();
+  await harness.commands.get("pr-watch")?.handler("resume", harness.ctx);
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 0);
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+});
+
+test("restart discards a persisted conflict notification after conflicts are resolved", async () => {
+  const harness = createHarness();
+  const pr = harness.prs.get(104)!;
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 3,
+        mode: "active",
+        watchedPrs: [
+          {
+            pr: {
+              repo: "eli0shin/repos",
+              number: pr.number,
+              url: pr.url,
+              branch: pr.branch,
+              headSha: pr.headSha,
+              authorLogin: pr.authorLogin,
+            },
+            seenActivityIds: [],
+            mergeable: "CONFLICTING",
+          },
+        ],
+        pendingPrUpdates: [
+          {
+            pr: {
+              repo: "eli0shin/repos",
+              number: pr.number,
+              url: pr.url,
+              branch: pr.branch,
+              headSha: pr.headSha,
+              authorLogin: pr.authorLogin,
+            },
+            conflictsKey: "old-conflict",
+            feedbackActivities: [],
+          },
+        ],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  await harness.startSession();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 0);
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+});
+
+test("conflict notification does not tell a reviewer to modify another author's PR", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.authorLogin = "another-author";
+  await harness.activate(104);
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /Do not edit files, commit, or push/);
+  assert.doesNotMatch(harness.sentMessages[0] ?? "", /Use repos to resolve/);
+});
+
+test("orchestration PR watch does not notify when a worker PR develops conflicts", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.prs.get(104)!.labels = ["pi-orchestrated"];
+  harness.prs.get(104)!.body = "<!-- pi-orchestration-run: session-123 -->";
+
+  try {
+    await harness.startSession();
+    harness.prs.get(104)!.mergeable = "CONFLICTING";
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
 });
 
 test("batches updates from multiple watched PRs into one agent message", async () => {
