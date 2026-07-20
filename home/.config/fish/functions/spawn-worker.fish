@@ -73,7 +73,7 @@ function spawn-worker --description "Create a Pi worker for one Tickets ticket"
     set -l prompt (string join \n $prompt_lines | string collect)
 
     tmux send-keys -l -t "$session:0" -- "env -u PI_ORCHESTRATION_SESSION_ID pi"; or return
-    tmux send-keys -t "$session:0" C-m; or return
+    tmux send-keys -t "$session:0" Enter; or return
     tmux send-keys -l -t "$session:0" -- $prompt; or return
-    tmux send-keys -t "$session:0" C-m
+    tmux send-keys -t "$session:0" Enter
 end
