@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+usage() {
+  echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
+  exit 2
+}
+
+if [[ $# -ne 1 && $# -ne 3 ]]; then
+  usage
+fi
+if [[ $# -eq 3 && $2 != "--context" ]]; then
+  usage
+fi
+
+ticket=$1
+context=""
+if [[ $# -eq 3 ]]; then
+  context=$3
+elif [[ ! -t 0 ]]; then
+  context=$(cat)
+fi
+shopt -s extglob
+context=${context##+([[:space:]])}
+context=${context%%+([[:space:]])}
+
+if [[ -z ${PI_ORCHESTRATION_SESSION_ID:-} ]]; then
+  echo "spawn-worker requires PI_ORCHESTRATION_SESSION_ID" >&2
+  exit 2
+fi
+
+if ! landing_branch=$(git branch --show-current 2>/dev/null) || [[ -z $landing_branch ]]; then
+  echo "spawn-worker requires a named current Git branch" >&2
+  exit 2
+fi
+
+if ! upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) ||
+  [[ $upstream != */* || ${upstream#*/} != "$landing_branch" ]]; then
+  echo "spawn-worker requires landing branch $landing_branch to track a same-named remote branch" >&2
+  exit 2
+fi
+
+head_sha=$(git rev-parse HEAD 2>/dev/null) || exit
+upstream_sha=$(git rev-parse '@{upstream}' 2>/dev/null) || exit
+if [[ $head_sha != "$upstream_sha" ]]; then
+  echo "spawn-worker requires landing branch $landing_branch to exactly match its upstream" >&2
+  exit 2
+fi
+
+tickets show "$ticket" || exit
+
+sessions_before=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+repos stack --no-focus "$ticket" || exit
+sessions_after=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+
+new_sessions=()
+while IFS= read -r session; do
+  [[ -z $session ]] && continue
+  found=false
+  while IFS= read -r existing; do
+    if [[ $session == "$existing" ]]; then
+      found=true
+      break
+    fi
+  done <<< "$sessions_before"
+  if [[ $found == false ]]; then
+    new_sessions+=("$session")
+  fi
+done <<< "$sessions_after"
+
+if [[ ${#new_sessions[@]} -ne 1 ]]; then
+  echo "repos did not create exactly one new worker session for $ticket" >&2
+  exit 1
+fi
+session=${new_sessions[0]}
+
+printf -v prompt '%s\n\nTicket: %s\nWorker identity: %s\nPR base: %s\nPR marker: <!-- pi-orchestration-run: %s -->' \
+  '/skill:ticket-worker' "$ticket" "$session" "$landing_branch" "$PI_ORCHESTRATION_SESSION_ID"
+if [[ -n $context ]]; then
+  printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
+fi
+
+tmux send-keys -l -t "$session:0" -- "env -u PI_ORCHESTRATION_SESSION_ID pi" || exit
+tmux send-keys -t "$session:0" Enter || exit
+tmux send-keys -l -t "$session:0" -- "$prompt" || exit
+tmux send-keys -t "$session:0" Enter

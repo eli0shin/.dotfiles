@@ -29,17 +29,17 @@ This step is complete when the requested effort and its executable frontier are 
 
 Find every non-`done`, executable, unassigned, unblocked ticket in the requested effort. Apply the repository tracker’s frontier rules and the requested scope. Never spawn a map, parent, or other container ticket; its completion is orchestrator bookkeeping after its executable children resolve.
 
-Start all independent frontier tickets without waiting between them:
+Start all independent frontier tickets without waiting between them. Invoke the Bash script by its installed path so it works from Pi's Bash tool:
 
-```text
-spawn-worker <ticket-name>
-spawn-worker <ticket-name> --context "<steering context>"
-printf '%s\n' "<steering context>" | spawn-worker <ticket-name>
+```bash
+~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
+~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name> --context "<steering context>"
+printf '%s\n' "<steering context>" | ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
 ```
 
-Optionally provide concise steering context that is not already captured in the ticket. Do not summarize or restate existing instructions. `--context` accepts quoted text; when it is omitted, `spawn-worker` reads piped stdin if present.
+Optionally provide concise steering context that is not already captured in the ticket. Do not summarize or restate existing instructions. `--context` accepts quoted text; when it is omitted, the script reads piped stdin if present.
 
-Do not claim worker tickets; `spawn-worker` supplies the worker identity and handoff. This step is complete when every currently executable frontier ticket has a worker. Then yield.
+Do not claim worker tickets; the script supplies the worker identity and handoff. This step is complete when every currently executable frontier ticket has a worker. Then yield.
 
 ## Dispatch PR events
 

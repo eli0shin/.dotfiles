@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const functionsDir = resolve(import.meta.dirname, "../../../../.config/fish/functions");
+const spawnWorker = resolve(import.meta.dirname, "../../../../.agents/skills/orchestrator/scripts/spawn-worker");
 
 async function executable(path: string, content: string): Promise<void> {
   await writeFile(path, content, "utf8");
@@ -95,16 +96,8 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
 
   try {
     const result = spawnSync(
-      "fish",
-      [
-        "--no-config",
-        "-c",
-        "source $argv[1]; spawn-worker $argv[2..-1]",
-        join(functionsDir, "spawn-worker.fish"),
-        ticket,
-        "--context",
-        "  Keep API stable.\nAvoid migrations.  ",
-      ],
+      spawnWorker,
+      [ticket, "--context", "  Keep API stable.\nAvoid migrations.  "],
       {
         encoding: "utf8",
         input: "This piped text must be ignored.\n",
@@ -128,7 +121,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "repos stack --no-focus 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> <env -u PI_ORCHESTRATION_SESSION_ID pi>\n" +
-        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n" +
+        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
         "</skill:ticket-worker\n\n" +
         "Ticket: 042-implement-widget\n" +
@@ -138,22 +131,14 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "Context:\n" +
         "Keep API stable.\n" +
         "Avoid migrations.>\n" +
-        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <C-m>\n",
+        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n",
     );
 
     await rm(calls, { force: true });
     await rm(sessionCreated, { force: true });
     const emptyContextResult = spawnSync(
-      "fish",
-      [
-        "--no-config",
-        "-c",
-        "source $argv[1]; spawn-worker $argv[2..-1]",
-        join(functionsDir, "spawn-worker.fish"),
-        ticket,
-        "--context",
-        "  \n",
-      ],
+      spawnWorker,
+      [ticket, "--context", "  \n"],
       {
         encoding: "utf8",
         input: "This piped text must still be ignored.\n",
@@ -189,8 +174,8 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
 
   try {
     const result = spawnSync(
-      "fish",
-      ["--no-config", "-c", "source $argv[1]; spawn-worker ticket-one", join(functionsDir, "spawn-worker.fish")],
+      spawnWorker,
+      ["ticket-one"],
       {
         encoding: "utf8",
         input: "  Prefer the existing adapter.\nKeep the constructor.  \n",
@@ -208,8 +193,8 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
     await rm(calls, { force: true });
     await rm(sessionCreated, { force: true });
     const emptyContextResult = spawnSync(
-      "fish",
-      ["--no-config", "-c", "source $argv[1]; spawn-worker ticket-one", join(functionsDir, "spawn-worker.fish")],
+      spawnWorker,
+      ["ticket-one"],
       {
         encoding: "utf8",
         input: "  \n",
@@ -243,13 +228,8 @@ test("spawn-worker fails without a second handoff when repos resumes an existing
 
   try {
     const result = spawnSync(
-      "fish",
-      [
-        "--no-config",
-        "-c",
-        "source $argv[1]; spawn-worker 042-implement-widget",
-        join(functionsDir, "spawn-worker.fish"),
-      ],
+      spawnWorker,
+      ["042-implement-widget"],
       {
         encoding: "utf8",
         env: {
@@ -274,7 +254,7 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
   for (const command of ["git", "tickets", "repos", "tmux"]) {
     await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
   }
-  const source = join(functionsDir, "spawn-worker.fish");
+  const source = spawnWorker;
 
   try {
     const cases = [
@@ -286,11 +266,7 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` };
       if (fixtureCase.sessionId === undefined) delete env.PI_ORCHESTRATION_SESSION_ID;
       else env.PI_ORCHESTRATION_SESSION_ID = fixtureCase.sessionId;
-      const result = spawnSync(
-        "fish",
-        ["--no-config", "-c", "source $argv[1]; spawn-worker $argv[2..-1]", source, ...fixtureCase.args],
-        { encoding: "utf8", env },
-      );
+      const result = spawnSync(source, fixtureCase.args, { encoding: "utf8", env });
       assert.equal(result.status, 2);
     }
     await assert.rejects(readFile(called));
@@ -321,8 +297,8 @@ test("spawn-worker rejects an unpublished landing branch before creating a worke
 
     try {
       const result = spawnSync(
-        "fish",
-        ["--no-config", "-c", "source $argv[1]; spawn-worker one", join(functionsDir, "spawn-worker.fish")],
+        spawnWorker,
+        ["one"],
         {
           encoding: "utf8",
           env: {
@@ -352,8 +328,8 @@ test("spawn-worker rejects a detached HEAD before creating a worker", async () =
 
   try {
     const result = spawnSync(
-      "fish",
-      ["--no-config", "-c", "source $argv[1]; spawn-worker one", join(functionsDir, "spawn-worker.fish")],
+      spawnWorker,
+      ["one"],
       {
         encoding: "utf8",
         env: {
