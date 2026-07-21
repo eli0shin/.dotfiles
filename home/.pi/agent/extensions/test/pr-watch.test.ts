@@ -6,7 +6,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import prWatch, { prIdentityKey, pullRequestUrlFromText, shouldTrackActivity } from "../pr-watch.ts";
+import prWatch, {
+  prIdentityKey,
+  prStatusIdentity,
+  pullRequestUrlFromText,
+  shouldTrackActivity,
+} from "../pr-watch.ts";
 
 const humanActivity = { id: 1, user: { login: "reviewer", type: "User" } };
 const botActivity = { id: 2, user: { login: "review-bot[bot]", type: "Bot" } };
@@ -319,6 +324,31 @@ test("PR identity includes the repository", () => {
   );
 });
 
+test("status identity omits the current repository and all organization prefixes", () => {
+  assert.equal(prStatusIdentity({ repo: "owner/current", number: 42 }, "OWNER/CURRENT"), "#42");
+  assert.equal(prStatusIdentity({ repo: "owner/other", number: 42 }, "owner/current"), "other#42");
+  assert.equal(prStatusIdentity({ repo: "another/other", number: 42 }, undefined), "other#42");
+});
+
+test("status line prefixes only PRs from other repositories", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  assert.equal(
+    harness.execCalls.some(({ command, args }) => command === "gh" && args[0] === "repo"),
+    false,
+    "an empty watch should not resolve the current repository",
+  );
+
+  await harness.activate(104);
+  assert.equal(harness.statuses.at(-1), "PR watch: #104");
+
+  harness.prs.get(105)!.url = "https://github.com/another/repository/pull/105";
+  await harness.activate(105);
+
+  assert.equal(harness.statuses.at(-1), "PR watch: #104, repository#105");
+  await harness.shutdown();
+});
+
 test("associated workers publish ordinary PR watch membership regardless of local mode", async () => {
   const harness = createHarness();
   const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
@@ -381,6 +411,17 @@ test("adds PRs created in multiple worktrees without replacing earlier watches",
     ),
     true,
   );
+});
+
+test("manual add accepts a PR number for the current repository", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await harness.commands.get("pr-watch")?.handler("add 104", harness.ctx);
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.statuses.at(-1), "PR watch: #104");
+  await harness.shutdown();
 });
 
 test("repeated gh pr activity does not notify for an already watched PR", async () => {

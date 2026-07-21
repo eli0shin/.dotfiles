@@ -179,6 +179,15 @@ export function prIdentityKey(pr: Pick<WatchedPr, "repo" | "number">): string {
   return `${pr.repo.toLowerCase()}#${pr.number}`;
 }
 
+export function prStatusIdentity(
+  pr: Pick<WatchedPr, "repo" | "number">,
+  currentRepo: string | undefined,
+): string {
+  if (currentRepo?.toLowerCase() === pr.repo.toLowerCase()) return `#${pr.number}`;
+  const repoName = pr.repo.split("/").filter(Boolean).at(-1) ?? pr.repo;
+  return `${repoName}#${pr.number}`;
+}
+
 function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
   return (
     isObject(value) &&
@@ -218,6 +227,8 @@ export default function prWatch(pi: ExtensionAPI): void {
   let polling = false;
   let deliveryAttemptedId: string | undefined;
   let lastPublishedMembership: string | undefined;
+  let currentRepo: string | undefined;
+  let currentRepoLookup: Promise<string | undefined> | undefined;
   let snapshotPublishQueue = Promise.resolve();
   const coordinationRoot =
     process.env.PI_PR_WATCH_STATE_DIR ??
@@ -405,7 +416,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!hasTargets() && pending === 0) return undefined;
 
     if (state.watchedPrs.length > 0) {
-      const prs = state.watchedPrs.map(({ pr }) => `${pr.repo}#${pr.number}`).join(", ");
+      const prs = state.watchedPrs.map(({ pr }) => prStatusIdentity(pr, currentRepo)).join(", ");
       return `PR watch: ${prs}${pendingSuffix}`;
     }
 
@@ -444,6 +455,15 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
   }
 
+  async function ensureCurrentRepo(ctx: ExtensionContext): Promise<string | undefined> {
+    currentRepoLookup ??= (async () => {
+      const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
+      currentRepo = repo?.nameWithOwner;
+      return currentRepo;
+    })();
+    return currentRepoLookup;
+  }
+
   async function discover(
     ctx: ExtensionContext,
     reason: string,
@@ -453,11 +473,8 @@ export default function prWatch(pi: ExtensionAPI): void {
   ): Promise<boolean> {
     if (state.mode === "off") return false;
 
-    let repoName = prTarget ? repositoryFromPrUrl(prTarget) : undefined;
-    if (!repoName) {
-      const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
-      repoName = repo?.nameWithOwner;
-    }
+    const repoForCurrentDirectory = await ensureCurrentRepo(ctx);
+    const repoName = (prTarget ? repositoryFromPrUrl(prTarget) : undefined) ?? repoForCurrentDirectory;
     if (!repoName) return false;
 
     const prViewArgs = ["pr", "view"];
@@ -1262,6 +1279,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.mode = "active";
         save();
         if (hasTargets()) {
+          if (state.watchedPrs.length > 0) await ensureCurrentRepo(ctx);
           startPolling(ctx);
           await poll(ctx);
         } else {
