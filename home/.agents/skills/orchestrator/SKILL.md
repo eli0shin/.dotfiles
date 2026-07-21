@@ -5,7 +5,7 @@ description: Coordinate parallel ticket workers as an event-driven control plane
 
 # Orchestrator
 
-Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. The harness watches matching worker PRs and injects notifications into this session for relevant PR events; this facility is called PR Watch. **Yield** by ending the turn without polling; PR Watch re-enters on relevant activity.
+Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn without polling; PR Watch re-enters on relevant activity.
 
 ## Hard boundary
 
@@ -81,6 +81,6 @@ This step is complete when tracker evidence is recorded, cleanup succeeds, lint 
 
 ## Recovery
 
-After interruption, resume in the landing-branch worktree, then use `repos list` and tracker state to reconstruct tickets and workers. Let PR Watch rediscover matching PRs. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the hard boundary.
+After interruption, resume in the landing-branch worktree, then use `repos list` and tracker state to reconstruct tickets and workers. Let PR Watch restore worker-published membership. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the hard boundary.
 
 The run is complete when the requested effort has no unresolved executable tickets, required container bookkeeping is resolved, and all completed ticket changes have landed on the landing branch.

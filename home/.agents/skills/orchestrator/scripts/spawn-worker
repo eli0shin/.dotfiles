@@ -75,13 +75,14 @@ if [[ ${#new_sessions[@]} -ne 1 ]]; then
 fi
 session=${new_sessions[0]}
 
-printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s\nPR marker: <!-- pi-orchestration-run: %s -->' \
-  '/skill:ticket-worker' "$ticket" "$session" "$landing_branch" "$PI_ORCHESTRATION_SESSION_ID"
+printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s' \
+  '/skill:ticket-worker' "$ticket" "$session" "$landing_branch"
 if [[ -n $context ]]; then
   printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
 fi
 
 prompt_base64=$(printf %s "$prompt" | base64 | tr -d '\n') || exit
-command="env -u PI_ORCHESTRATION_SESSION_ID pi \"\$(printf %s $prompt_base64 | base64 -d)\""
+printf -v orchestration_id_q %q "$PI_ORCHESTRATION_SESSION_ID"
+command="env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=$orchestration_id_q pi \"\$(printf %s $prompt_base64 | base64 -d)\""
 tmux send-keys -l -t "$session:0" -- "$command" || exit
 tmux send-keys -t "$session:0" Enter

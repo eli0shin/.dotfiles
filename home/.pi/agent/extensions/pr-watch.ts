@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -47,8 +50,16 @@ type PendingDelivery = {
   pendingShaUpdate?: PendingShaUpdate;
 };
 
+type WorkerWatchSnapshot = {
+  version: 1;
+  orchestrationId: string;
+  workerSessionId: string;
+  revision: number;
+  watchedPrs: Array<Pick<WatchedPr, "repo" | "number" | "url">>;
+};
+
 type WatchState = {
-  version: 3;
+  version: 4;
   mode: WatchMode;
   watchedPrs: WatchedPrState[];
   watchedSha?: WatchedSha;
@@ -57,7 +68,9 @@ type WatchState = {
   pendingDelivery?: PendingDelivery;
   recentGhOutputs: string[];
   orchestrationSessionId?: string;
-  ignoredOrchestrationPrNumbers?: number[];
+  workerOrchestrationSessionId?: string;
+  workerSnapshots?: Record<string, WorkerWatchSnapshot>;
+  resolvedOrchestrationPrUrls?: string[];
   selfLogin?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -113,15 +126,14 @@ type PrPollResult = {
 const CUSTOM_STATE = "pr-watch-state";
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
-const ORCHESTRATION_LABEL = "pi-orchestrated";
+const WORKER_ORCHESTRATION_ENV = "PI_PARENT_ORCHESTRATION_SESSION_ID";
 
 const initialState = (): WatchState => ({
-  version: 3,
+  version: 4,
   mode: "active",
   watchedPrs: [],
   pendingPrUpdates: [],
   recentGhOutputs: [],
-  ignoredOrchestrationPrNumbers: [],
 });
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -131,7 +143,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function isWatchState(value: unknown): value is WatchState {
   return (
     isObject(value) &&
-    value.version === 3 &&
+    value.version === 4 &&
     ["active", "paused", "off"].includes(String(value.mode)) &&
     Array.isArray(value.watchedPrs) &&
     Array.isArray(value.pendingPrUpdates)
@@ -163,6 +175,28 @@ function bareActivityId(id: string): string {
   return id.includes(":") ? id.slice(id.lastIndexOf(":") + 1) : id;
 }
 
+export function prIdentityKey(pr: Pick<WatchedPr, "repo" | "number">): string {
+  return `${pr.repo.toLowerCase()}#${pr.number}`;
+}
+
+function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
+  return (
+    isObject(value) &&
+    value.version === 1 &&
+    typeof value.orchestrationId === "string" &&
+    typeof value.workerSessionId === "string" &&
+    typeof value.revision === "number" &&
+    Array.isArray(value.watchedPrs) &&
+    value.watchedPrs.every(
+      (pr) =>
+        isObject(pr) &&
+        typeof pr.repo === "string" &&
+        typeof pr.number === "number" &&
+        typeof pr.url === "string",
+    )
+  );
+}
+
 export function pullRequestUrlFromText(text: string): string | undefined {
   return Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g)).at(-1)?.[0];
 }
@@ -183,37 +217,175 @@ export default function prWatch(pi: ExtensionAPI): void {
   let interval: ReturnType<typeof setInterval> | undefined;
   let polling = false;
   let deliveryAttemptedId: string | undefined;
+  let lastPublishedMembership: string | undefined;
+  let snapshotPublishQueue = Promise.resolve();
+  const coordinationRoot =
+    process.env.PI_PR_WATCH_STATE_DIR ??
+    join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "pr-watch", "orchestrations");
 
   function hasTargets(): boolean {
     return state.watchedPrs.length > 0 || Boolean(state.watchedSha) || Boolean(state.orchestrationSessionId);
   }
 
-  function orchestrationMarker(): string | undefined {
-    return state.orchestrationSessionId
-      ? `<!-- pi-orchestration-run: ${state.orchestrationSessionId} -->`
-      : undefined;
-  }
-
-  function repositoryFromPrUrl(url: string): string | undefined {
+  function prCoordinatesFromUrl(url: string): { repo: string; number: number } | undefined {
     try {
-      const [owner, repo, kind] = new URL(url).pathname.split("/").filter(Boolean);
-      return owner && repo && kind === "pull" ? `${owner}/${repo}` : undefined;
+      const [owner, repo, kind, rawNumber] = new URL(url).pathname.split("/").filter(Boolean);
+      const number = Number(rawNumber);
+      return owner && repo && kind === "pull" && Number.isInteger(number) && number > 0
+        ? { repo: `${owner}/${repo}`, number }
+        : undefined;
     } catch {
       return undefined;
     }
   }
 
-  function isOrchestrationPr(pr: { body?: string; labels?: Array<{ name?: string }> }): boolean {
-    const marker = orchestrationMarker();
-    return Boolean(
-      marker &&
-        pr.body?.includes(marker) &&
-        pr.labels?.some((label) => label.name === ORCHESTRATION_LABEL),
-    );
+  function repositoryFromPrUrl(url: string): string | undefined {
+    return prCoordinatesFromUrl(url)?.repo;
   }
 
   function save(): void {
     pi.appendEntry(CUSTOM_STATE, state);
+  }
+
+  function orchestrationDirectory(orchestrationId: string): string {
+    return join(coordinationRoot, encodeURIComponent(orchestrationId));
+  }
+
+  function workerSnapshotPath(orchestrationId: string, workerSessionId: string): string {
+    return join(orchestrationDirectory(orchestrationId), `${encodeURIComponent(workerSessionId)}.json`);
+  }
+
+  function membershipFingerprint(): string {
+    return state.watchedPrs
+      .map(({ pr }) => `${prIdentityKey(pr)}:${pr.url}`)
+      .sort()
+      .join("\n");
+  }
+
+  async function publishWorkerSnapshot(ctx: ExtensionContext, force = false): Promise<void> {
+    snapshotPublishQueue = snapshotPublishQueue.then(async () => {
+      const orchestrationId = state.workerOrchestrationSessionId;
+      if (!orchestrationId) return;
+
+      const fingerprint = membershipFingerprint();
+      if (!force && fingerprint === lastPublishedMembership) return;
+
+      const workerSessionId = ctx.sessionManager.getSessionId();
+      const path = workerSnapshotPath(orchestrationId, workerSessionId);
+      const snapshot: WorkerWatchSnapshot = {
+        version: 1,
+        orchestrationId,
+        workerSessionId,
+        revision: Date.now(),
+        watchedPrs: state.watchedPrs.map(({ pr }) => ({
+          repo: pr.repo,
+          number: pr.number,
+          url: pr.url,
+        })),
+      };
+
+      try {
+        await mkdir(orchestrationDirectory(orchestrationId), { recursive: true, mode: 0o700 });
+        const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+        await writeFile(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+        await rename(temporaryPath, path);
+        lastPublishedMembership = fingerprint;
+      } catch (error) {
+        state.lastError = `Could not publish worker PR watch membership: ${error instanceof Error ? error.message : String(error)}`;
+        save();
+        setStatus(ctx);
+      }
+    });
+    await snapshotPublishQueue;
+  }
+
+  async function reconcileOrchestrationMembership(ctx: ExtensionContext): Promise<string[]> {
+    const orchestrationId = state.orchestrationSessionId;
+    if (!orchestrationId) return [];
+
+    const errors: string[] = [];
+    let entries: Array<{ name: string; isFile(): boolean }> = [];
+    try {
+      entries = await readdir(orchestrationDirectory(orchestrationId), { withFileTypes: true });
+    } catch (error) {
+      if (!isObject(error) || error.code !== "ENOENT") {
+        errors.push(`Could not read orchestration worker snapshots: ${error instanceof Error ? error.message : String(error)}`);
+        return errors;
+      }
+    }
+
+    const snapshots = { ...(state.workerSnapshots ?? {}) };
+    const presentWorkerIds = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      let workerSessionId: string;
+      try {
+        workerSessionId = decodeURIComponent(entry.name.slice(0, -".json".length));
+      } catch {
+        errors.push(`Invalid worker snapshot filename: ${entry.name}`);
+        continue;
+      }
+      presentWorkerIds.add(workerSessionId);
+
+      try {
+        const value: unknown = JSON.parse(
+          await readFile(join(orchestrationDirectory(orchestrationId), entry.name), "utf8"),
+        );
+        if (
+          !isWorkerWatchSnapshot(value) ||
+          value.orchestrationId !== orchestrationId ||
+          value.workerSessionId !== workerSessionId ||
+          value.watchedPrs.some((pr) => {
+            const coordinates = prCoordinatesFromUrl(pr.url);
+            return (
+              !coordinates ||
+              coordinates.number !== pr.number ||
+              coordinates.repo.toLowerCase() !== pr.repo.toLowerCase()
+            );
+          })
+        ) {
+          throw new Error("snapshot identity, schema, or PR coordinates do not match");
+        }
+        snapshots[workerSessionId] = value;
+      } catch (error) {
+        errors.push(
+          `Could not read worker snapshot ${workerSessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    for (const workerSessionId of Object.keys(snapshots)) {
+      if (!presentWorkerIds.has(workerSessionId)) delete snapshots[workerSessionId];
+    }
+    state.workerSnapshots = snapshots;
+
+    const desired = new Map<string, Pick<WatchedPr, "repo" | "number" | "url">>();
+    for (const snapshot of Object.values(snapshots)) {
+      for (const pr of snapshot.watchedPrs) desired.set(prIdentityKey(pr), pr);
+    }
+
+    const desiredUrls = new Set([...desired.values()].map((pr) => pr.url));
+    state.resolvedOrchestrationPrUrls = (state.resolvedOrchestrationPrUrls ?? []).filter((url) =>
+      desiredUrls.has(url),
+    );
+    const resolved = new Set(state.resolvedOrchestrationPrUrls);
+
+    for (const watched of [...state.watchedPrs]) {
+      if (!desired.has(prIdentityKey(watched.pr))) removePr(watched.pr);
+    }
+    for (const pr of desired.values()) {
+      if (resolved.has(pr.url)) continue;
+      if (state.watchedPrs.some((watched) => prIdentityKey(watched.pr) === prIdentityKey(pr))) continue;
+      try {
+        await discover(ctx, "worker snapshot", false, pr.url);
+      } catch (error) {
+        errors.push(
+          `Could not enroll worker PR ${pr.repo}#${pr.number}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    return errors;
   }
 
   function pendingCount(): number {
@@ -233,8 +405,8 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!hasTargets() && pending === 0) return undefined;
 
     if (state.watchedPrs.length > 0) {
-      const numbers = state.watchedPrs.map(({ pr }) => `#${pr.number}`).join(", ");
-      return `PR watch: ${numbers}${pendingSuffix}`;
+      const prs = state.watchedPrs.map(({ pr }) => `${pr.repo}#${pr.number}`).join(", ");
+      return `PR watch: ${prs}${pendingSuffix}`;
     }
 
     if (state.watchedSha) return `SHA ${state.watchedSha.sha.slice(0, 7)} watch${pendingSuffix}`;
@@ -281,12 +453,16 @@ export default function prWatch(pi: ExtensionAPI): void {
   ): Promise<boolean> {
     if (state.mode === "off") return false;
 
-    const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
-    if (!repo?.nameWithOwner) return false;
+    let repoName = prTarget ? repositoryFromPrUrl(prTarget) : undefined;
+    if (!repoName) {
+      const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
+      repoName = repo?.nameWithOwner;
+    }
+    if (!repoName) return false;
 
     const prViewArgs = ["pr", "view"];
     if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,body,labels,mergeable");
+    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,mergeable");
     const pr = await execJson<{
       number: number;
       url: string;
@@ -295,8 +471,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       state: string;
       author?: { login?: string };
       mergeable?: string;
-      body?: string;
-      labels?: Array<{ name?: string }>;
     }>("gh", prViewArgs, ctx);
 
     if (!pr && prTarget) {
@@ -307,29 +481,23 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (pr?.state === "OPEN") {
-      if (
-        state.orchestrationSessionId &&
-        !alreadyEnrolled &&
-        (!isOrchestrationPr(pr) || repositoryFromPrUrl(pr.url)?.toLowerCase() !== repo.nameWithOwner.toLowerCase())
-      ) {
-        return false;
-      }
       await refreshSelfLogin(ctx);
 
       const watchedPr: WatchedPr = {
-        repo: repo.nameWithOwner,
+        repo: repositoryFromPrUrl(pr.url) ?? repoName,
         number: pr.number,
         url: pr.url,
         branch: pr.headRefName,
         headSha: pr.headRefOid,
         authorLogin: pr.author?.login,
       };
-      const existing = state.watchedPrs.find((candidate) => candidate.pr.number === pr.number);
-      const wasAlreadyWatched = existing?.pr.repo === watchedPr.repo;
+      const watchedKey = prIdentityKey(watchedPr);
+      const existing = state.watchedPrs.find((candidate) => prIdentityKey(candidate.pr) === watchedKey);
+      const wasAlreadyWatched = Boolean(existing);
       if (existing) {
         existing.pr = watchedPr;
         if (alreadyEnrolled) {
-          if (pr.mergeable === "MERGEABLE") clearPendingConflict(existing.pr.number);
+          if (pr.mergeable === "MERGEABLE") clearPendingConflict(existing.pr);
           if (isDefinitiveMergeable(pr.mergeable)) existing.mergeable = pr.mergeable;
           await baselinePrState(existing, ctx);
         }
@@ -350,15 +518,30 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
       startPolling(ctx);
       setStatus(ctx);
+      state.resolvedOrchestrationPrUrls = (state.resolvedOrchestrationPrUrls ?? []).filter(
+        (url) => url !== watchedPr.url,
+      );
+      await publishWorkerSnapshot(ctx);
       if (notify && !wasAlreadyWatched) ctx.ui.notify(`PR watch added #${pr.number} (${reason}).`, "info");
       return true;
     }
 
     if (prTarget) {
-      const number = pr?.number;
-      if (number !== undefined) removePr(number);
+      if (pr) {
+        const unresolvedPr = {
+          repo: repositoryFromPrUrl(pr.url) ?? repoName,
+          number: pr.number,
+        };
+        removePr(unresolvedPr);
+        if (state.orchestrationSessionId) {
+          state.resolvedOrchestrationPrUrls = [
+            ...new Set([...(state.resolvedOrchestrationPrUrls ?? []), pr.url]),
+          ];
+        }
+      }
       save();
       setStatus(ctx);
+      await publishWorkerSnapshot(ctx);
       if (notify && pr) ctx.ui.notify(`PR #${pr.number} is not open; it was not added to PR watch.`, "info");
       return false;
     }
@@ -371,7 +554,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     await refreshSelfLogin(ctx);
 
     if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
-    state.watchedSha = { repo: repo.nameWithOwner, sha };
+    state.watchedSha = { repo: repoName, sha };
     await baselineCurrentShaState(ctx);
 
     state.lastError = undefined;
@@ -381,51 +564,22 @@ export default function prWatch(pi: ExtensionAPI): void {
     return true;
   }
 
-  async function discoverOrchestrationPrs(ctx: ExtensionContext): Promise<void> {
-    if (!state.orchestrationSessionId || state.mode === "off") return;
-    const candidates =
-      (await execJson<
-        Array<{ number: number; url: string; body?: string; labels?: Array<{ name?: string }> }>
-      >(
-        "gh",
-        [
-          "pr",
-          "list",
-          "--state",
-          "open",
-          "--label",
-          ORCHESTRATION_LABEL,
-          "--limit",
-          "100",
-          "--json",
-          "number,url,body,labels",
-        ],
-        ctx,
-      )) ?? [];
-
-    const ignored = new Set(state.ignoredOrchestrationPrNumbers ?? []);
-    for (const candidate of candidates.filter(isOrchestrationPr)) {
-      if (ignored.has(candidate.number)) continue;
-      const alreadyWatched = state.watchedPrs.some(({ pr }) => pr.number === candidate.number);
-      if (alreadyWatched) continue;
-      await discover(ctx, "orchestration discovery", false, candidate.url);
-    }
-  }
-
   function reconcilePendingPr(pr: WatchedPr): void {
-    const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === pr.number);
+    const key = prIdentityKey(pr);
+    const pending = state.pendingPrUpdates.find((candidate) => prIdentityKey(candidate.pr) === key);
     if (!pending) return;
     if (pending.checksHeadSha !== pr.headSha) {
       pending.checksHeadSha = undefined;
       pending.checksKey = undefined;
     }
     pending.pr = structuredClone(pr);
-    removeEmptyPendingPr(pr.number);
+    removeEmptyPendingPr(pr);
   }
 
-  function removePr(number: number): void {
-    state.watchedPrs = state.watchedPrs.filter((candidate) => candidate.pr.number !== number);
-    state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => candidate.pr.number !== number);
+  function removePr(pr: Pick<WatchedPr, "repo" | "number">): void {
+    const key = prIdentityKey(pr);
+    state.watchedPrs = state.watchedPrs.filter((candidate) => prIdentityKey(candidate.pr) !== key);
+    state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => prIdentityKey(candidate.pr) !== key);
   }
 
   async function currentSha(): Promise<string | undefined> {
@@ -525,11 +679,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (checks) {
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
       const checksNotifiable = checksAreNotifiable(checks);
-      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
+      );
       if (pending?.checksKey && (!checksNotifiable || pending.checksKey !== checksKey)) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
-        removeEmptyPendingPr(watched.pr.number);
+        removeEmptyPendingPr(watched.pr);
       }
       if (state.orchestrationSessionId && checksNotifiable && watched.notifiedChecksKey !== checksKey) {
         watched.notifiedChecksKey = checksKey;
@@ -661,7 +817,8 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function pendingPr(watched: WatchedPrState): PendingPrUpdate {
-    let pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+    const key = prIdentityKey(watched.pr);
+    let pending = state.pendingPrUpdates.find((candidate) => prIdentityKey(candidate.pr) === key);
     if (!pending) {
       pending = { pr: structuredClone(watched.pr), feedbackActivities: [] };
       state.pendingPrUpdates.push(pending);
@@ -671,21 +828,23 @@ export default function prWatch(pi: ExtensionAPI): void {
     return pending;
   }
 
-  function removeEmptyPendingPr(number: number): void {
+  function removeEmptyPendingPr(pr: Pick<WatchedPr, "repo" | "number">): void {
+    const key = prIdentityKey(pr);
     state.pendingPrUpdates = state.pendingPrUpdates.filter(
       (pending) =>
-        pending.pr.number !== number ||
+        prIdentityKey(pending.pr) !== key ||
         Boolean(pending.checksKey) ||
         Boolean(pending.conflictsKey) ||
         pending.feedbackActivities.length > 0,
     );
   }
 
-  function clearPendingConflict(number: number): void {
-    const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === number);
+  function clearPendingConflict(pr: Pick<WatchedPr, "repo" | "number">): void {
+    const key = prIdentityKey(pr);
+    const pending = state.pendingPrUpdates.find((candidate) => prIdentityKey(candidate.pr) === key);
     if (!pending?.conflictsKey) return;
     pending.conflictsKey = undefined;
-    removeEmptyPendingPr(number);
+    removeEmptyPendingPr(pr);
   }
 
   function buildPrConflictsMessage(watched: WatchedPrState): string {
@@ -732,7 +891,9 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function deliveryStillPending(delivery: PendingDelivery): boolean {
     for (const delivered of delivery.pendingPrUpdates) {
-      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(delivered.pr),
+      );
       if (!pending) return false;
       if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
       if (delivered.conflictsKey && pending.conflictsKey !== delivered.conflictsKey) return false;
@@ -789,7 +950,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!delivery) return;
 
     for (const delivered of delivery.pendingPrUpdates) {
-      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === delivered.pr.number);
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(delivered.pr),
+      );
       if (!pending) continue;
       if (delivered.checksKey && pending.checksKey === delivered.checksKey) {
         pending.checksHeadSha = undefined;
@@ -800,7 +963,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
       const deliveredActivityIds = new Set(delivered.feedbackActivities.map((activity) => activity.id));
       pending.feedbackActivities = pending.feedbackActivities.filter((activity) => !deliveredActivityIds.has(activity.id));
-      removeEmptyPendingPr(delivered.pr.number);
+      removeEmptyPendingPr(delivered.pr);
     }
 
     if (
@@ -853,7 +1016,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         pendingPr(watched).conflictsKey = randomUUID();
         addedCount += 1;
       } else if (latest.mergeable === "MERGEABLE") {
-        clearPendingConflict(watched.pr.number);
+        clearPendingConflict(watched.pr);
       }
       watched.mergeable = latest.mergeable;
     }
@@ -861,23 +1024,27 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (latest.headRefOid !== watched.pr.headSha) {
       watched.pr.headSha = latest.headRefOid;
       watched.notifiedChecksKey = undefined;
-      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
+      );
       if (pending) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
       }
-      removeEmptyPendingPr(watched.pr.number);
+      removeEmptyPendingPr(watched.pr);
     }
 
     const checks = await fetchChecks(watched, ctx);
     if (checks) {
       const checksNotifiable = checksAreNotifiable(checks);
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
-      const pending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
+      );
       if (pending?.checksKey && (!checksNotifiable || pending.checksKey !== checksKey)) {
         pending.checksHeadSha = undefined;
         pending.checksKey = undefined;
-        removeEmptyPendingPr(watched.pr.number);
+        removeEmptyPendingPr(watched.pr);
       }
       if (checksNotifiable && watched.notifiedChecksKey !== checksKey) {
         watched.notifiedChecksKey = checksKey;
@@ -892,13 +1059,15 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!currentActivities) return { addedCount };
     const currentActivityIds = currentActivities.map((activity) => activity.id);
     const currentActivityIdSet = new Set(currentActivityIds);
-    const existingPending = state.pendingPrUpdates.find((candidate) => candidate.pr.number === watched.pr.number);
+    const existingPending = state.pendingPrUpdates.find(
+      (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
+    );
     if (existingPending) {
       existingPending.pr = structuredClone(watched.pr);
       existingPending.feedbackActivities = existingPending.feedbackActivities.filter((activity) =>
         currentActivityIdSet.has(activity.id),
       );
-      removeEmptyPendingPr(watched.pr.number);
+      removeEmptyPendingPr(watched.pr);
     }
 
     const seen = new Set(watched.seenActivityIds);
@@ -924,16 +1093,14 @@ export default function prWatch(pi: ExtensionAPI): void {
       reconcileDelivery(ctx);
       await refreshSelfLogin(ctx);
       let addedCount = 0;
-      const errors: string[] = [];
-
-      await discoverOrchestrationPrs(ctx);
+      const errors = await reconcileOrchestrationMembership(ctx);
 
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
           addedCount += result.addedCount;
           if (result.error) errors.push(result.error);
-          if (result.remove) removePr(watched.pr.number);
+          if (result.remove) removePr(watched.pr);
         } catch (error) {
           errors.push(error instanceof Error ? error.message : String(error));
         }
@@ -944,6 +1111,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
       if (!hasTargets()) stopPolling(ctx);
       save();
+      await publishWorkerSnapshot(ctx);
       setStatus(ctx);
 
       if (addedCount > 0) {
@@ -990,7 +1158,10 @@ export default function prWatch(pi: ExtensionAPI): void {
   pi.on("session_start", async (event, ctx) => {
     state = initialState();
     deliveryAttemptedId = undefined;
+    lastPublishedMembership = undefined;
     const requestedOrchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const requestedWorkerOrchestrationSessionId = process.env[WORKER_ORCHESTRATION_ENV]?.trim() || undefined;
+    delete process.env[WORKER_ORCHESTRATION_ENV];
     const savedEntry = [...ctx.sessionManager.getBranch()]
       .reverse()
       .find((entry) => entry.type === "custom" && entry.customType === CUSTOM_STATE);
@@ -999,9 +1170,20 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (event.reason === "startup" && requestedOrchestrationSessionId && !state.orchestrationSessionId) {
         state = initialState();
         state.orchestrationSessionId = requestedOrchestrationSessionId;
+      } else if (
+        event.reason === "startup" &&
+        requestedWorkerOrchestrationSessionId &&
+        !state.orchestrationSessionId &&
+        !state.workerOrchestrationSessionId
+      ) {
+        state = initialState();
+        state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;
       }
     } else if (event.reason === "startup") {
       state.orchestrationSessionId = requestedOrchestrationSessionId;
+      if (!state.orchestrationSessionId) {
+        state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;
+      }
     }
     if (state.orchestrationSessionId) {
       process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
@@ -1010,8 +1192,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
     reconcileDelivery(ctx);
 
-    if (state.mode === "off" || !hasTargets()) {
+    if (state.mode === "off") {
       save();
+      await publishWorkerSnapshot(ctx, true);
       setStatus(ctx);
       flushPending(ctx);
       return;
@@ -1021,14 +1204,16 @@ export default function prWatch(pi: ExtensionAPI): void {
     const savedSha = state.watchedSha;
     state.watchedSha = undefined;
     for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url, true);
-    await discoverOrchestrationPrs(ctx);
+    const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
 
     if (!state.orchestrationSessionId && state.watchedPrs.length === 0 && savedSha) {
       state.watchedSha = { repo: savedSha.repo, sha: savedSha.sha };
       await baselineCurrentShaState(ctx);
     }
 
+    state.lastError = reconciliationErrors.length > 0 ? reconciliationErrors.join("; ") : state.lastError;
     save();
+    await publishWorkerSnapshot(ctx, true);
     startPolling(ctx);
     setStatus(ctx);
     flushPending(ctx);
@@ -1111,12 +1296,6 @@ export default function prWatch(pi: ExtensionAPI): void {
           return;
         }
         state.mode = "active";
-        const number = Number(target.match(/\d+$/)?.[0]);
-        if (Number.isInteger(number) && number > 0) {
-          state.ignoredOrchestrationPrNumbers = (state.ignoredOrchestrationPrNumbers ?? []).filter(
-            (candidate) => candidate !== number,
-          );
-        }
         save();
         await discover(ctx, "manual add", true, target);
         flushPending(ctx);
@@ -1129,13 +1308,15 @@ export default function prWatch(pi: ExtensionAPI): void {
           ctx.ui.notify("Usage: /pr-watch remove <number-or-url>", "warning");
           return;
         }
-        const existed = state.watchedPrs.some((watched) => watched.pr.number === number);
-        removePr(number);
-        if (existed && state.orchestrationSessionId) {
-          state.ignoredOrchestrationPrNumbers = [...new Set([...(state.ignoredOrchestrationPrNumbers ?? []), number])];
-        }
+        const repo = repositoryFromPrUrl(target);
+        const watched = state.watchedPrs.find(
+          (candidate) => candidate.pr.number === number && (!repo || candidate.pr.repo.toLowerCase() === repo.toLowerCase()),
+        );
+        const existed = Boolean(watched);
+        if (watched) removePr(watched.pr);
         if (!hasTargets()) stopPolling(ctx);
         save();
+        await publishWorkerSnapshot(ctx);
         setStatus(ctx);
         ctx.ui.notify(existed ? `Removed PR #${number} from PR watch.` : `PR #${number} was not being watched.`, "info");
         return;
@@ -1144,14 +1325,17 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (action === "reset") {
         stopPolling(ctx);
         const orchestrationSessionId = state.orchestrationSessionId;
+        const workerOrchestrationSessionId = state.workerOrchestrationSessionId;
         state = initialState();
         state.orchestrationSessionId = orchestrationSessionId;
+        state.workerOrchestrationSessionId = workerOrchestrationSessionId;
         save();
         if (state.orchestrationSessionId) {
-          await discoverOrchestrationPrs(ctx);
+          await reconcileOrchestrationMembership(ctx);
           startPolling(ctx);
         } else {
           await discover(ctx, "manual reset");
+          await publishWorkerSnapshot(ctx);
         }
         return;
       }
@@ -1166,7 +1350,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           ? state.watchedPrs
               .map(
                 ({ pr, seenActivityIds }) =>
-                  `PR #${pr.number} ${pr.url}\n  branch: ${pr.branch}\n  head: ${pr.headSha}\n  author: ${pr.authorLogin ?? "unknown"}\n  watch mode: ${prWatchMode({ pr, seenActivityIds })}\n  seen activity: ${seenActivityIds.length}`,
+                  `PR ${pr.repo}#${pr.number} ${pr.url}\n  branch: ${pr.branch}\n  head: ${pr.headSha}\n  author: ${pr.authorLogin ?? "unknown"}\n  watch mode: ${prWatchMode({ pr, seenActivityIds })}\n  seen activity: ${seenActivityIds.length}`,
               )
               .join("\n")
           : "none";
@@ -1182,7 +1366,7 @@ export default function prWatch(pi: ExtensionAPI): void {
               ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`
               : undefined,
           ].filter(Boolean);
-          return `  PR #${pending.pr.number}: ${updates.join(", ")}`;
+          return `  PR ${pending.pr.repo}#${pending.pr.number}: ${updates.join(", ")}`;
         }),
         ...(state.pendingShaUpdate ? [`  SHA ${state.pendingShaUpdate.sha.slice(0, 7)}: CI complete`] : []),
       ];

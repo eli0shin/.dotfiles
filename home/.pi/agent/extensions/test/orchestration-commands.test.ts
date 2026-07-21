@@ -47,7 +47,7 @@ test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async
         "test-model",
         "hello world",
       ],
-      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
     );
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
@@ -70,7 +70,7 @@ test("orchestrate-pi does not start Pi when UUID generation fails", async () => 
     const result = spawnSync(
       "fish",
       ["--no-config", "-c", "source $argv[1]; orchestrate-pi", join(functionsDir, "orchestrate-pi.fish")],
-      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
     );
 
     assert.notEqual(result.status, 0);
@@ -109,7 +109,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         input: "This piped text must be ignored.\n",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -120,8 +120,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
       "/skill:ticket-worker \n\n" +
       "Ticket: 042-implement-widget\n" +
       "Worker identity: configured-repo@042-implement-widget\n" +
-      "PR base: integration/epic\n" +
-      "PR marker: <!-- pi-orchestration-run: session-123 -->\n\n" +
+      "PR base: integration/epic\n\n" +
       "Context:\n" +
       "Keep API stable.\n" +
       "Avoid migrations.";
@@ -137,7 +136,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "repos stack --no-focus 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
-        `<env -u PI_ORCHESTRATION_SESSION_ID pi "$(printf %s ${encodedPrompt} | base64 -d)">\n` +
+        `<env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=session-123 pi "$(printf %s ${encodedPrompt} | base64 -d)">\n` +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n",
     );
 
@@ -151,7 +150,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         input: "This piped text must still be ignored.\n",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -188,7 +187,7 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
         input: "  Prefer the existing adapter.\nKeep the constructor.  \n",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -210,7 +209,7 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
         input: "  \n",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -244,7 +243,7 @@ test("spawn-worker fails without a second handoff when repos resumes an existing
         encoding: "utf8",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -273,7 +272,7 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       { args: ["one"], sessionId: undefined },
     ];
     for (const fixtureCase of cases) {
-      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
       if (fixtureCase.sessionId === undefined) delete env.PI_ORCHESTRATION_SESSION_ID;
       else env.PI_ORCHESTRATION_SESSION_ID = fixtureCase.sessionId;
       const result = spawnSync(source, fixtureCase.args, { encoding: "utf8", env });
@@ -313,7 +312,7 @@ test("spawn-worker rejects an unpublished landing branch before creating a worke
           encoding: "utf8",
           env: {
             ...process.env,
-            PATH: `${fakeBin}:/usr/bin:/bin`,
+            PATH: `${fakeBin}:${process.env.PATH}`,
             PI_ORCHESTRATION_SESSION_ID: "session-123",
           },
         },
@@ -344,7 +343,7 @@ test("spawn-worker rejects a detached HEAD before creating a worker", async () =
         encoding: "utf8",
         env: {
           ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
+          PATH: `${fakeBin}:${process.env.PATH}`,
           PI_ORCHESTRATION_SESSION_ID: "session-123",
         },
       },
@@ -353,38 +352,6 @@ test("spawn-worker rejects a detached HEAD before creating a worker", async () =
     assert.equal(result.status, 2);
     assert.match(result.stderr, /requires a named current Git branch/);
     await assert.rejects(readFile(called));
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("setup-orchestration-repo idempotently ensures the repository label", async () => {
-  const { root, fakeBin } = await fixture();
-  const calls = join(root, "gh-calls");
-  await executable(
-    join(fakeBin, "gh"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\nif [ "$1 $2" = "repo view" ]; then printf 'eli0shin/example\\n'; fi\n`,
-  );
-
-  try {
-    const result = spawnSync(
-      "fish",
-      [
-        "--no-config",
-        "-c",
-        "source $argv[1]; setup-orchestration-repo $argv[2]",
-        join(functionsDir, "setup-orchestration-repo.fish"),
-        "https://github.com/eli0shin/example.git",
-      ],
-      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:/usr/bin:/bin` } },
-    );
-
-    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
-    assert.equal(
-      await readFile(calls, "utf8"),
-      "repo view https://github.com/eli0shin/example.git --json nameWithOwner --jq .nameWithOwner\n" +
-        "label create pi-orchestrated --repo eli0shin/example --force --color 8250df --description Pull request created by a Pi orchestration worker\n",
-    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
