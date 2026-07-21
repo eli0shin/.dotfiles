@@ -43,7 +43,18 @@ Do not claim worker tickets; the script supplies the worker identity and handoff
 
 ## Dispatch PR events
 
-On each PR Watch event, and whenever the user asks for current PR status, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files. Then call `run_code_review` for every PR whose current head or landing-base compatibility needs inspection. In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering event, and relevant feedback, with this required return contract:
+On each PR Watch event, and whenever the user asks for current PR status, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files.
+
+Classify the event before delegating review:
+
+- **New head, comment, review, or review thread while checks are pending:** inspect the new metadata and feedback, but do not call `run_code_review`. Record what changed and yield for the CI-finished event. A worker's claim that feedback is addressed is not itself a review trigger.
+- **Failed or cancelled checks:** do not run code review. The worker also received a notification for the failing check and they will handle it.
+- **All applicable checks completed successfully for the current head:** call `run_code_review`.
+- **Relevant feedback added after a completed review:** fetch current state and delegate a follow-up only if all applicable checks for the current head still pass.
+
+Never review a head while substantive checks are queued or in progress. Review each successful head once unless new relevant feedback requires a follow-up. Before review, confirm the successful checks belong to the current head and current landing-base merge ref, not an obsolete base.
+
+In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering CI-finished event, and relevant feedback, with this required return contract:
 
 - reviewed head commit SHA;
 - confirmation that the PR targets the landing branch;
@@ -52,9 +63,9 @@ On each PR Watch event, and whenever the user asks for current PR status, fetch 
 - required-check and generated-output verdict;
 - mergeability verdict.
 
-The reviewer inspects the complete diff, files, PR metadata, comments, threads, checks, and actual generated outputs. When multiple PRs need review together, emit one `run_code_review` call per PR in the same response so reviews run concurrently.
+The reviewer inspects the complete diff, files, PR metadata, comments, threads, checks, and actual generated outputs. When multiple PRs become reviewable together, emit one `run_code_review` call per PR in the same response so reviews run concurrently.
 
-A review cycle is complete only when delegated evidence covers the current head commit and every item in the return contract. If the result is incomplete, delegate a follow-up review.
+A review cycle is complete only when delegated evidence covers the current successfully checked head commit and every item in the return contract. If the result is incomplete, delegate a follow-up review.
 
 ## Act on the review
 
