@@ -987,22 +987,25 @@ export default function prWatch(pi: ExtensionAPI): void {
     return /(^|[;&|\n]\s*)git\s+push\b/.test(command);
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     state = initialState();
     deliveryAttemptedId = undefined;
+    const requestedOrchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
     const savedEntry = [...ctx.sessionManager.getBranch()]
       .reverse()
       .find((entry) => entry.type === "custom" && entry.customType === CUSTOM_STATE);
-    let restoredSavedState = false;
     if (savedEntry?.type === "custom" && isWatchState(savedEntry.data)) {
       state = structuredClone(savedEntry.data);
-      restoredSavedState = true;
-    } else {
-      state.orchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+      if (event.reason === "startup" && requestedOrchestrationSessionId && !state.orchestrationSessionId) {
+        state = initialState();
+        state.orchestrationSessionId = requestedOrchestrationSessionId;
+      }
+    } else if (event.reason === "startup") {
+      state.orchestrationSessionId = requestedOrchestrationSessionId;
     }
     if (state.orchestrationSessionId) {
       process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
-    } else if (restoredSavedState) {
+    } else {
       delete process.env.PI_ORCHESTRATION_SESSION_ID;
     }
     reconcileDelivery(ctx);
