@@ -20,6 +20,12 @@ async function fixture(): Promise<{ root: string; fakeBin: string }> {
   return { root, fakeBin };
 }
 
+function decodeInitialPrompt(calls: string): string {
+  const match = calls.match(/printf %s ([A-Za-z0-9+/=]+) \| base64 -d/);
+  assert.ok(match, "Pi launch command must contain a base64-encoded initial prompt");
+  return Buffer.from(match[1], "base64").toString("utf8");
+}
+
 test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async () => {
   const { root, fakeBin } = await fixture();
   const output = join(root, "pi-output");
@@ -110,6 +116,16 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
     );
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    const prompt =
+      "/skill:ticket-worker \n\n" +
+      "Ticket: 042-implement-widget\n" +
+      "Worker identity: configured-repo@042-implement-widget\n" +
+      "PR base: integration/epic\n" +
+      "PR marker: <!-- pi-orchestration-run: session-123 -->\n\n" +
+      "Context:\n" +
+      "Keep API stable.\n" +
+      "Avoid migrations.";
+    const encodedPrompt = Buffer.from(prompt).toString("base64");
     assert.equal(
       await readFile(calls, "utf8"),
       "git branch --show-current\n" +
@@ -120,17 +136,8 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
         "repos stack --no-focus 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
-        "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> <env -u PI_ORCHESTRATION_SESSION_ID pi>\n" +
-        "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
-        "</skill:ticket-worker\n\n" +
-        "Ticket: 042-implement-widget\n" +
-        "Worker identity: configured-repo@042-implement-widget\n" +
-        "PR base: integration/epic\n" +
-        "PR marker: <!-- pi-orchestration-run: session-123 -->\n\n" +
-        "Context:\n" +
-        "Keep API stable.\n" +
-        "Avoid migrations.>\n" +
+        `<env -u PI_ORCHESTRATION_SESSION_ID pi "$(printf %s ${encodedPrompt} | base64 -d)">\n` +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n",
     );
 
@@ -150,7 +157,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
       },
     );
     assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
-    assert.doesNotMatch(await readFile(calls, "utf8"), /Context:/);
+    assert.doesNotMatch(decodeInitialPrompt(await readFile(calls, "utf8")), /Context:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -188,7 +195,10 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
     );
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
-    assert.match(await readFile(calls, "utf8"), /\n\nContext:\nPrefer the existing adapter\.\nKeep the constructor\.>/);
+    assert.match(
+      decodeInitialPrompt(await readFile(calls, "utf8")),
+      /\n\nContext:\nPrefer the existing adapter\.\nKeep the constructor\.$/,
+    );
 
     await rm(calls, { force: true });
     await rm(sessionCreated, { force: true });
@@ -206,7 +216,7 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
       },
     );
     assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
-    assert.doesNotMatch(await readFile(calls, "utf8"), /Context:/);
+    assert.doesNotMatch(decodeInitialPrompt(await readFile(calls, "utf8")), /Context:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

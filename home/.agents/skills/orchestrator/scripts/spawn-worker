@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -o pipefail
+
 usage() {
   echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
   exit 2
@@ -73,13 +75,13 @@ if [[ ${#new_sessions[@]} -ne 1 ]]; then
 fi
 session=${new_sessions[0]}
 
-printf -v prompt '%s\n\nTicket: %s\nWorker identity: %s\nPR base: %s\nPR marker: <!-- pi-orchestration-run: %s -->' \
+printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s\nPR marker: <!-- pi-orchestration-run: %s -->' \
   '/skill:ticket-worker' "$ticket" "$session" "$landing_branch" "$PI_ORCHESTRATION_SESSION_ID"
 if [[ -n $context ]]; then
   printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
 fi
 
-tmux send-keys -l -t "$session:0" -- "env -u PI_ORCHESTRATION_SESSION_ID pi" || exit
-tmux send-keys -t "$session:0" Enter || exit
-tmux send-keys -l -t "$session:0" -- "$prompt" || exit
+prompt_base64=$(printf %s "$prompt" | base64 | tr -d '\n') || exit
+command="env -u PI_ORCHESTRATION_SESSION_ID pi \"\$(printf %s $prompt_base64 | base64 -d)\""
+tmux send-keys -l -t "$session:0" -- "$command" || exit
 tmux send-keys -t "$session:0" Enter
