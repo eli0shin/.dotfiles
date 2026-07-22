@@ -1,39 +1,42 @@
 # Personal packages - not for work computers
 # Install with: brew bundle --file=Brewfile.personal
 
-mas "CrystalFetch", id: 6454431289
-mas "Developer", id: 640199958
-mas "Grocery", id: 1195676848
-mas "Keynote", id: 409183694
-mas "Microsoft Excel", id: 462058435
-mas "Microsoft PowerPoint", id: 462062816
-mas "Microsoft Word", id: 462054704
-mas "OneDrive", id: 823766827
-mas "Pages", id: 409201541
-mas "Perplexity", id: 6714467650
-mas "Vimlike", id: 1584519802
+if OS.mac?
+	mas "CrystalFetch", id: 6454431289
+	mas "Developer", id: 640199958
+	mas "Grocery", id: 1195676848
+	mas "Keynote", id: 409183694
+	mas "Microsoft Excel", id: 462058435
+	mas "Microsoft PowerPoint", id: 462062816
+	mas "Microsoft Word", id: 462054704
+	mas "OneDrive", id: 823766827
+	mas "Pages", id: 409201541
+	mas "Perplexity", id: 6714467650
+	mas "Vimlike", id: 1584519802
 # mas "WhatsApp", id: 310633997
-mas "Xcode", id: 497799835
+	mas "Xcode", id: 497799835
 
-brew "jdtls"
-brew "openjdk"
-brew "r"
-brew "render"
-brew "tailscale"
-cask "arduino-ide"
-cask "autodesk-fusion"
-cask "bambu-studio"
-cask "discord"
-cask "electron-fiddle"
-cask "firefox"
-cask "google-chrome"
-cask "keybase"
-cask "obs"
-cask "openscad"
-cask "orcaslicer"
-cask "postman"
-cask "qmk-toolbox"
-cask "raspberry-pi-imager"
-cask "slack"
-cask "streamlabs"
-cask "zoom"
+	brew "jdtls"
+	brew "openjdk"
+	brew "r"
+	brew "render"
+	brew "tailscale"
+
+	cask "arduino-ide"
+	cask "autodesk-fusion"
+	cask "bambu-studio"
+	cask "discord"
+	cask "electron-fiddle"
+	cask "firefox"
+	cask "google-chrome"
+	cask "keybase"
+	cask "obs"
+	cask "openscad"
+	cask "orcaslicer"
+	cask "postman"
+	cask "qmk-toolbox"
+	cask "raspberry-pi-imager"
+	cask "slack"
+	cask "streamlabs"
+	cask "zoom"
+end

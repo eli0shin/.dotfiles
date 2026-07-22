@@ -3,6 +3,7 @@ tap "nikitabobko/tap", trusted: true
 tap "hashicorp/tap", trusted: true
 tap "sst/tap", trusted: true
 tap "jnsahaj/lumen", trusted: true
+
 brew "ast-grep"
 brew "bash"
 brew "bash-language-server"
@@ -28,18 +29,14 @@ brew "gh"
 brew "ghostscript"
 brew "git"
 brew "jq"
-brew "mas"
 brew "mermaid-cli"
 brew "mkcert"
 brew "neovim"
-brew "nginx", restart_service: :changed
 brew "nmap"
 brew "nss"
-brew "pngpaste"
 brew "pyenv"
 brew "shellcheck"
 brew "tcl-tk"
-brew "terminal-notifier"
 brew "tectonic"
 brew "tree-sitter"
 brew "tree-sitter-cli"
@@ -56,26 +53,40 @@ brew "aws-sso-util"
 brew "go"
 brew "pnpm"
 brew "agent-browser"
-brew "iputils"
 brew "arp-scan"
 brew "jnsahaj/lumen/lumen"
 brew "git-delta"
 brew "libgit2"
 brew "yq"
-cask "claude"
-cask "chatgpt"
-cask "nkzw-tech/tap/codiff"
-cask "amethyst"
-cask "ghostty"
-cask "mitmproxy"
-cask "codex"
-cask "opencode-desktop"
-cask "vlc"
-cask "t3-code"
-cask "logitune"
-cask "superwhisper"
-cask "kitlangton-hex"
 
+
+if OS.linux?
+  brew "iputils"
+  brew "nginx"
+end
+
+
+if OS.mac?
+  brew "mas"
+  brew "terminal-notifier"
+  brew "pngpaste"
+  brew "nginx", restart_service: :changed
+
+  cask "claude"
+  cask "chatgpt"
+  cask "nkzw-tech/tap/codiff"
+  cask "amethyst"
+  cask "ghostty"
+  cask "mitmproxy"
+  cask "opencode-desktop"
+  cask "vlc"
+  cask "t3-code"
+  cask "logitune"
+  cask "superwhisper"
+  cask "kitlangton-hex"
+end
+
+cask "codex"
 
 go "github.com/air-verse/air"
 go "github.com/go-delve/delve/cmd/dlv"
