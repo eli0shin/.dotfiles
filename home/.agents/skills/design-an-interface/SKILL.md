@@ -1,6 +1,7 @@
 ---
 name: design-an-interface
 description: Generate multiple radically different interface designs for a module. Use when user wants to design an API, explore interface options, compare module shapes, or mentions "design it twice".
+disable-model-invocation: true
 ---
 
 # Design an Interface

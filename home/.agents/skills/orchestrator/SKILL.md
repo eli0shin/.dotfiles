@@ -1,6 +1,7 @@
 ---
 name: orchestrator
 description: Coordinate parallel ticket workers as an event-driven control plane through repos worktrees, Pi sessions, delegated pull-request review, squash merges, and filesystem tracker frontiers. Use when orchestrating implementation tickets rather than implementing or reviewing one ticket directly.
+disable-model-invocation: true
 ---
 
 # Orchestrator

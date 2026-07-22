@@ -1,6 +1,7 @@
 ---
 name: ticket-worker
 description: Implement one ticket handed off by the orchestrator and open a PR for review.
+disable-model-invocation: true
 ---
 
 # Ticket Worker

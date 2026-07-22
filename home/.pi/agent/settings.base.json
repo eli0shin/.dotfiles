@@ -38,7 +38,16 @@
   },
   "packages": [
     "git:https://github.com/d-b/pi-exa.git@e06fb2fa6fb731b80a3a392939830cdd3267b2f4",
-    "npm:@observal/pi-insights"
+    "npm:@observal/pi-insights",
+    {
+      "source": "npm:@samfp/pi-essentials",
+      "extensions": [
+        "-src/subagent.ts",
+        "-src/compact-header.ts",
+        "-src/context-pruner.ts",
+        "-src/markdown-viewer.ts"
+      ]
+    }
   ],
   "extensions": [
     "-extensions/otel-tracing/index.ts"
