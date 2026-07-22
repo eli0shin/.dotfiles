@@ -340,9 +340,24 @@ _start_services() {
     services=$(jq -c '.[]' "$SERVICES_FILE")
 
     while IFS= read -r svc_json; do
-        local name use_sudo
+        local name script use_sudo
         name=$(echo "$svc_json" | jq -r '.name')
+        script=$(echo "$svc_json" | jq -r '.script // empty')
         use_sudo=$(echo "$svc_json" | jq -r '.sudo // false')
+
+        if [[ -n "$script" ]]; then
+            if [[ "$script" != /* ]]; then
+                script="$DOTFILES_DIR/$script"
+            fi
+
+            info "Reconciling $name..."
+            if "$script"; then
+                success "$name is ready"
+            else
+                warn "Failed to reconcile $name"
+            fi
+            continue
+        fi
 
         # Check if service is already running
         local check_cmd is_running
