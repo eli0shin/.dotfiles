@@ -34,7 +34,14 @@ dot link              # Install dot to /usr/local/bin
 
 ```
 ~/.dotfiles/
-├── dot              # CLI management script
+├── dot              # CLI entrypoint and command dispatcher
+├── lib/
+│   ├── common.sh
+│   ├── packages.sh
+│   ├── dotfiles.sh
+│   ├── daemons.sh
+│   ├── settings.sh
+│   └── maintenance.sh
 ├── home/            # Configs that symlink to ~
 │   ├── .config/
 │   │   ├── nvim/
