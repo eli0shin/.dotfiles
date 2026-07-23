@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: $0 <channel-id> [thread-ts]" >&2
+  exit 2
+fi
+
+args=(conversations read "$1" --limit=1000 --json)
+[[ $# -eq 2 ]] && args+=(--thread-ts="$2")
+
+slackcli "${args[@]}" \
+  | jq -r '
+      .users as $users
+      | ($users | map({key: .id, value: (.real_name // .name)}) | from_entries) as $names
+      | (
+          (
+            .messages[]
+            | (reduce $users[] as $user (
+                (.text // "");
+                gsub("<@" + $user.id + ">"; "@" + ($user.real_name // $user.name))
+              )) as $text
+            | (.attachments // [] | map(
+                (.title // .fallback // .text // "Attachment")
+                + if .title_link then " — " + .title_link else "" end
+              ) | join("\n")) as $attachments
+            | (if $text == "" then $attachments else $text end) as $content
+            | (if .user then ($names[.user] // .user) else (.bot_id // "Unknown") end) as $author
+            | "[\(.ts)] \($author):\n\($content)\n"
+          ),
+          "Conversation Users:",
+          ($users[] | "\(.real_name // .name), \(.name), \(.id)")
+        )
+    '

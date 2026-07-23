@@ -1,11 +1,18 @@
 tap "atlassian/homebrew-acli", trusted: true
 brew "acli"
+
 tap "tilt-dev/tap", trusted: true
 brew "tilt-dev/tap/tilt"
+
 tap "launchdarkly/homebrew-tap", trusted: true
 brew "ldcli"
+
 # tap "fanatics-gaming/homebrew-tap", "https://github.com/fanatics-gaming/homebrew-tap.git"
 # brew "fanatics-gaming/homebrew-tap/fbg-platform-tools"
+
+tap "shaharia-lab/tap", trusted: true
+brew "slackcli"
+
 brew "cairo"
 brew "create-dmg"
 brew "giflib"
@@ -15,5 +22,7 @@ brew "pkgconf"
 brew "kubectl"
 brew "helm"
 brew "actionlint"
+
 cask "1password-cli"
+
 go "golang.org/x/tools/gopls"
