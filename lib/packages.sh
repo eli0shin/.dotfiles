@@ -221,10 +221,12 @@ _process_bash_packages_file() {
         BASH_PACKAGES_UNKNOWN_PLATFORM_WARNED=1
     fi
 
-    local packages
-    packages=$(jq -c '.[]' "$file")
-
+    local package_records=()
     while IFS= read -r pkg_json; do
+        package_records[${#package_records[@]}]="$pkg_json"
+    done < <(jq -c '.[]' "$file")
+
+    for pkg_json in "${package_records[@]}"; do
         local cmd install_script update_cmd check_cmd
         cmd=$(echo "$pkg_json" | jq -r '.command')
         install_script=$(echo "$pkg_json" | jq -r --arg platform "$platform" '(.platforms[$platform].install | select(. != "")) // .install // empty')
@@ -254,7 +256,7 @@ _process_bash_packages_file() {
                 warn "Failed to install $cmd (continuing...)"
             fi
         fi
-    done <<< "$packages"
+    done
 }
 
 cmd_package() {
