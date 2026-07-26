@@ -1,3 +1,3 @@
 function devbox
-    ssh elioshinsky@devbox.home.arpa
+    ssh -t elioshinsky@devbox.home.arpa 'fish -ic t'
 end
