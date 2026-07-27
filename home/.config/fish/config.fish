@@ -17,6 +17,9 @@ fish_add_path $BUN_INSTALL/bin
 # Disable fish welcome message
 set fish_greeting
 
+# Keep command highlighting readable when Fish cannot detect the terminal background.
+set --global fish_color_command 5c5cff
+
 # Add local_functions to fish function path for lazy loading
 set -p fish_function_path ~/.config/fish/local_functions
 
