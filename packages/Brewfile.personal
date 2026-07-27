@@ -40,3 +40,5 @@ if OS.mac?
 	cask "streamlabs"
 	cask "zoom"
 end
+
+brew "mosh"
