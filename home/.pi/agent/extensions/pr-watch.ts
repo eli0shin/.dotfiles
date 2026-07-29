@@ -88,6 +88,7 @@ type Check = {
 
 type WorkflowRun = {
   databaseId?: number;
+  attempt?: number;
   name?: string;
   workflowName?: string;
   status?: string;
@@ -629,7 +630,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       "--commit",
       state.watchedSha.sha,
       "--json",
-      "databaseId,name,workflowName,status,conclusion,url,createdAt,updatedAt",
+      "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
     ], ctx);
   }
 
@@ -685,7 +686,10 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function runsCompletionKey(sha: string, runs: WorkflowRun[]): string {
     const runSignature = runs
-      .map((run) => [run.databaseId, run.workflowName, run.name, run.status, run.conclusion, run.url].join("|"))
+      .map((run) => {
+        const signature = [run.databaseId, run.workflowName, run.name, run.status, run.conclusion, run.url].join("|");
+        return (run.attempt ?? 1) > 1 ? `${signature}|attempt:${run.attempt}` : signature;
+      })
       .sort()
       .join(";");
     return `${sha}:${runSignature}`;

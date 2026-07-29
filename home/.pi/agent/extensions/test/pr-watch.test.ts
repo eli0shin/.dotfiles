@@ -40,6 +40,7 @@ function createHarness() {
   const statuses: Array<string | undefined> = [];
   const reviews = new Map<number, unknown[]>();
   const checks = new Map<number, unknown[]>();
+  const runs: unknown[] = [];
   const unavailablePrs = new Set<number>();
   const prs = new Map<number, PrFixture>([
     [
@@ -139,7 +140,7 @@ function createHarness() {
         return { code: 0, stdout: "main-sha\n", stderr: "" };
       }
       if (command === "gh" && args[0] === "run") {
-        return { code: 0, stdout: "[]", stderr: "" };
+        return { code: 0, stdout: JSON.stringify(runs), stderr: "" };
       }
       return { code: 1, stdout: "", stderr: "unsupported command" };
     },
@@ -187,6 +188,19 @@ function createHarness() {
           toolName: "bash",
           input: { command: `cd /tmp/repos-${number} && gh pr ${subcommand}` },
           content: [{ type: "text", text: `${url}\n` }],
+        },
+        ctx,
+      ),
+    );
+  }
+
+  async function push(): Promise<void> {
+    await withFakeTimer(() =>
+      handlers.get("tool_result")?.(
+        {
+          toolName: "bash",
+          input: { command: "git push" },
+          content: [{ type: "text", text: "main -> main" }],
         },
         ctx,
       ),
@@ -242,10 +256,12 @@ function createHarness() {
     statuses,
     reviews,
     checks,
+    runs,
     prs,
     unavailablePrs,
     ctx,
     activate,
+    push,
     runPoll,
     startSession,
     settleAgent,
@@ -459,6 +475,52 @@ test("does not add a PR that is not open", async () => {
   assert.deepEqual(
     harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
     [104],
+  );
+});
+
+test("SHA watch notifies when a rerun reaches the same conclusion", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+
+  const run = {
+    databaseId: 123,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "failure",
+    url: "https://github.com/eli0shin/repos/actions/runs/123",
+    updatedAt: "2026-07-28T02:08:30Z",
+  };
+  harness.runs.push(run);
+  await harness.runPoll();
+  assert.equal(harness.sentMessages.length, 1);
+
+  run.attempt = 2;
+  run.status = "in_progress";
+  run.conclusion = "";
+  run.updatedAt = "2026-07-28T02:17:30Z";
+  await harness.runPoll();
+  assert.equal(harness.sentMessages.length, 1);
+
+  run.status = "completed";
+  run.conclusion = "failure";
+  run.updatedAt = "2026-07-28T02:18:30Z";
+  await harness.runPoll();
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 2);
+  assert.equal(
+    harness.execCalls.some(
+      ({ command, args }) =>
+        command === "gh" &&
+        args[0] === "run" &&
+        args[1] === "list" &&
+        args[args.indexOf("--json") + 1]?.split(",").includes("attempt"),
+    ),
+    true,
   );
 });
 
