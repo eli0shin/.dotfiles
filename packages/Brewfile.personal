@@ -42,3 +42,4 @@ if OS.mac?
 end
 
 brew "mosh"
+brew "iperf3"
