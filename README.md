@@ -20,6 +20,7 @@ dot stow              # Create symlinks
 dot unstow            # Remove symlinks
 dot update            # Pull repo and run init
 dot doctor            # Check installation health
+dot automount apply   # Configure macOS network automounts
 dot edit              # Open dotfiles in editor
 dot benchmark-shell   # Benchmark Fish shell startup performance
 dot benchmark-shell -r 20 -v  # 20 runs with per-run timing

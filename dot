@@ -11,6 +11,8 @@ source "$DOTFILES_DIR/lib/packages.sh"
 source "$DOTFILES_DIR/lib/daemons.sh"
 # shellcheck source=lib/settings.sh
 source "$DOTFILES_DIR/lib/settings.sh"
+# shellcheck source=lib/automount.sh
+source "$DOTFILES_DIR/lib/automount.sh"
 # shellcheck source=lib/dotfiles.sh
 source "$DOTFILES_DIR/lib/dotfiles.sh"
 # shellcheck source=lib/maintenance.sh
@@ -29,6 +31,7 @@ cmd_init() {
 
     if _is_macos; then
         cmd_pmset apply || warn "pmset settings could not be applied"
+        cmd_automount apply || warn "automount settings could not be applied"
         cmd_defaults apply || warn "macOS defaults could not be applied"
         cmd_keyboard apply || warn "keyboard remappings could not be applied"
     else
@@ -67,6 +70,7 @@ Commands:
     unload                  Unload and remove managed LaunchAgents
     list                    List configured LaunchAgents
   pmset [apply|show]  Manage power settings
+  automount [apply|show|remove]  Manage macOS network automounts
   defaults [apply|show]  Manage macOS defaults
   keyboard [apply|show]  Manage keyboard remappings
   backup            Backup existing configs before stow
@@ -103,6 +107,7 @@ main() {
         service) cmd_service "$@" ;;
         launch-agent) cmd_launch_agent "$@" ;;
         pmset)   cmd_pmset "$@" ;;
+        automount) cmd_automount "$@" ;;
         defaults) cmd_defaults "$@" ;;
         keyboard) cmd_keyboard "$@" ;;
         backup)  cmd_backup "$@" ;;

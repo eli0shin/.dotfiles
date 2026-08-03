@@ -1,0 +1,6 @@
+{
+  "shares": {
+    "infra": "://guest:@nas.home.arpa/infra",
+    "personal": "://guest:@nas.home.arpa/personal"
+  }
+}

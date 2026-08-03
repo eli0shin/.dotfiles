@@ -33,6 +33,7 @@ dot service start     # Start brew services from services.json
 dot pmset apply       # Apply power management settings
 dot defaults apply    # Apply macOS defaults
 dot keyboard apply    # Apply keyboard remappings
+dot automount apply   # Apply macOS network automounts
 
 # Backup/restore
 dot backup            # Backup existing configs before stow
@@ -46,7 +47,7 @@ dot restore --merge   # Restore only files not in dotfiles repo
 - `dot` - Main CLI script (bash)
 - `home/` - Configs that get symlinked to `~` via stow
 - `packages/` - Brewfile and bash-packages.json (with profile variants)
-- `settings/` - System settings: services.json, pmset.json, defaults.json, keyboard.json
+- `settings/` - System settings: services.json, pmset.json, defaults.json, keyboard.json, automounts.json
 - `scripts/` - Helper scripts (merge-config.sh, git-hook-merge.sh)
 - `.dotprofile` - Machine profile ("work" or "personal"), gitignored
 

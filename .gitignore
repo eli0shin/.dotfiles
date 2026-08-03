@@ -36,6 +36,7 @@ home/.pi/agent/models.json
 home/.config/opencode/opencode.json
 home/.config/opencode/otel.json
 home/.config/opencode/package.json
+settings/automounts.json
 settings/defaults.json
 settings/keyboard.json
 settings/launch-agents.json

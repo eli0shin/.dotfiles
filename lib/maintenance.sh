@@ -296,6 +296,7 @@ complete -c dot -n "__fish_use_subcommand" -a "merge" -d "Merge config files (*.
 complete -c dot -n "__fish_use_subcommand" -a "service" -d "Manage brew services"
 complete -c dot -n "__fish_use_subcommand" -a "launch-agent" -d "Manage user LaunchAgents"
 complete -c dot -n "__fish_use_subcommand" -a "pmset" -d "Manage power settings"
+complete -c dot -n "__fish_use_subcommand" -a "automount" -d "Manage macOS network automounts"
 complete -c dot -n "__fish_use_subcommand" -a "defaults" -d "Manage macOS defaults"
 complete -c dot -n "__fish_use_subcommand" -a "keyboard" -d "Manage keyboard remappings"
 complete -c dot -n "__fish_use_subcommand" -a "backup" -d "Backup existing configs"
@@ -331,6 +332,7 @@ complete -c dot -n "__fish_seen_subcommand_from launch-agent" -a "list" -d "List
 
 # apply/show subcommands for settings commands
 complete -c dot -n "__fish_seen_subcommand_from pmset" -a "apply show" -d "apply or show"
+complete -c dot -n "__fish_seen_subcommand_from automount" -a "apply show remove" -d "apply, show, or remove"
 complete -c dot -n "__fish_seen_subcommand_from defaults" -a "apply show" -d "apply or show"
 complete -c dot -n "__fish_seen_subcommand_from keyboard" -a "apply show" -d "apply or show"
 

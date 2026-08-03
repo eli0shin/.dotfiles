@@ -51,6 +51,7 @@
     }
   ],
   "extensions": [
+    "-extensions/permission-gate.ts",
     "-extensions/otel-tracing/index.ts"
   ],
   "provider": {
