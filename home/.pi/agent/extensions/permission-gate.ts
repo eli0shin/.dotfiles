@@ -302,10 +302,15 @@ function safetyPath(token: Token, cwd: string | undefined): SafetyPath | undefin
     TMPDIR: process.env.TMPDIR ?? tmpdir(),
   };
   if (!token.singleQuoted && !token.escaped) {
-    expanded = expanded.replace(
-      /\$(?:\{(HOME|TMPDIR)\}|(HOME|TMPDIR))(?=\/|$)/g,
-      (_match, braced, plain) => knownVariables[braced ?? plain],
-    );
+    expanded = expanded
+      // A shell PID is an unknown filename fragment, not an arbitrary value.
+      // Model it as a glob so a direct temp target is allowed while a path
+      // below a potentially symlinked PID-containing component is rejected.
+      .replace(/\$\$/g, "*")
+      .replace(
+        /\$(?:\{(HOME|TMPDIR)\}|(HOME|TMPDIR))(?=\/|$)/g,
+        (_match, braced, plain) => knownVariables[braced ?? plain],
+      );
   }
   if (expanded.includes("$") || expanded.includes("`") || /[{}]/.test(expanded)) return undefined;
   if (!cwd && !isAbsolute(expanded)) return undefined;
@@ -363,7 +368,13 @@ function rmDecision(
       recursiveOptionUnknown ||= /[$`*?[\]{}]/.test(value);
       recursive ||= value === "--recursive" || (/^-[^-]/.test(value) && /[rR]/.test(value.slice(1)));
     } else {
-      if (parsingOptions && (value.includes("$") || value === "<dynamic-substitution>")) {
+      // Arbitrary expansions may split into additional option arguments.
+      // `$$` is the exception: it always expands to PID digits within the
+      // existing operand and therefore cannot produce `-r`.
+      if (
+        parsingOptions &&
+        (value === "<dynamic-substitution>" || value.replace(/\$\$/g, "").includes("$"))
+      ) {
         recursiveOptionUnknown = true;
       }
       paths.push(token);

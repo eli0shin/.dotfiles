@@ -77,6 +77,7 @@ async function main(): Promise<void> {
   await expectAllowed("cd /tmp && rm -rf nested/path");
   await expectAllowed("true && cd /tmp && rm -rf nested/path", "/etc");
   await expectAllowed("rm -rf /tmp/*");
+  await expectAllowed("rm -f /tmp/fingerprint.$$");
   await expectAllowed('tmp=$(mktemp); rm "$tmp"');
   await expectAllowed('  tmp=$(mktemp); rm "$tmp"');
   await expectAllowed('tmp=$(mktemp -d); rm -rf "$tmp"');
@@ -120,6 +121,10 @@ async function main(): Promise<void> {
   await expectPolicyBlocked('TMPDIR=/etc; tmp=$(mktemp -d); rm -rf "$tmp"');
   await expectPolicyBlocked('tmp=$(mktemp -d); export tmp=/etc; rm -rf "$tmp"');
   await expectPolicyBlocked('rm -rf "$unknown_path"');
+  await expectPolicyBlocked("opts='safe -rf'; rm /tmp/$opts /etc");
+  await expectPolicyBlocked("opts='safe -rf'; rm /tmp/\\x$opts /etc");
+  await expectPolicyBlocked("opts='safe -rf'; rm /tmp/'x'$opts /etc");
+  await expectPolicyBlocked("rm -rf /tmp/fingerprint.$$/etc");
   await expectPolicyBlocked("rm -rf '$TMPDIR/pi-safe'", "/etc");
   await expectPolicyBlocked("rm -rf \\$TMPDIR/pi-safe", "/etc");
   await expectPolicyBlocked("rm -rf /tmp/*/../../etc");
