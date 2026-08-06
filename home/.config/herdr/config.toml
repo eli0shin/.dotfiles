@@ -2,6 +2,25 @@
 name = "terminal"
 auto_switch = false
 
+# Arctic (VS Code Dark+) colors, matched to Neovim.
+[theme.custom]
+accent = "#D4D4D4"
+panel_bg = "#252526"
+surface0 = "#04395E"
+surface1 = "#2A2D2E"
+surface_dim = "#2D2D2D"
+overlay0 = "#858585"
+overlay1 = "#A9A9A9"
+text = "#D4D4D4"
+subtext0 = "#8F8F8F"
+mauve = "#C586C0"
+green = "#89D185"
+yellow = "#CCA700"
+red = "#F14C4C"
+blue = "#3794FF"
+teal = "#4EC9B0"
+peach = "#CE9178"
+
 [keys]
 prefix = "ctrl+g"
 settings = "prefix+c"
