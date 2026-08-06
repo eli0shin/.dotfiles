@@ -1,0 +1,48 @@
+[theme]
+name = "terminal"
+auto_switch = false
+
+[keys]
+prefix = "ctrl+g"
+settings = "prefix+c"
+workspace_picker = "prefix+s"
+new_workspace = "prefix+ctrl+s"
+close_workspace = "prefix+x"
+detach = "prefix+d"
+new_tab = "prefix+t"
+rename_tab = "prefix+r"
+previous_tab = "prefix+p"
+next_tab = "prefix+n"
+switch_tab = "prefix+1..9"
+close_tab = "prefix+q"
+edit_scrollback = "prefix+e"
+copy_mode = "prefix+["
+toggle_sidebar = "prefix+b"
+
+# Tabs are the only navigation level inside a workspace.
+rename_pane = ""
+focus_pane_left = ""
+focus_pane_down = ""
+focus_pane_up = ""
+focus_pane_right = ""
+swap_pane_left = ""
+swap_pane_down = ""
+swap_pane_up = ""
+swap_pane_right = ""
+cycle_pane_next = ""
+cycle_pane_previous = ""
+last_pane = ""
+split_vertical = ""
+split_horizontal = ""
+close_pane = ""
+zoom = ""
+resize_mode = ""
+
+[ui]
+agent_panel_sort = "priority"
+sidebar_start_collapsed = true
+sidebar_collapsed_mode = "hidden"
+pane_scrollbars = false
+hide_tab_bar_when_single_tab = false
+tab_bar_position = "top"
+prompt_new_tab_name = true

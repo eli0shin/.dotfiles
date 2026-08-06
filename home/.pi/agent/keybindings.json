@@ -1,3 +1,4 @@
 {
-  "app.clear": ["ctrl+x"]
+  "app.clear": ["ctrl+x"],
+  "app.editor.external": "ctrl+e"
 }
