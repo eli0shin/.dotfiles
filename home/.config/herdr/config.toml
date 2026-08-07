@@ -62,6 +62,7 @@ resize_mode = ""
 agent_panel_sort = "priority"
 sidebar_start_collapsed = true
 sidebar_collapsed_mode = "hidden"
+pane_borders = false
 pane_scrollbars = false
 hide_tab_bar_when_single_tab = false
 tab_bar_position = "top"

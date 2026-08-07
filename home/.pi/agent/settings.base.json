@@ -3,6 +3,7 @@
   "quietStartup": true,
   "collapseChangelog": true,
   "doubleEscapeAction": "tree",
+  "tuiMode": "fullscreen",
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,

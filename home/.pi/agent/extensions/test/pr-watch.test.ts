@@ -71,6 +71,10 @@ function createHarness() {
   let intervalCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
+  let currentSha = "main-sha";
+  let repoAvailable = true;
+  let shaAvailable = true;
+  let runsAvailable = true;
 
   function prNumberFromArgs(args: string[]): number | undefined {
     for (const arg of args) {
@@ -103,7 +107,9 @@ function createHarness() {
     async exec(command: string, args: string[]) {
       execCalls.push({ command, args });
       if (command === "gh" && args[0] === "repo") {
-        return { code: 0, stdout: JSON.stringify({ nameWithOwner: "eli0shin/repos" }), stderr: "" };
+        return repoAvailable
+          ? { code: 0, stdout: JSON.stringify({ nameWithOwner: "eli0shin/repos" }), stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {
         const number = prNumberFromArgs(args) ?? -1;
@@ -137,10 +143,14 @@ function createHarness() {
         return { code: 0, stdout: JSON.stringify(payload), stderr: "" };
       }
       if (command === "git" && args[0] === "rev-parse") {
-        return { code: 0, stdout: "main-sha\n", stderr: "" };
+        return shaAvailable
+          ? { code: 0, stdout: `${currentSha}\n`, stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "run") {
-        return { code: 0, stdout: JSON.stringify(runs), stderr: "" };
+        return runsAvailable
+          ? { code: 0, stdout: JSON.stringify(runs), stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       return { code: 1, stdout: "", stderr: "unsupported command" };
     },
@@ -280,6 +290,16 @@ function createHarness() {
     },
     setBranchEntries(entries: unknown[]) {
       branchEntries = entries;
+    },
+    setCurrentSha(sha: string) {
+      currentSha = sha;
+    },
+    setCurrentTargetAvailable(value: boolean) {
+      repoAvailable = value;
+      shaAvailable = value;
+    },
+    setRunsAvailable(value: boolean) {
+      runsAvailable = value;
     },
   };
 }
@@ -655,6 +675,146 @@ test("conflict notification does not tell a reviewer to modify another author's 
   assert.doesNotMatch(harness.sentMessages[0] ?? "", /Use repos to resolve/);
 });
 
+test("orchestration watches a changed current SHA and reports already-complete CI in the same poll", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+  const run = {
+    databaseId: 900,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/900",
+  };
+  harness.runs.push(run);
+
+  try {
+    await harness.startSession();
+    assert.equal(harness.sentMessages.length, 0, "the first observed SHA must be baselined");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+
+    harness.setCurrentSha("merged-sha");
+    run.databaseId = 901;
+    run.url = "https://github.com/eli0shin/repos/actions/runs/901";
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA merged-/);
+    assert.equal(
+      harness.execCalls.some(
+        ({ command, args }) => command === "gh" && args[0] === "run" && args.includes("merged-sha"),
+      ),
+      true,
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration retries and baselines its first SHA observation", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setCurrentTargetAvailable(false);
+  harness.runs.push({
+    databaseId: 910,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/910",
+  });
+
+  try {
+    await harness.startSession();
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+    harness.setCurrentTargetAvailable(true);
+    await harness.runPoll();
+
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.sentMessages.length, 0);
+    assert.equal(
+      harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "repo").length >= 2,
+      true,
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration retries a failed first-SHA baseline without reporting existing CI", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setRunsAvailable(false);
+  harness.runs.push({
+    databaseId: 920,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/920",
+  });
+
+  try {
+    await harness.startSession();
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+    harness.setRunsAvailable(true);
+    await harness.runPoll();
+
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestration preserves its SHA baseline across session resume", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  const run = {
+    databaseId: 930,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/930",
+  };
+  harness.runs.push(run);
+
+  try {
+    await harness.startSession();
+    const savedState = structuredClone(harness.savedStates.at(-1));
+    harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: savedState }]);
+    run.databaseId = 931;
+    run.url = "https://github.com/eli0shin/repos/actions/runs/931";
+
+    await harness.startSession("resume");
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA main-sh\./);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
 test("orchestration PR watch does not notify when a worker PR develops conflicts", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -1026,7 +1186,9 @@ test("persisted orchestration session wins and restores the process environment"
         mode: "active",
         orchestrationSessionId: "persisted-session",
         watchedPrs: [],
+        watchedSha: { repo: "eli0shin/repos", sha: "stale-sha", notifiedChecksKey: "stale-runs" },
         pendingPrUpdates: [],
+        pendingShaUpdate: { repo: "eli0shin/repos", sha: "stale-sha", runsKey: "stale-runs" },
         recentGhOutputs: [],
       },
     },
@@ -1036,6 +1198,8 @@ test("persisted orchestration session wins and restores the process environment"
     await harness.startSession();
 
     assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "persisted-session");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
     assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "persisted-session");
     assert.equal(
       execFileSync(process.execPath, ["-e", "process.stdout.write(process.env.PI_ORCHESTRATION_SESSION_ID ?? '')"], {

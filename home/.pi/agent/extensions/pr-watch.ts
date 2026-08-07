@@ -462,7 +462,9 @@ export default function prWatch(pi: ExtensionAPI): void {
       currentRepo = repo?.nameWithOwner;
       return currentRepo;
     })();
-    return currentRepoLookup;
+    const repo = await currentRepoLookup;
+    if (!repo) currentRepoLookup = undefined;
+    return repo;
   }
 
   async function discover(
@@ -530,8 +532,10 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
       reconcilePendingPr(watchedPr);
 
-      state.watchedSha = undefined;
-      state.pendingShaUpdate = undefined;
+      if (!state.orchestrationSessionId) {
+        state.watchedSha = undefined;
+        state.pendingShaUpdate = undefined;
+      }
       state.lastError = undefined;
       save();
       startPolling(ctx);
@@ -605,6 +609,21 @@ export default function prWatch(pi: ExtensionAPI): void {
     const sha = result.stdout.trim();
     if (result.code !== 0 || !sha) return undefined;
     return sha;
+  }
+
+  async function syncOrchestrationSha(ctx: ExtensionContext): Promise<boolean> {
+    if (!state.orchestrationSessionId) return false;
+    const [repo, sha] = await Promise.all([ensureCurrentRepo(ctx), currentSha()]);
+    if (!repo || !sha || state.watchedSha?.sha === sha) return false;
+
+    const firstObservation = !state.watchedSha;
+    state.watchedSha = { repo, sha };
+    state.pendingShaUpdate = undefined;
+    if (firstObservation && !(await baselineCurrentShaState(ctx))) {
+      state.watchedSha = undefined;
+      return false;
+    }
+    return true;
   }
 
   async function refreshSelfLogin(ctx: ExtensionContext): Promise<void> {
@@ -720,16 +739,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     watched.seenActivityIds = ((await fetchActivities(watched, ctx)) ?? []).map((activity) => activity.id);
   }
 
-  async function baselineCurrentShaState(ctx: ExtensionContext): Promise<void> {
-    if (!state.watchedSha) return;
+  async function baselineCurrentShaState(ctx: ExtensionContext): Promise<boolean> {
+    if (!state.watchedSha) return false;
     const runs = await fetchRunsForSha(ctx);
-    if (!runs) return;
+    if (!runs) return false;
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
     state.watchedSha.notifiedChecksKey = allRunsTerminal ? runsKey : undefined;
     if (state.pendingShaUpdate && (!allRunsTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
       state.pendingShaUpdate = undefined;
     }
+    return true;
   }
 
   async function fetchActivities(watched: WatchedPrState, ctx: ExtensionContext): Promise<TrackedActivity[] | undefined> {
@@ -1113,6 +1133,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     try {
       reconcileDelivery(ctx);
       await refreshSelfLogin(ctx);
+      await syncOrchestrationSha(ctx);
       let addedCount = 0;
       const errors = await reconcileOrchestrationMembership(ctx);
 
@@ -1223,11 +1244,13 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const savedPrs = [...state.watchedPrs];
     const savedSha = state.watchedSha;
-    state.watchedSha = undefined;
+    if (!state.orchestrationSessionId) state.watchedSha = undefined;
     for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url, true);
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
 
-    if (!state.orchestrationSessionId && state.watchedPrs.length === 0 && savedSha) {
+    if (state.orchestrationSessionId) {
+      await syncOrchestrationSha(ctx);
+    } else if (state.watchedPrs.length === 0 && savedSha) {
       state.watchedSha = { repo: savedSha.repo, sha: savedSha.sha };
       await baselineCurrentShaState(ctx);
     }
@@ -1284,6 +1307,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         if (hasTargets()) {
           if (state.watchedPrs.length > 0) await ensureCurrentRepo(ctx);
+          if (state.orchestrationSessionId && !state.watchedSha) await syncOrchestrationSha(ctx);
           startPolling(ctx);
           await poll(ctx);
         } else {
@@ -1354,6 +1378,8 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         if (state.orchestrationSessionId) {
           await reconcileOrchestrationMembership(ctx);
+          await syncOrchestrationSha(ctx);
+          save();
           startPolling(ctx);
         } else {
           await discover(ctx, "manual reset");

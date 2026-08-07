@@ -12,6 +12,19 @@ vim.api.nvim_create_autocmd('TextYankPost', {
   end,
 })
 
+-- Keep Herdr scrollback at the same text width as the source terminal.
+vim.api.nvim_create_autocmd('BufWinEnter', {
+  desc = 'Hide columns that reduce the Herdr scrollback editor width',
+  group = vim.api.nvim_create_augroup('herdr-scrollback', { clear = true }),
+  pattern = 'herdr-scrollback-*.txt',
+  callback = function()
+    vim.opt_local.number = false
+    vim.opt_local.relativenumber = false
+    vim.opt_local.signcolumn = 'no'
+    vim.opt_local.foldcolumn = '0'
+  end,
+})
+
 -- Configure terminal environment for proper color support
 vim.api.nvim_create_autocmd('TermOpen', {
   desc = 'Set terminal environment variables for color support',
