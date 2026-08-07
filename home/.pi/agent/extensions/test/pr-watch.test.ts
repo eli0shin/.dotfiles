@@ -71,9 +71,12 @@ function createHarness() {
   let intervalCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
-  let currentSha = "main-sha";
+  const currentBranch = "main";
+  let localSha = "main-sha";
+  let remoteBranchSha = "main-sha";
   let repoAvailable = true;
   let shaAvailable = true;
+  let branchTipAvailable = true;
   let runsAvailable = true;
 
   function prNumberFromArgs(args: string[]): number | undefined {
@@ -137,14 +140,24 @@ function createHarness() {
       if (command === "gh" && args[0] === "api" && args[1] === "user") {
         return { code: 0, stdout: JSON.stringify({ login: "eli0shin" }), stderr: "" };
       }
+      if (command === "gh" && args[0] === "api" && args[1]?.startsWith("repos/eli0shin/repos/commits/")) {
+        return shaAvailable && branchTipAvailable
+          ? { code: 0, stdout: JSON.stringify({ sha: remoteBranchSha }), stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
+      }
       if (command === "gh" && args[0] === "api") {
         const number = Number(args[1]?.match(/\/(\d+)\//)?.[1]);
         const payload = args[1]?.includes("/reviews") ? reviews.get(number) ?? [] : [];
         return { code: 0, stdout: JSON.stringify(payload), stderr: "" };
       }
+      if (command === "git" && args[0] === "branch" && args[1] === "--show-current") {
+        return shaAvailable
+          ? { code: 0, stdout: `${currentBranch}\n`, stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
+      }
       if (command === "git" && args[0] === "rev-parse") {
         return shaAvailable
-          ? { code: 0, stdout: `${currentSha}\n`, stderr: "" }
+          ? { code: 0, stdout: `${localSha}\n`, stderr: "" }
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "run") {
@@ -292,11 +305,17 @@ function createHarness() {
       branchEntries = entries;
     },
     setCurrentSha(sha: string) {
-      currentSha = sha;
+      remoteBranchSha = sha;
+    },
+    setLocalSha(sha: string) {
+      localSha = sha;
     },
     setCurrentTargetAvailable(value: boolean) {
       repoAvailable = value;
       shaAvailable = value;
+    },
+    setBranchTipAvailable(value: boolean) {
+      branchTipAvailable = value;
     },
     setRunsAvailable(value: boolean) {
       runsAvailable = value;
@@ -496,6 +515,98 @@ test("does not add a PR that is not open", async () => {
     harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
     [104],
   );
+});
+
+test("SHA watch follows the remote branch tip when local HEAD is stale", async () => {
+  const harness = createHarness();
+  harness.setLocalSha("stale-local-sha");
+  await harness.startSession();
+  await harness.push();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+
+  harness.setCurrentSha("remote-merge-sha");
+  harness.runs.push({
+    databaseId: 122,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/122",
+  });
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "remote-merge-sha");
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA remote-/);
+  assert.equal(
+    harness.execCalls.some(
+      ({ command, args }) => command === "gh" && args[0] === "run" && args.includes("remote-merge-sha"),
+    ),
+    true,
+  );
+});
+
+test("ordinary SHA watch resolves a stale saved SHA on session resume", async () => {
+  const harness = createHarness();
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [],
+        watchedSha: { repo: "eli0shin/repos", sha: "stale-sha", notifiedChecksKey: "stale-runs" },
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+  harness.setCurrentSha("remote-resume-sha");
+
+  await harness.startSession("resume");
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "remote-resume-sha");
+});
+
+test("ordinary SHA watch reports a failed startup baseline", async () => {
+  const harness = createHarness();
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [],
+        watchedSha: { repo: "eli0shin/repos", sha: "main-sha" },
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+  harness.setRunsAvailable(false);
+
+  await harness.startSession("resume");
+  await harness.shutdown();
+
+  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not baseline workflow runs for SHA main-sha/);
+});
+
+test("SHA watch reports a branch-tip lookup failure and retains its current SHA", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  harness.setBranchTipAvailable(false);
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch main/);
 });
 
 test("SHA watch notifies when a rerun reaches the same conclusion", async () => {
@@ -1028,17 +1139,19 @@ test("worker snapshot discovery stays silent while the orchestrator is busy", as
   }
 });
 
-test("reset preserves environment-activated orchestration mode", async () => {
+test("reset preserves orchestration mode and reports a branch-tip failure", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
 
   try {
     await harness.startSession();
+    harness.setBranchTipAvailable(false);
     await harness.commands.get("pr-watch")?.handler("reset", harness.ctx);
     await harness.shutdown();
 
     assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "session-123");
+    assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch main/);
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;

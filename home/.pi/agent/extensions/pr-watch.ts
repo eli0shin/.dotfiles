@@ -124,6 +124,15 @@ type PrPollResult = {
   error?: string;
 };
 
+type BranchTipResult =
+  | { ok: true; sha: string }
+  | { ok: false; error: string };
+
+type ShaSyncResult = {
+  changed: boolean;
+  error?: string;
+};
+
 const CUSTOM_STATE = "pr-watch-state";
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
@@ -570,8 +579,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (state.orchestrationSessionId) return false;
 
-    const sha = await currentSha();
-    if (!sha) return false;
+    const branchTip = await currentBranchTip(repoName);
+    if (!branchTip.ok) {
+      state.lastError = branchTip.error;
+      save();
+      setStatus(ctx);
+      return false;
+    }
+    const sha = branchTip.sha;
 
     await refreshSelfLogin(ctx);
 
@@ -604,26 +619,50 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => prIdentityKey(candidate.pr) !== key);
   }
 
-  async function currentSha(): Promise<string | undefined> {
-    const result = await pi.exec("git", ["rev-parse", "HEAD"], { timeout: 30_000 });
-    const sha = result.stdout.trim();
-    if (result.code !== 0 || !sha) return undefined;
-    return sha;
+  async function currentBranchTip(repo: string): Promise<BranchTipResult> {
+    const branchResult = await pi.exec("git", ["branch", "--show-current"], { timeout: 30_000 });
+    const branch = branchResult.stdout.trim();
+    if (branchResult.code !== 0 || !branch) {
+      const detail = branchResult.stderr.trim() || "the current checkout has no branch";
+      return { ok: false, error: `Could not resolve the current branch: ${detail}` };
+    }
+
+    const commitResult = await pi.exec(
+      "gh",
+      ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`],
+      { timeout: 30_000 },
+    );
+    if (commitResult.code !== 0) {
+      const detail = commitResult.stderr.trim() || "GitHub returned no commit";
+      return { ok: false, error: `Could not resolve the GitHub tip of branch ${branch}: ${detail}` };
+    }
+
+    try {
+      const commit = JSON.parse(commitResult.stdout) as { sha?: string };
+      if (commit.sha) return { ok: true, sha: commit.sha };
+    } catch {
+      // Report one branch-tip error below.
+    }
+    return { ok: false, error: `Could not resolve the GitHub tip of branch ${branch}: invalid commit response` };
   }
 
-  async function syncOrchestrationSha(ctx: ExtensionContext): Promise<boolean> {
-    if (!state.orchestrationSessionId) return false;
-    const [repo, sha] = await Promise.all([ensureCurrentRepo(ctx), currentSha()]);
-    if (!repo || !sha || state.watchedSha?.sha === sha) return false;
+  async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
+    if (!state.orchestrationSessionId && !state.watchedSha) return { changed: false };
+    const repo = await ensureCurrentRepo(ctx);
+    if (!repo) return { changed: false, error: "Could not resolve the current GitHub repository" };
+    const branchTip = await currentBranchTip(repo);
+    if (!branchTip.ok) return { changed: false, error: branchTip.error };
+    const sha = branchTip.sha;
+    if (state.watchedSha?.sha === sha) return { changed: false };
 
     const firstObservation = !state.watchedSha;
     state.watchedSha = { repo, sha };
     state.pendingShaUpdate = undefined;
     if (firstObservation && !(await baselineCurrentShaState(ctx))) {
       state.watchedSha = undefined;
-      return false;
+      return { changed: false, error: `Could not baseline workflow runs for SHA ${sha}` };
     }
-    return true;
+    return { changed: true };
   }
 
   async function refreshSelfLogin(ctx: ExtensionContext): Promise<void> {
@@ -1133,9 +1172,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     try {
       reconcileDelivery(ctx);
       await refreshSelfLogin(ctx);
-      await syncOrchestrationSha(ctx);
+      const shaSync = await syncWatchedSha(ctx);
       let addedCount = 0;
       const errors = await reconcileOrchestrationMembership(ctx);
+      if (shaSync.error) errors.unshift(shaSync.error);
 
       for (const watched of [...state.watchedPrs]) {
         try {
@@ -1248,14 +1288,20 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url, true);
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
 
+    let shaSyncError: string | undefined;
     if (state.orchestrationSessionId) {
-      await syncOrchestrationSha(ctx);
+      shaSyncError = (await syncWatchedSha(ctx)).error;
     } else if (state.watchedPrs.length === 0 && savedSha) {
-      state.watchedSha = { repo: savedSha.repo, sha: savedSha.sha };
-      await baselineCurrentShaState(ctx);
+      state.watchedSha = structuredClone(savedSha);
+      const shaSync = await syncWatchedSha(ctx);
+      shaSyncError = shaSync.error;
+      if (!shaSync.changed && !shaSync.error && !(await baselineCurrentShaState(ctx))) {
+        shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
+      }
     }
 
-    state.lastError = reconciliationErrors.length > 0 ? reconciliationErrors.join("; ") : state.lastError;
+    if (shaSyncError) reconciliationErrors.unshift(shaSyncError);
+    state.lastError = reconciliationErrors.length > 0 ? reconciliationErrors.join("; ") : undefined;
     save();
     await publishWorkerSnapshot(ctx, true);
     startPolling(ctx);
@@ -1307,7 +1353,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         if (hasTargets()) {
           if (state.watchedPrs.length > 0) await ensureCurrentRepo(ctx);
-          if (state.orchestrationSessionId && !state.watchedSha) await syncOrchestrationSha(ctx);
+          if (state.orchestrationSessionId && !state.watchedSha) await syncWatchedSha(ctx);
           startPolling(ctx);
           await poll(ctx);
         } else {
@@ -1377,8 +1423,10 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.workerOrchestrationSessionId = workerOrchestrationSessionId;
         save();
         if (state.orchestrationSessionId) {
-          await reconcileOrchestrationMembership(ctx);
-          await syncOrchestrationSha(ctx);
+          const errors = await reconcileOrchestrationMembership(ctx);
+          const shaSync = await syncWatchedSha(ctx);
+          if (shaSync.error) errors.unshift(shaSync.error);
+          state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
           save();
           startPolling(ctx);
         } else {
