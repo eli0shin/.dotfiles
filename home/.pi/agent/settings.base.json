@@ -46,7 +46,8 @@
         "-src/compact-header.ts",
         "-src/context-pruner.ts",
         "-src/daily-log.ts",
-        "-src/markdown-viewer.ts"
+        "-src/markdown-viewer.ts",
+        "-src/auto-title.ts"
       ]
     }
   ],
