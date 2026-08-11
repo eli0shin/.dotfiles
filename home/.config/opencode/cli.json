@@ -1,0 +1,49 @@
+{
+  "theme": {
+    "name": "system",
+    "mode": "system"
+  },
+  "keybinds": {
+    "app_exit": "ctrl+c,<leader>q",
+    "messages_half_page_up": "ctrl+u",
+    "messages_half_page_down": "ctrl+d",
+    "input_delete_to_line_start": "none",
+    "input_delete": "delete,shift+delete"
+  },
+  "scroll": {
+    "acceleration": true
+  },
+  "diffs": {
+    "wrap": "word",
+    "view": "auto",
+    "tree": true,
+    "single": false
+  },
+  "session": {
+    "sidebar": "hide",
+    "scrollbar": false,
+    "thinking": "show",
+    "markdown": "rendered",
+    "grouping": "auto",
+    "image_preview": false
+  },
+  "animations": false,
+  "tabs": {
+    "layout": "horizontal"
+  },
+  "mouse": true,
+  "prompt": {
+    "paste": "full",
+    "image_preview": true
+  },
+  "attention": {
+    "sound": false
+  },
+  "terminal": {
+    "title": true
+  },
+  "debug": {
+    "devtools": false,
+    "turn_tokens": true
+  }
+}
