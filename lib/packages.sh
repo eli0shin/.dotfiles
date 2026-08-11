@@ -7,6 +7,7 @@ BASH_PACKAGES_WORK_FILE="$PACKAGES_DIR/bash-packages.work.json"
 NPM_PACKAGES_FILE="$PACKAGES_DIR/npm-packages"
 NPM_PACKAGES_PERSONAL_FILE="$PACKAGES_DIR/npm-packages.personal"
 NPM_PACKAGES_WORK_FILE="$PACKAGES_DIR/npm-packages.work"
+NPM_TRUSTED_PACKAGES_FILE="$PACKAGES_DIR/npm-packages.trusted"
 BASH_PACKAGES_UNKNOWN_PLATFORM_WARNED=0
 
 _ensure_package_managers() {
@@ -85,22 +86,74 @@ _ensure_npm_packages_file() {
 _npm_package_exists() {
     local pkg="$1"
     local file="$2"
+    local package_name
+    package_name=$(_npm_package_name "$pkg")
     _ensure_npm_packages_file "$file"
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" || "$line" == \#* ]] && continue
-        [[ "$line" == "$pkg" ]] && return 0
+        [[ "$(_npm_package_name "$line")" == "$package_name" ]] && return 0
     done < "$file"
 
     return 1
 }
 
+_npm_package_name() {
+    local spec="$1"
+
+    if [[ "$spec" =~ ^(@[^/]+/[^@]+)@.+$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    elif [[ "$spec" =~ ^([^@]+)@.+$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    else
+        printf '%s\n' "$spec"
+    fi
+}
+
+_npm_package_has_specifier() {
+    local spec="$1"
+    [[ "$spec" != "$(_npm_package_name "$spec")" ]]
+}
+
 _bun_global_package_exists() {
-    local pkg="$1"
+    local pkg
+    pkg=$(_npm_package_name "$1")
     local global_package_json="$HOME/.bun/install/global/package.json"
 
     [[ -f "$global_package_json" ]] || return 1
     jq -e --arg pkg "$pkg" '(.dependencies // {})[$pkg] != null' "$global_package_json" >/dev/null 2>&1
+}
+
+_npm_package_requires_trust() {
+    local pkg="$1"
+
+    # Do not transfer trust to aliases or non-registry package sources.
+    [[ "$pkg" != *:* && "$pkg" != *[[:space:]]* ]] || return 1
+    _npm_package_exists "$pkg" "$NPM_TRUSTED_PACKAGES_FILE"
+}
+
+_bun_global_package_is_trusted() {
+    local pkg
+    pkg=$(_npm_package_name "$1")
+    local global_package_json="$HOME/.bun/install/global/package.json"
+
+    [[ -f "$global_package_json" ]] || return 1
+    jq -e --arg pkg "$pkg" '(.trustedDependencies // []) | index($pkg) != null' "$global_package_json" >/dev/null 2>&1
+}
+
+_bun_add_global_package() {
+    local pkg="$1"
+    local args=(add -g)
+
+    if _npm_package_requires_trust "$pkg"; then
+        args+=(--trust)
+    fi
+
+    bun "${args[@]}" "$pkg"
+}
+
+_remove_bun_global_package() {
+    bun remove -g "$(_npm_package_name "$1")"
 }
 
 _add_npm_package() {
@@ -113,13 +166,17 @@ _add_npm_package() {
 _remove_npm_package() {
     local pkg="$1"
     local file="$2"
-    local tmp
+    local package_name tmp
+    package_name=$(_npm_package_name "$pkg")
 
     _ensure_npm_packages_file "$file"
     tmp=$(mktemp)
 
     while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ "$line" == "$pkg" ]] && continue
+        if [[ -n "$line" && "$line" != \#* ]] &&
+            [[ "$(_npm_package_name "$line")" == "$package_name" ]]; then
+            continue
+        fi
         printf '%s\n' "$line" >> "$tmp"
     done < "$file"
 
@@ -180,16 +237,24 @@ _process_npm_packages_file() {
 
         if [[ "$mode" == "update" ]]; then
             info "Updating $pkg..."
-            if bun update -g "$pkg"; then
+            if {
+                if _npm_package_has_specifier "$pkg"; then
+                    _bun_add_global_package "$pkg"
+                else
+                    bun update -g "$pkg"
+                fi
+            }; then
                 success "Updated $pkg"
             else
                 warn "Failed to update $pkg (continuing...)"
             fi
-        elif _bun_global_package_exists "$pkg"; then
+        elif ! _npm_package_has_specifier "$pkg" &&
+            _bun_global_package_exists "$pkg" &&
+            { ! _npm_package_requires_trust "$pkg" || _bun_global_package_is_trusted "$pkg"; }; then
             success "$pkg already installed"
         else
             info "Installing $pkg..."
-            if bun add -g "$pkg"; then
+            if _bun_add_global_package "$pkg"; then
                 success "Installed $pkg"
             else
                 warn "Failed to install $pkg (continuing...)"
@@ -316,11 +381,13 @@ cmd_package() {
                 _add_npm_package "$pkg" "$npm_pkg_file"
 
                 if has bun; then
-                    if _bun_global_package_exists "$pkg"; then
+                    if ! _npm_package_has_specifier "$pkg" &&
+                        _bun_global_package_exists "$pkg" &&
+                        { ! _npm_package_requires_trust "$pkg" || _bun_global_package_is_trusted "$pkg"; }; then
                         success "$pkg is already installed"
                     else
                         info "Installing $pkg with Bun..."
-                        bun add -g "$pkg" || warn "Installation may have failed"
+                        _bun_add_global_package "$pkg" || warn "Installation may have failed"
                     fi
                 else
                     warn "Bun is not installed, package was added but not installed"
@@ -376,7 +443,7 @@ cmd_package() {
                     _remove_npm_package "$pkg" "$npm_pkg_file"
 
                     if has bun; then
-                        bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                        _remove_bun_global_package "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
                     else
                         warn "Bun is not installed, skipping uninstall"
                     fi
@@ -390,7 +457,7 @@ cmd_package() {
                 info "Removing npm registry package '$pkg' from npm-packages..."
                 _remove_npm_package "$pkg" "$NPM_PACKAGES_FILE"
                 if has bun; then
-                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                    _remove_bun_global_package "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
                 else
                     warn "Bun is not installed, skipping uninstall"
                 fi
@@ -399,7 +466,7 @@ cmd_package() {
                 info "Removing npm registry package '$pkg' from npm-packages.personal..."
                 _remove_npm_package "$pkg" "$NPM_PACKAGES_PERSONAL_FILE"
                 if has bun; then
-                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                    _remove_bun_global_package "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
                 else
                     warn "Bun is not installed, skipping uninstall"
                 fi
@@ -408,7 +475,7 @@ cmd_package() {
                 info "Removing npm registry package '$pkg' from npm-packages.work..."
                 _remove_npm_package "$pkg" "$NPM_PACKAGES_WORK_FILE"
                 if has bun; then
-                    bun remove -g "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
+                    _remove_bun_global_package "$pkg" 2>/dev/null || warn "Package not installed globally by Bun"
                 else
                     warn "Bun is not installed, skipping uninstall"
                 fi

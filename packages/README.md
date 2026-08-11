@@ -10,9 +10,10 @@ Package management for Homebrew, bash-installed tools, and npm registry packages
 - `bash-packages.json` - Core packages installed by custom shell commands
 - `bash-packages.personal.json` - Personal-only custom shell packages
 - `bash-packages.work.json` - Work-only custom shell packages
-- `npm-packages` - Core npm registry packages installed globally with Bun, one package per line
+- `npm-packages` - Core npm registry package specifications installed globally with Bun, one per line (for example, `prettier` or `@opencode-ai/cli@next`)
 - `npm-packages.personal` - Personal-only npm registry packages
 - `npm-packages.work` - Work-only npm registry packages
+- `npm-packages.trusted` - Registry packages that require lifecycle scripts during installation
 
 ## Usage
 
@@ -43,11 +44,13 @@ Use the `dot` CLI:
 ```bash
 dot package add <package>    # Adds to Brewfile and installs
 dot package add <package> --npm # Adds to npm-packages and installs with bun add -g
+dot package add '@opencode-ai/cli@next' --npm # Installs the package's next release
 dot package remove <package> # Removes from Brewfile and uninstalls
 dot package list             # Shows Brewfile contents
 ```
 
 Or manually edit the package files and run `dot package install`.
+Add a registry package name to `npm-packages.trusted` only when it requires lifecycle scripts. Bun does not transfer this trust to aliases or other package sources.
 
 ### Platform-specific bash packages
 
