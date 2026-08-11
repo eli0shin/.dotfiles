@@ -1,6 +1,7 @@
 {
   "app.clear": ["ctrl+x"],
   "app.editor.external": "ctrl+e",
+  "tui.altScreen.bottom": "ctrl+shift+g",
   "tui.altScreen.pageUp": ["pageUp", "ctrl+u"],
   "tui.altScreen.pageDown": ["pageDown", "ctrl+d"]
 }
