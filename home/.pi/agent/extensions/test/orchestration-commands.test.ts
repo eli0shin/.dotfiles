@@ -60,6 +60,40 @@ test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async
   }
 });
 
+test("orchestrate-opencode exports one UUID for OpenCode and Pi workers and forwards arguments", async () => {
+  const { root, fakeBin } = await fixture();
+  const output = join(root, "opencode-output");
+  await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nprintf '123e4567-e89b-12d3-a456-426614174000\\n'\n");
+  await executable(
+    join(fakeBin, "opencode2"),
+    `#!/bin/sh\nprintf '%s\\n' "$OPENCODE_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\nprintf '%s\\n' "$PI_ORCHESTRATION_SESSION_ID" >> ${JSON.stringify(output)}\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
+  );
+
+  try {
+    const result = spawnSync(
+      "fish",
+      [
+        "--no-config",
+        "-c",
+        "source $argv[1]; orchestrate-opencode $argv[2..-1]",
+        join(functionsDir, "orchestrate-opencode.fish"),
+        "--model",
+        "test-model",
+        "hello world",
+      ],
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
+    );
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    assert.equal(
+      await readFile(output, "utf8"),
+      "123e4567-e89b-12d3-a456-426614174000\n123e4567-e89b-12d3-a456-426614174000\n--model\ntest-model\nhello world\n",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("orchestrate-pi does not start Pi when UUID generation fails", async () => {
   const { root, fakeBin } = await fixture();
   const piRan = join(root, "pi-ran");

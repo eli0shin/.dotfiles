@@ -1,18 +1,30 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "autoshare": false,
+  "share": "disabled",
   "autoupdate": true,
-  "experimental": {
-    "openTelemetry": false
+  "default_agent": "build",
+  "plugins": ["./plugins/pr-watch.ts"],
+  "agents": {
+    "build": {
+      "mode": "primary",
+      "system": "You are an expert coding assistant operating inside OpenCode, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nGuidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files",
+      "permissions": [
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    },
+    "plan": { "disabled": true },
+    "general": { "disabled": true },
+    "explore": { "disabled": true }
   },
-  "plugin": ["opencode-pty"],
-  "agent": {},
   "mcp": {
     "chrome": {
       "type": "local",
       "command": ["bun", "x", "chrome-devtools-mcp@latest", "--autoConnect"],
       "enabled": false
     }
-  },
-  "tools": {}
+  }
 }
