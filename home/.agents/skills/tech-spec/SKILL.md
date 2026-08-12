@@ -2,6 +2,9 @@
 name: tech-spec
 description: Write a typed call-stack architecture handoff.
 disable-model-invocation: true
+metadata:
+  opencode/slash: true
+  opencode/autoinvoke: false
 ---
 
 # Tech Spec

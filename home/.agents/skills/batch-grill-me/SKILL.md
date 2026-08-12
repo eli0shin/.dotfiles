@@ -2,6 +2,9 @@
 name: batch-grill-me
 description: A relentless interview that asks every frontier question at once, round by round.
 disable-model-invocation: true
+metadata:
+  opencode/slash: true
+  opencode/autoinvoke: false
 ---
 
 Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.

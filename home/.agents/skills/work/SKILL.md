@@ -2,6 +2,9 @@
 name: work
 description: Go from a Jira ticket (usually the current branch name) to a shared understanding of what to build, before any implementation.
 disable-model-invocation: true
+metadata:
+  opencode/slash: true
+  opencode/autoinvoke: false
 ---
 
 The branch is named after a Jira ticket. Reach **shared understanding** with the user about what this ticket really asks for — *before* discussing how to build it.

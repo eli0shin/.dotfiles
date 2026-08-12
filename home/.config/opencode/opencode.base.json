@@ -4,6 +4,28 @@
   "autoupdate": true,
   "default_agent": "build",
   "plugins": ["./plugins/pr-watch.ts"],
+  "permissions": [
+    {
+      "action": "external_directory",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "read",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "allow"
+    }
+  ],
   "agents": {
     "build": {
       "mode": "primary",
