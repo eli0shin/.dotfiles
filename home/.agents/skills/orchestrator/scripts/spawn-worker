@@ -50,33 +50,72 @@ fi
 
 tickets show "$ticket" || exit
 
-sessions_before=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-repos stack --no-focus "$ticket" || exit
-sessions_after=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+workspace_manager=tmux
+if [[ ${HERDR_ENV:-} == 1 ]]; then
+  workspace_manager=herdr
+fi
 
-new_sessions=()
-while IFS= read -r session; do
-  [[ -z $session ]] && continue
+if [[ $workspace_manager == herdr ]]; then
+  herdr_workspaces() {
+    herdr workspace list | python3 -c '
+import json, sys
+for workspace in json.load(sys.stdin)["result"]["workspaces"]:
+    print("{}\t{}".format(workspace["workspace_id"], workspace["label"]))
+'
+  }
+  workspaces_before=$(herdr_workspaces) || exit
+else
+  workspaces_before=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+fi
+
+repos stack --no-focus "$ticket" || exit
+
+if [[ $workspace_manager == herdr ]]; then
+  workspaces_after=$(herdr_workspaces) || exit
+else
+  workspaces_after=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+fi
+
+new_workspaces=()
+while IFS= read -r workspace; do
+  [[ -z $workspace ]] && continue
   found=false
   while IFS= read -r existing; do
-    if [[ $session == "$existing" ]]; then
+    if [[ $workspace == "$existing" ]]; then
       found=true
       break
     fi
-  done <<< "$sessions_before"
+  done <<< "$workspaces_before"
   if [[ $found == false ]]; then
-    new_sessions+=("$session")
+    new_workspaces+=("$workspace")
   fi
-done <<< "$sessions_after"
+done <<< "$workspaces_after"
 
-if [[ ${#new_sessions[@]} -ne 1 ]]; then
-  echo "repos did not create exactly one new worker session for $ticket" >&2
+if [[ ${#new_workspaces[@]} -ne 1 ]]; then
+  if [[ $workspace_manager == herdr ]]; then
+    echo "repos did not create exactly one new Managed Workspace for $ticket" >&2
+  else
+    echo "repos did not create exactly one new worker session for $ticket" >&2
+  fi
   exit 1
 fi
-session=${new_sessions[0]}
+
+if [[ $workspace_manager == herdr ]]; then
+  IFS=$'\t' read -r workspace_id worker_identity <<< "${new_workspaces[0]}"
+  pane_id=$(herdr pane list | python3 -c '
+import json, sys
+workspace_id = sys.argv[1]
+panes = [pane["pane_id"] for pane in json.load(sys.stdin)["result"]["panes"] if pane["workspace_id"] == workspace_id]
+if len(panes) != 1:
+    raise SystemExit(f"expected one pane in {workspace_id}, found {len(panes)}")
+print(panes[0])
+' "$workspace_id") || exit
+else
+  worker_identity=${new_workspaces[0]}
+fi
 
 printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s' \
-  '/skill:ticket-worker' "$ticket" "$session" "$landing_branch"
+  '/skill:ticket-worker' "$ticket" "$worker_identity" "$landing_branch"
 if [[ -n $context ]]; then
   printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
 fi
@@ -84,5 +123,9 @@ fi
 prompt_base64=$(printf %s "$prompt" | base64 | tr -d '\n') || exit
 printf -v orchestration_id_q %q "$PI_ORCHESTRATION_SESSION_ID"
 command="env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=$orchestration_id_q pi \"\$(printf %s $prompt_base64 | base64 -d)\""
-tmux send-keys -l -t "$session:0" -- "$command" || exit
-tmux send-keys -t "$session:0" Enter
+if [[ $workspace_manager == herdr ]]; then
+  herdr pane run "$pane_id" "$command"
+else
+  tmux send-keys -l -t "$worker_identity:0" -- "$command" || exit
+  tmux send-keys -t "$worker_identity:0" Enter
+fi

@@ -7,6 +7,9 @@ import test from "node:test";
 
 const functionsDir = resolve(import.meta.dirname, "../../../../.config/fish/functions");
 const spawnWorker = resolve(import.meta.dirname, "../../../../.agents/skills/orchestrator/scripts/spawn-worker");
+for (const name of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"]) {
+  delete process.env[name];
+}
 
 async function executable(path: string, content: string): Promise<void> {
   await writeFile(path, content, "utf8");
@@ -191,6 +194,61 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
     );
     assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
     assert.doesNotMatch(decodeInitialPrompt(await readFile(calls, "utf8")), /Context:/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker launches Pi in the new Herdr Managed Workspace", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "calls");
+  const workspaceCreated = join(root, "workspace-created");
+  const ticket = "042-implement-widget";
+
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(
+    join(fakeBin, "git"),
+    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\nesac\n",
+  );
+  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(workspaceCreated)}\n`);
+  await executable(
+    join(fakeBin, "herdr"),
+    `#!/bin/sh
+printf 'herdr' >> ${JSON.stringify(calls)}
+for arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done
+printf '\n' >> ${JSON.stringify(calls)}
+if [ "$1 $2" = "workspace list" ]; then
+  if [ -f ${JSON.stringify(workspaceCreated)} ]; then
+    printf '%s\n' '{"id":"test","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w2","label":"repo@main"},{"workspace_id":"w3","label":"repo@042-implement-widget"}]}}'
+  else
+    printf '%s\n' '{"id":"test","result":{"type":"workspace_list","workspaces":[{"workspace_id":"w2","label":"repo@main"}]}}'
+  fi
+fi
+if [ "$1 $2" = "pane list" ]; then
+  printf '%s\n' '{"id":"test","result":{"type":"pane_list","panes":[{"workspace_id":"w2","pane_id":"w2:p1"},{"workspace_id":"w3","pane_id":"w3:p1"}]}}'
+fi
+`,
+  );
+
+  try {
+    const result = spawnSync(spawnWorker, [ticket, "--context", "Keep API stable."], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        HERDR_ENV: "1",
+        PI_ORCHESTRATION_SESSION_ID: "session-123",
+      },
+    });
+
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
+    const log = await readFile(calls, "utf8");
+    assert.match(log, /herdr <workspace> <list>/);
+    assert.doesNotMatch(log, /--json/);
+    assert.match(log, /herdr <pane> <run> <w3:p1>/);
+    assert.match(log, /<w3:p1> <env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=session-123 pi /);
+    assert.equal(decodeInitialPrompt(log), "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.");
+    assert.doesNotMatch(log, /tmux/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
