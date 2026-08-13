@@ -1243,13 +1243,15 @@ export default function prWatch(pi: ExtensionAPI): void {
     lastPublishedMembership = undefined;
     const requestedOrchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
     const requestedWorkerOrchestrationSessionId = process.env[WORKER_ORCHESTRATION_ENV]?.trim() || undefined;
+    const shouldEnrollInRequestedOrchestration =
+      (event.reason === "startup" || event.reason === "resume") && Boolean(requestedOrchestrationSessionId);
     delete process.env[WORKER_ORCHESTRATION_ENV];
     const savedEntry = [...ctx.sessionManager.getBranch()]
       .reverse()
       .find((entry) => entry.type === "custom" && entry.customType === CUSTOM_STATE);
     if (savedEntry?.type === "custom" && isWatchState(savedEntry.data)) {
       state = structuredClone(savedEntry.data);
-      if (event.reason === "startup" && requestedOrchestrationSessionId && !state.orchestrationSessionId) {
+      if (shouldEnrollInRequestedOrchestration && !state.orchestrationSessionId) {
         state = initialState();
         state.orchestrationSessionId = requestedOrchestrationSessionId;
       } else if (
@@ -1261,7 +1263,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         state = initialState();
         state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;
       }
-    } else if (event.reason === "startup") {
+    } else if (event.reason === "startup" || event.reason === "resume") {
       state.orchestrationSessionId = requestedOrchestrationSessionId;
       if (!state.orchestrationSessionId) {
         state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;

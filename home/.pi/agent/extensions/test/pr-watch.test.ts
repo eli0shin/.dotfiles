@@ -1372,10 +1372,10 @@ test("startup orchestration replaces persisted ordinary state", async () => {
   }
 });
 
-test("resuming persisted ordinary state clears a stale orchestration environment", async () => {
+test("resuming persisted ordinary state enrolls it in the requested orchestration", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "stale-session";
+  process.env.PI_ORCHESTRATION_SESSION_ID = "requested-session";
   harness.setBranchEntries([
     {
       type: "custom",
@@ -1393,12 +1393,13 @@ test("resuming persisted ordinary state clears a stale orchestration environment
   try {
     await harness.startSession("resume");
 
-    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "requested-session");
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "requested-session");
     assert.equal(
       execFileSync(process.execPath, ["-e", "process.stdout.write(process.env.PI_ORCHESTRATION_SESSION_ID ?? '')"], {
         encoding: "utf8",
       }),
-      "",
+      "requested-session",
     );
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -1406,16 +1407,22 @@ test("resuming persisted ordinary state clears a stale orchestration environment
   }
 });
 
-test("resuming a state-less session clears a stale orchestration environment", async () => {
+test("resuming a state-less session enrolls it in the requested orchestration", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "stale-session";
+  process.env.PI_ORCHESTRATION_SESSION_ID = "requested-session";
 
   try {
     await harness.startSession("resume");
 
-    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, undefined);
-    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "requested-session");
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "requested-session");
+    assert.equal(
+      execFileSync(process.execPath, ["-e", "process.stdout.write(process.env.PI_ORCHESTRATION_SESSION_ID ?? '')"], {
+        encoding: "utf8",
+      }),
+      "requested-session",
+    );
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
