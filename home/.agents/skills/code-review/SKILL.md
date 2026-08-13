@@ -1,276 +1,121 @@
 ---
 name: code-review
-description: |
-  Provides comprehensive code review guidance.
-  Helps catch bugs, improve code quality, and give constructive feedback.
-  Use when: reviewing pull requests, conducting PR reviews, code review, reviewing code changes,
-  establishing review standards, mentoring developers, architecture reviews, security audits,
-  checking code quality, finding bugs, giving feedback on code.
+description: Review a code change for proven defects, relevant design risks, and maintainability problems. Use for pull request reviews, change reviews, architecture reviews of a diff, and security reviews of a diff.
 ---
 
-# Code Review Skill
-
-Transform code reviews from gatekeeping to knowledge sharing through constructive feedback, systematic analysis, and collaborative improvement.
-
-## When to Use This Skill
-
-- Reviewing pull requests and code changes
-- Establishing code review standards for teams
-- Mentoring junior developers through reviews
-- Conducting architecture reviews
-- Creating review checklists and guidelines
-- Improving team collaboration
-- Reducing code review cycle time
-- Maintaining code quality standards
-
-## Core Principles
-
-### 1. The Review Mindset
-
-**Goals of Code Review:**
-- Catch bugs and edge cases
-- Ensure code maintainability
-- Share knowledge across team
-- Enforce coding standards
-- Improve design and architecture
-- Build team culture
-
-**Not the Goals:**
-- Show off knowledge
-- Nitpick formatting (use linters)
-- Block progress unnecessarily
-- Rewrite to your preference
-- Comment on mocks because their internal implementation is simpler than or different from production code
-
-### 2. Effective Feedback
-
-**Good Feedback is:**
-- Specific and actionable
-- Educational, not judgmental
-- Focused on the code, not the person
-- Balanced (praise good work too)
-- Prioritized (critical vs nice-to-have)
-
-```markdown
-❌ Bad: "This is wrong."
-✅ Good: "This could cause a race condition when multiple users
-         access simultaneously. Consider using a mutex here."
-
-❌ Bad: "Why didn't you use X pattern?"
-✅ Good: "Have you considered the Repository pattern? It would
-         make this easier to test. Here's an example: [link]"
-
-❌ Bad: "Rename this variable."
-✅ Good: "[nit] Consider `userCount` instead of `uc` for
-         clarity. Not blocking if you prefer to keep it."
-```
-
-### 3. Review Scope
-
-**What to Review:**
-- Logic correctness and edge cases
-- Security vulnerabilities
-- Performance implications
-- Test coverage and quality
-- Error handling
-- Documentation and comments
-- API design and naming
-- Architectural fit
-
-**What Not to Review Manually:**
-- Code formatting (use Prettier, Black, etc.)
-- Import organization
-- Linting violations
-- Simple typos
-
-## Review Process
-
-### Publishing PR Comments
-
-Default to a local review only.
+# Code review
 
-Do not post GitHub/GitLab/Bitbucket PR comments, submit reviews, approve, request changes, or otherwise mutate the PR unless the user explicitly asks to publish/post/add/submit comments or a review.
+Review the change against its ticket and repository context. Report only findings that pass the evidence and scope gates below. A review with no findings is a complete review.
 
-Examples that DO permit publishing:
-- "add these comments to the PR"
-- "submit this review"
-- "post this as a request changes review"
-- "approve the PR"
+## Publication boundary
 
-Examples that DO NOT permit publishing:
-- "review this PR"
-- "rereview"
-- "pull latest and rereview"
-- "what do you think?"
-- "are there any blockers?"
+Default to a local review. Report findings in chat.
 
-For non-publishing review requests, report findings in chat and ask before posting them.
+Publish comments, submit a review, approve, request changes, or otherwise mutate a remote pull request only when the user explicitly asks you to do so. A request to review or re-review does not grant permission to publish.
 
-### Phase 1: Context Gathering
+## Context
 
-Before diving into code, understand:
-1. Read PR description and linked issue
-2. Check PR size (>400 lines? Ask to split)
-3. Review CI/CD status (tests passing?)
-4. Understand the business requirement
-5. Note any relevant architectural decisions
+Before reviewing:
 
-### Phase 1.5: PR Claim Verification
+1. Read the applicable repository instructions and `CONTEXT.md` files.
+2. Read the ticket, pull request description, and linked decisions that are available.
+3. Identify the required outcome in one sentence.
+4. Inspect the complete diff and enough surrounding code to understand each changed path.
+5. Check relevant tests and CI results when they are available.
 
-Before line-by-line review, extract the PR's thesis and try to falsify it.
+The ticket defines the required outcome. The diff and the behavior it changes define the review scope.
 
-1. **Summarize the PR thesis in one sentence** — what must now be true if this PR is correct?
-2. **List 2–5 concrete claims the PR makes**, such as:
-   - Behavior claims: "X now happens"
-   - Contract claims: "API Y returns Z" / "header A causes behavior B"
-   - Safety claims: "fallback is safe" / "no worse than today"
-   - Equivalence claims: "same as existing path" / "mirrors implementation X"
-   - Rollout claims: "gated", "temporary", "backward compatible"
-   - Test claims: "fully covered"
-3. **Verify each claim independently** in code, tests, docs, or the relevant upstream/downstream service. If proof lives outside the current repo and you can inspect it, inspect it. If you cannot inspect it, mark the claim unverified rather than accepting it.
-4. **Treat unsupported or contradicted claims as review findings.** A PR can be locally well-written and still not do what it says.
-5. **Be especially skeptical of soothing language**: "safe fallback", "temporary", "no worse than today", "same as", "fully tested", "just wiring", "already supported". Ask what evidence would make that statement true.
+## Finding gate
 
-Do not let the PR description frame the review as settled fact. Use it as a claim list to prove or disprove.
+Report a finding only when all of these statements are true:
 
+1. **Changed:** The change introduces the problem, exposes it, or materially relies on an existing problem.
+2. **Concrete:** A reachable input, state, or code path produces a specific harmful result.
+3. **Material:** The result affects correctness, security, data integrity, operability, or the required outcome.
+4. **Proven:** Repository evidence, a reproduction, a test, or verified dependency evidence supports the claim.
+5. **Scoped:** The proposed action is the smallest reasonable correction for this change.
 
-### Phase 2: High-Level Review
+Trace the causal path from the changed line to the harmful result. Reject a candidate finding when a required step in that path is only an assumption.
 
-1. **Architecture & Design** - Does the solution fit the problem?
-   - For significant changes, consult [Architecture Review Guide](reference/architecture-review-guide.md)
-   - Check: SOLID principles, coupling/cohesion, anti-patterns
-2. **Performance Assessment** - Are there performance concerns?
-   - For performance-critical code, consult [Performance Review Guide](reference/performance-review-guide.md)
-   - Check: Algorithm complexity, N+1 queries, memory usage
-3. **File Organization** - Are new files in the right places?
-4. **Testing Strategy** - Are there tests covering edge cases?
+Do not report speculative hardening, unrelated pre-existing defects, personal preferences, or hypothetical future requirements as findings.
 
-### Phase 3: Line-by-Line Review
+## Dependency evidence
 
-For each file, check:
-- **Logic & Correctness** - Edge cases, off-by-one, null checks, race conditions
-- **Security** - Input validation, injection risks, XSS, sensitive data
-- **Performance** - N+1 queries, unnecessary loops, memory leaks
-- **Maintainability** - Clear names, single responsibility, comments
-- **Reuse** - Before accepting new code, search for existing utilities/helpers that could replace it. Check adjacent files and shared modules for similar patterns. See [Universal Quality Guide](reference/code-quality-universal.md) for anti-patterns like parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, and no-op updates.
+Treat every statement about an external tool, library, framework, service, command, file format, or platform as a dependency claim.
 
-### Mock Contract Rule
+Before a dependency claim becomes a finding:
 
-When reviewing mocks, stubs, fakes, or spies, evaluate only their **external contract**:
+1. Identify the exact dependency and version used by the change.
+2. Verify the claimed behavior in the installed source, upstream source, official documentation, a reproducible experiment, or a credible upstream issue or report.
+3. Verify that the changed code reaches that behavior with the inputs and configuration in this repository.
+4. Cite the evidence in the finding. Give the source path and symbol, command and observed output, or URL and relevant section.
 
-Do not EVER compare mock logic to production logic. Only comment when the mock’s public interface shape is wrong for the code under test: sync vs async, argument list, returned type/shape, error/rejection shape, or required side effects. Do not object that a mock uses simpler conditions than production. That is exactly what mocks are supposed to do
+Memory of how a dependency usually works is not evidence. Similar tools, other versions, and conventional behavior are not evidence for the dependency in use.
 
-- Accepted inputs / call signature
-- Returned output shape and type
-- Async vs sync behavior
-- Thrown/rejected error shape when the unit under test branches on it
-- Externally observable side effects when relevant to the test
+When evidence is unavailable or inconclusive, omit the claim from the findings. Do not transfer the uncertainty to the worker as a question, defensive test, fallback, replacement, or reimplementation request.
 
-Always call out a mock when its external contract does not match the production dependency. Examples:
+A dependency replacement or custom implementation is justified only when verified behavior causes an in-scope defect and replacement is the smallest reasonable correction. First check the dependency's supported API, configuration, and version-specific behavior.
 
-- Production returns `Promise<T>`, but the mock returns plain `T`
-- Production can return `null`, but the mock setup makes `null` impossible in a test that depends on it
-- Production returns `{ status, data }`, but the mock returns only `data`
-- The mock accepts different arguments than production and would not catch a bad call site
-- Production throws/rejects a specific error shape that the unit branches on, but the mock cannot produce it
+Apply this rule especially to claims about parsing, escaping, ordering, retries, concurrency, races, naming collisions, generated identifiers, filesystem behavior, and command-line tools.
 
-Do **not** comment when the mock differs only in internal implementation. A mock is not supposed to duplicate production logic.
+## Design findings and suggestions
 
-Before commenting on a mock, classify the issue:
+Review design where the change adds a structural problem or continues a harmful direction in the codebase.
 
-- **External contract mismatch** → valid review comment
-- **Internal implementation difference** → do not comment
+A design comment must identify:
 
-```markdown
-❌ Invalid comment:
-"`isAuthenticated` mock checks `Boolean(session.auth)` but production checks token expiry. Please copy the production logic."
+- the changed structure that causes or deepens the problem;
+- a concrete maintenance, correctness, or testability cost;
+- repository evidence, such as duplicated change points, an existing boundary, or current callers; and
+- an improvement proportional to the ticket.
 
-Why invalid: same input contract, same boolean output contract; the difference is internal logic.
+A proven design problem can be a finding. A structure improvement that is useful but not required for the ticket must be labeled `[suggestion]` and must not block the change.
 
-✅ Valid comment:
-"`getSession` is async in production, but this mock returns a session object synchronously. If the code under test forgets to await it, this test could still pass. Please return a Promise from the mock."
+Do not turn a design suggestion into a new feature, broad refactor, dependency replacement, or custom implementation. Do not use a question to disguise an unverified allegation.
 
-Why valid: async/sync behavior is part of the external contract.
-```
+## Review procedure
 
-### Phase 4: Summary & Decision
+1. State the required outcome and identify the changed execution paths.
+2. Try to falsify the change's material behavior, contract, safety, compatibility, rollout, and test claims.
+3. Inspect callers, callees, tests, and established repository patterns that are necessary to evaluate those paths.
+4. Run focused tests or reproductions when they can prove or disprove a candidate concern.
+5. Research dependency behavior when a candidate concern depends on it.
+6. Apply the finding gate to every candidate. Discard candidates that fail any gate.
+7. Rank and report the admitted findings.
 
-1. Summarize key concerns
-2. Highlight what you liked
-3. Make clear decision:
-   - ✅ Approve
-   - 💬 Comment (minor suggestions)
-   - 🔄 Request Changes (must address)
-4. Offer to pair if complex
+Use checklists only as search prompts. A checklist item is never evidence and does not create a finding by itself.
 
-## Review Techniques
+## Mocks and test doubles
 
-### Technique 1: The Checklist Method
+Evaluate a mock, stub, fake, or spy against the production dependency's externally observable contract:
 
-Use checklists for consistent reviews. See [Security Review Guide](reference/security-review-guide.md) for comprehensive security checklist.
+- accepted arguments;
+- returned type and shape;
+- synchronous or asynchronous behavior;
+- error shape when the code branches on it; and
+- required observable side effects.
 
-### Technique 2: The Question Approach
+Verify that contract from the production dependency before reporting a mismatch. Differences in internal implementation are expected and are not findings.
 
-Instead of stating problems, ask questions:
+## Severity
 
-```markdown
-❌ "This will fail if the list is empty."
-✅ "What happens if `items` is an empty array?"
+- `[blocking]`: The change cannot safely merge because it fails the required outcome or creates a material correctness, security, data-loss, or operability defect.
+- `[important]`: A proven, material problem should be corrected, but it does not make the change unsafe to merge.
+- `[suggestion]`: A supported structure improvement is useful but optional and in scope.
 
-❌ "You need error handling here."
-✅ "How should this behave if the API call fails?"
-```
+Severity follows demonstrated impact, not the reviewer's confidence or preference.
 
-### Technique 3: Suggest, Don't Command
+## Output
 
-Use collaborative language:
+List findings first, ordered by severity. For each finding include:
 
-```markdown
-❌ "You must change this to use async/await"
-✅ "Suggestion: async/await might make this more readable. What do you think?"
+- severity and concise title;
+- exact file and line;
+- reachable scenario and concrete impact;
+- evidence that proves the causal path;
+- citations for each dependency claim; and
+- the smallest reasonable correction.
 
-❌ "Extract this into a function"
-✅ "This logic appears in 3 places. Would it make sense to extract it?"
-```
+Then give a short verdict: `request changes`, `comment`, or `approve`.
 
-### Technique 4: Differentiate Severity
-
-Use labels to indicate priority:
-
-- 🔴 `[blocking]` - Must fix before merge
-- 🟡 `[important]` - Should fix, discuss if disagree
-- 🟢 `[nit]` - Nice to have, not blocking
-- 💡 `[suggestion]` - Alternative approach to consider
-- 📚 `[learning]` - Educational comment, no action needed
-- 🎉 `[praise]` - Good work, keep it up!
-
-**Severity levels:** 🔴 / 🟡 / 🟢 are the three severity tiers used as the standard across all guides in this skill — 🔴 blocks the merge, 🟡 should be addressed, 🟢 is optional. The remaining markers (💡 / 📚 / 🎉) are non-blocking annotations.
-
-## Language-Specific Guides
-
-Consult the corresponding detailed guide for the language being reviewed:
-
-| Language/Framework | Reference File | Key Topics |
-|-------------------|----------------|------------|
-| **React** | [React Guide](reference/react.md) | Hooks, useEffect, React 19 Actions, RSC, Suspense, TanStack Query v5 |
-| **TypeScript** | [TypeScript Guide](reference/typescript.md) | Type safety, async/await, immutability |
-| **Java** | [Java Guide](reference/java.md) | Java 17/21 features, Spring Boot 3, virtual threads, Stream/Optional |
-| **Go** | [Go Guide](reference/go.md) | Error handling, goroutine/channel, context, interface design |
-| **Kotlin / Android** | [Kotlin Guide](reference/kotlin.md) | Coroutines, Flow, Jetpack Compose, null safety, memory leaks, architecture patterns |
-
-## Cross-Cutting Guides
-
-Language-agnostic patterns applicable to all code reviews:
-
-| Topic | Reference File | Key Topics |
-|-------|----------------|------------|
-| **Universal Quality** | [Universal Quality Guide](reference/code-quality-universal.md) | Reuse audit, parameter sprawl, leaky abstractions, nested conditionals, stringly-typed code, TOCTOU, no-op updates, redundant state |
-
-## Additional Resources
-
-- [Architecture Review Guide](reference/architecture-review-guide.md) - Architecture review guide (SOLID, anti-patterns, coupling)
-- [Performance Review Guide](reference/performance-review-guide.md) - Performance review guide (Web Vitals, N+1, complexity)
-- [Security Review Guide](reference/security-review-guide.md) - Security review guide
-- [Code Review Best Practices](reference/code-review-best-practices.md) - Code review best practices
-- [PR Review Template](assets/pr-review-template.md) - PR review comment template
-- [Review Checklist](assets/review-checklist.md) - Quick reference checklist
+If no candidate passes the finding gate, say that no findings were found and approve. State a review-coverage limitation only when unavailable context prevented review of a required path. Describe the missing context without speculating about defects.

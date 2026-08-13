@@ -8,13 +8,18 @@ Two entry points:
 - **`/code-review`** — slash command. Runs the review, then surfaces findings in a UI
   overlay with **Send to agent / Save to file / Ignore**. Nothing is injected into
   the conversation unless you choose *Send to agent*.
-- **`run_code_review`** — tool the main agent can call to self-review its own
-  changes. The findings are always returned to the agent as the tool result. The
-  global `AGENTS.md` nudges the agent to call it after non-trivial changes.
+- **`run_code_review`** — tool the main agent can call to start a self-review.
+  The result includes the findings and a persistent review session ID.
+- **`continue_code_review`** — tool the main agent can call with that exact ID to
+  re-review changes in the same reviewer conversation. It has no slash command.
 
-Both entry points create an isolated SDK session with extensions disabled and an
-explicit tool allowlist: `read`, `grep`, `find`, `ls`, and `bash`. The subagent is
-instructed to use the `code-review` skill and not modify files.
+All entry points use isolated, persistent SDK sessions. Other user extensions
+stay disabled; the Exa extension is loaded for `web_search_exa` and
+`web_fetch_exa`. The explicit tool allowlist is `read`, `grep`, `find`, `ls`,
+`bash`, `web_search_exa`, and `web_fetch_exa`. Review JSONL files are stored in
+`~/.pi/agent/code-review-sessions/`, separate from normal Pi sessions, so they do
+not affect `pi -c` or `/resume`. The subagent is instructed to use the
+`code-review` skill and not modify files.
 
 ## `/code-review` usage
 
@@ -23,8 +28,21 @@ instructed to use the `code-review` skill and not modify files.
 /code-review focus on tests           # same review, with extra guidance
 ```
 
-Arguments are treated as optional focus guidance for the reviewer. Scoped review
-arguments such as `branch <ref>` and `commit <sha>` are not currently parsed.
+Arguments are treated as optional, non-authoritative focus guidance for the
+reviewer. The reviewer must verify their premises. Scoped review arguments such
+as `branch <ref>` and `commit <sha>` are not currently parsed.
+
+## Review continuation
+
+`run_code_review` returns a full review session ID. To re-review fixes, call
+`continue_code_review` with that exact ID. The continued reviewer retains its
+prior prompt, research, tool calls, and findings. The continuation prompt tells
+it to retract prior findings when new evidence shows that they were false or out
+of scope.
+
+Continuation never selects the latest review and does not accept partial IDs.
+It rejects IDs that are not in the dedicated review directory for the current
+working directory.
 
 While running, a widget appears above the editor. When the review finishes you get
 an overlay with the markdown-rendered findings and the action choices.

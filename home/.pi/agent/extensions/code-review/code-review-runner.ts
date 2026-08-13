@@ -6,7 +6,20 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
+import { join } from "node:path";
 import type { ReviewResult } from "./types.ts";
+
+const EXA_EXTENSION_PATH = join(getAgentDir(), "git/github.com/d-b/pi-exa/src/index.ts");
+export const REVIEW_SESSION_DIR = join(getAgentDir(), "code-review-sessions");
+const REVIEW_TOOLS = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "web_search_exa",
+  "web_fetch_exa",
+];
 
 /** Minimal structural shape of the messages we read. */
 type TextPart = { type: string; text?: string };
@@ -53,33 +66,59 @@ export interface RunReviewOptions {
   thinkingLevel?: ThinkingLevel;
   /** Called with the streaming review text as it grows. */
   onText?: (text: string) => void;
+  /** Existing review session ID to continue. Omit to start a new review. */
+  sessionId?: string;
+}
+
+/** Resolve a full review session ID in the dedicated directory for this cwd. */
+export async function findReviewSession(
+  sessionId: string,
+  cwd: string,
+  sessionDir = REVIEW_SESSION_DIR,
+): Promise<string> {
+  const requestedId = sessionId.trim();
+  if (!requestedId) throw new Error("Review session ID is required");
+
+  const sessions = await SessionManager.list(cwd, sessionDir);
+  const match = sessions.find((candidate) => candidate.id === requestedId);
+  if (!match) throw new Error(`Review session not found for this project: ${requestedId}`);
+  return match.path;
 }
 
 /**
- * Run the review as an isolated, in-process pi session via the SDK.
- * Uses default resource discovery (so the code-review is available).
+ * Run a new review or continue an existing review in an isolated, persistent
+ * pi session. Review JSONL files use a dedicated directory.
  */
 export async function runReview(
   prompt: string,
   cwd: string,
   options: RunReviewOptions = {},
 ): Promise<ReviewResult> {
-  // Isolated session: discover skills (for code-review) but NOT other
-  // user extensions, which would otherwise be loaded into the review process.
+  // Isolated session: discover skills and load only the Exa extension. Other
+  // user extensions stay disabled so they cannot affect the review process.
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: getAgentDir(),
     noExtensions: true,
+    additionalExtensionPaths: [EXA_EXTENSION_PATH],
   });
   await loader.reload();
 
+  const sessionManager = options.sessionId
+    ? SessionManager.open(
+        await findReviewSession(options.sessionId, cwd),
+        REVIEW_SESSION_DIR,
+        cwd,
+      )
+    : SessionManager.create(cwd, REVIEW_SESSION_DIR);
+
   const { session } = await createAgentSession({
     cwd,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager,
     resourceLoader: loader,
     model: options.model,
     thinkingLevel: options.thinkingLevel,
-    tools: ["read", "grep", "find", "ls", "bash"],
+    tools: REVIEW_TOOLS,
   });
 
   let aborted = false;
@@ -112,8 +151,16 @@ export async function runReview(
   if (!output.trim() && !aborted) {
     error = error ?? "review completed with no assistant output";
   }
-  session.dispose();
-  return { output, aborted, error };
+  const sessionId = session.sessionId;
+  const sessionFile = session.sessionFile;
+  try {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  } catch (e) {
+    error = error ?? (e instanceof Error ? e.message : String(e));
+  } finally {
+    session.dispose();
+  }
+  return { output, sessionId, sessionFile, aborted, error };
 }
 
 export function isReviewFailure(result: ReviewResult): boolean {

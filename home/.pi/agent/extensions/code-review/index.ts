@@ -5,8 +5,9 @@
  *   - `/code-review` slash command: runs a review subagent against the current
  *     changes, surfaces findings in a UI overlay, and ONLY sends them to the
  *     main agent if the user chooses "Send to agent".
- *   - `run_code_review` tool: lets the main agent review its own changes. The
- *     findings are always returned to the agent as the tool result.
+ *   - `run_code_review` tool: starts a review and returns findings plus its
+ *     persistent review session ID.
+ *   - `continue_code_review` tool: reuses that review session for a re-review.
  *
  * The review runs as an isolated in-process pi session via the SDK (the
  * equivalent of `pi -p "review the current changes"`), uses the
@@ -19,7 +20,11 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { buildAdvisoryMessage, buildReviewPrompt } from "./code-review-message.ts";
+import {
+  buildAdvisoryMessage,
+  buildContinuedReviewPrompt,
+  buildReviewPrompt,
+} from "./code-review-message.ts";
 import { isReviewFailure, runReview } from "./code-review-runner.ts";
 import { presentReview } from "./code-review-ui.ts";
 import type { ReviewResult } from "./types.ts";
@@ -54,6 +59,7 @@ export default function (pi: ExtensionAPI) {
           .catch((error) =>
             done({
               output: "",
+              sessionId: "",
               aborted: false,
               error: error instanceof Error ? error.message : String(error),
             }),
@@ -72,11 +78,15 @@ export default function (pi: ExtensionAPI) {
 
       const action = await presentReview(ctx, result.output);
       if (action === "send") {
-        pi.sendUserMessage(buildAdvisoryMessage(result.output));
+        pi.sendUserMessage(buildAdvisoryMessage(result.output, result.sessionId));
         ctx.ui.notify("Review findings sent to the agent.", "info");
       } else if (action === "save") {
         const file = path.join(os.tmpdir(), `pi-code-review-${Date.now()}.md`);
-        fs.writeFileSync(file, `# Code Review\n\n${result.output}\n`, "utf8");
+        fs.writeFileSync(
+          file,
+          `# Code Review\n\n${result.output}\n\nReview session ID: ${result.sessionId}\n`,
+          "utf8",
+        );
         ctx.ui.notify(`Review saved to ${file}`, "info");
       } else {
         ctx.ui.notify("Review ignored.", "info");
@@ -112,8 +122,75 @@ export default function (pi: ExtensionAPI) {
         throw new Error(`Review failed: ${result.error || "no output"}`);
       }
       return {
-        content: [{ type: "text", text: result.output || "No actionable issues found." }],
-        details: { findings: result.output },
+        content: [
+          {
+            type: "text",
+            text: [
+              result.output || "No actionable issues found.",
+              "",
+              `Review session ID: ${result.sessionId}`,
+              "Use continue_code_review with this ID to re-review changes made in response.",
+            ].join("\n"),
+          },
+        ],
+        details: {
+          findings: result.output,
+          reviewSessionId: result.sessionId,
+          reviewSessionFile: result.sessionFile,
+        },
+      };
+    },
+  });
+
+  // -------- continue_code_review tool --------
+  pi.registerTool({
+    name: "continue_code_review",
+    label: "Continue Code Review",
+    description: [
+      "Continue a prior code-review subagent session to re-review current changes.",
+      "Use the full review session ID returned by run_code_review.",
+      "The reviewer retains its prior research, tool calls, and findings.",
+    ].join(" "),
+    promptSnippet: "Continue a prior code review by its full review session ID",
+    promptGuidelines: [
+      "Use continue_code_review only when re-reviewing changes made in response to a prior run_code_review result.",
+      "Pass the exact full review session ID returned by run_code_review; never guess or select the latest review.",
+      "Treat continued review findings as advisory: verify each against the code and address only valid, in-scope issues.",
+    ],
+    parameters: Type.Object({
+      reviewSessionId: Type.String({
+        description: "Exact full review session ID returned by run_code_review",
+      }),
+      focus: Type.Optional(Type.String({ description: "Optional non-authoritative review focus" })),
+    }),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: "text", text: "Continuing code review…" }], details: {} });
+      const result = await runReview(buildContinuedReviewPrompt(params.focus), ctx.cwd, {
+        signal,
+        model: ctx.model,
+        thinkingLevel: pi.getThinkingLevel(),
+        sessionId: params.reviewSessionId,
+      });
+      if (isReviewFailure(result)) {
+        throw new Error(`Review failed: ${result.error || "no output"}`);
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              result.output || "No actionable issues found.",
+              "",
+              `Review session ID: ${result.sessionId}`,
+              "Use continue_code_review with this ID for another re-review of this review thread.",
+            ].join("\n"),
+          },
+        ],
+        details: {
+          findings: result.output,
+          reviewSessionId: result.sessionId,
+          reviewSessionFile: result.sessionFile,
+        },
       };
     },
   });
