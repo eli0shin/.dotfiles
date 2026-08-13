@@ -125,12 +125,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: [
-              result.output || "No actionable issues found.",
-              "",
-              `Review session ID: ${result.sessionId}`,
-              "Use continue_code_review with this ID to re-review changes made in response.",
-            ].join("\n"),
+            text: buildAdvisoryMessage(result.output, result.sessionId),
           },
         ],
         details: {
@@ -178,12 +173,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: [
-              result.output || "No actionable issues found.",
-              "",
-              `Review session ID: ${result.sessionId}`,
-              "Use continue_code_review with this ID for another re-review of this review thread.",
-            ].join("\n"),
+            text: buildAdvisoryMessage(result.output, result.sessionId),
           },
         ],
         details: {

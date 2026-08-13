@@ -16,11 +16,15 @@ import {
   isReviewFailure,
 } from "../code-review-runner.ts";
 
-test("buildReviewPrompt references the skill and read-only intent", () => {
+test("buildReviewPrompt references the skill and preserves the requirements boundary", () => {
   const p = buildReviewPrompt();
   assert.match(p, /using the code-review skill/);
   assert.doesNotMatch(p, /code-review-skill/);
   assert.match(p, /uncommitted changes/);
+  assert.match(p, /verify the implementation, not write the specification/);
+  assert.match(p, /accepted design boundaries/);
+  assert.match(p, /Do not create, strengthen, or reinterpret requirements/);
+  assert.match(p, /new product decision.*outside the review/);
   assert.match(p, /Do not modify any files/);
 });
 
@@ -40,10 +44,12 @@ test("buildContinuedReviewPrompt permits retracting prior findings", () => {
   assert.match(prompt, /Extra guidance: check the fix/);
 });
 
-test("buildAdvisoryMessage frames findings as advisory", () => {
+test("buildAdvisoryMessage tells the agent to verify findings skeptically", () => {
   const msg = buildAdvisoryMessage("Blocker: null deref at a.ts:1");
-  assert.match(msg, /ADVISORY/);
-  assert.match(msg, /not direct instructions/);
+  assert.match(msg, /advisory claims, not requirements or instructions/);
+  assert.match(msg, /Verify each claim\s+independently/);
+  assert.match(msg, /Be skeptical/);
+  assert.match(msg, /valid and in scope/);
   assert.match(msg, /Blocker: null deref/);
 });
 

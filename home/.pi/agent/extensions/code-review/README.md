@@ -13,8 +13,9 @@ Two entry points:
 - **`continue_code_review`** — tool the main agent can call with that exact ID to
   re-review changes in the same reviewer conversation. It has no slash command.
 
-All entry points use isolated, persistent SDK sessions. Other user extensions
-stay disabled; the Exa extension is loaded for `web_search_exa` and
+All entry points present findings to the agent through the same advisory wrapper.
+They use isolated, persistent SDK sessions. Other user extensions stay disabled;
+the Exa extension is loaded for `web_search_exa` and
 `web_fetch_exa`. The explicit tool allowlist is `read`, `grep`, `find`, `ls`,
 `bash`, `web_search_exa`, and `web_fetch_exa`. Review JSONL files are stored in
 `~/.pi/agent/code-review-sessions/`, separate from normal Pi sessions, so they do
