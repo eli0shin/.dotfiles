@@ -89,10 +89,11 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
 6. Run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
-7. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls. A landing merge may make another PR conflicted, behind, or leave its green checks tied to an obsolete merge base without producing a PR Watch event. Immediately comment on each affected PR asking its worker to update onto the current landing branch, preserve already-merged contracts, resolve conflicts, and rerun the relevant checks.
-8. Find and spawn the newly unblocked frontier immediately.
+7. Run `git pull` to pull in the changes from the merged PR
+8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls. A landing merge may make another PR conflicted, behind, or leave its green checks tied to an obsolete merge base without producing a PR Watch event. Immediately comment on each affected PR asking its worker to update onto the current landing branch, preserve already-merged contracts, resolve conflicts, and rerun the relevant checks.
+9. Find and spawn the newly unblocked frontier immediately.
 
-This step is complete when tracker evidence is recorded, cleanup succeeds, lint passes, remaining PRs have been reconciled, and every newly executable ticket has a worker. Then yield.
+This step is complete when tracker evidence is recorded, the worker is cleaned up successfully, lint passes, remaining PRs have been reconciled, and every newly executable ticket has a worker. Then yield.
 
 ## Recovery
 

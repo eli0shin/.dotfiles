@@ -50,16 +50,8 @@ if status is-interactive
     end
 end
 
-# Use a block cursor in all Fish vi modes. Agnoster has its own cursor settings.
-set fish_cursor_default block
-set fish_cursor_insert block
-set fish_cursor_replace_one block
-set fish_cursor_replace block
-set fish_cursor_external block
-set fish_cursor_visual block
-set --global cursor_vi_mode_normal box_steady
-set --global cursor_vi_mode_insert box_steady
-set --global cursor_vi_mode_visual box_steady
+# Use Fish's default, non-modal key bindings.
+set --global fish_key_bindings fish_default_key_bindings
 
 set local_vars ~/.config/fish/local_vars.fish
 
