@@ -71,7 +71,7 @@ function createHarness() {
   let intervalCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
-  const currentBranch = "main";
+  let currentBranch = "main";
   let localSha = "main-sha";
   let remoteBranchSha = "main-sha";
   let repoAvailable = true;
@@ -239,6 +239,12 @@ function createHarness() {
     orchestrationId: string,
     workerSessionId: string,
     numbers: number[],
+    settlement?: {
+      branch: string;
+      assistantEntryId: string;
+      response: string;
+      hadWatchedPr: boolean;
+    },
   ): Promise<string> {
     const directory = join(stateRoot, encodeURIComponent(orchestrationId));
     await mkdir(directory, { recursive: true });
@@ -251,7 +257,25 @@ function createHarness() {
     const path = join(directory, `${encodeURIComponent(workerSessionId)}.json`);
     await writeFile(
       path,
-      JSON.stringify({ version: 1, orchestrationId, workerSessionId, revision: Date.now(), watchedPrs }),
+      JSON.stringify(
+        {
+          version: 2,
+          orchestrationId,
+          workerSessionId,
+          revision: Date.now(),
+          branch: settlement?.branch ?? `branch-${workerSessionId}`,
+          watchedPrs,
+          ...(settlement
+            ? {
+                latestSettlement: {
+                  assistantEntryId: settlement.assistantEntryId,
+                  response: settlement.response,
+                  hadWatchedPr: settlement.hadWatchedPr,
+                },
+              }
+            : {}),
+        },
+      ),
     );
     return path;
   }
@@ -306,6 +330,9 @@ function createHarness() {
     },
     setCurrentSha(sha: string) {
       remoteBranchSha = sha;
+    },
+    setCurrentBranch(branch: string) {
+      currentBranch = branch;
     },
     setLocalSha(sha: string) {
       localSha = sha;
@@ -440,6 +467,268 @@ test("ordinary sessions do not publish worker snapshots", async () => {
 
   await assert.rejects(harness.readWorkerSnapshot("session-123", "worker-session"));
   await harness.shutdown();
+});
+
+test("associated workers publish their branch and terminal response when they settle without a PR", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+  process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setCurrentBranch("009-worker-recovery");
+  harness.setBranchEntries([
+    {
+      type: "message",
+      id: "assistant-final",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "private" },
+          { type: "text", text: "I cannot start because a required credential is missing." },
+        ],
+        stopReason: "stop",
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+    await harness.settleAgent();
+
+    assert.deepEqual(await harness.readWorkerSnapshot("session-123", "worker-session"), {
+      version: 2,
+      orchestrationId: "session-123",
+      workerSessionId: "worker-session",
+      revision: (await harness.readWorkerSnapshot("session-123", "worker-session")).revision,
+      branch: "009-worker-recovery",
+      watchedPrs: [],
+      latestSettlement: {
+        assistantEntryId: "assistant-final",
+        response: "I cannot start because a required credential is missing.",
+        hadWatchedPr: false,
+      },
+    });
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("associated workers publish terminal errors and record watched PR suppression", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+  process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setCurrentBranch("009-worker-recovery");
+
+  try {
+    await harness.startSession();
+    await harness.activate(104);
+    harness.setBranchEntries([
+      {
+        type: "message",
+        id: "assistant-error",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "provider unavailable",
+        },
+      },
+    ]);
+    await harness.settleAgent();
+
+    assert.deepEqual((await harness.readWorkerSnapshot("session-123", "worker-session")).latestSettlement, {
+      assistantEntryId: "assistant-error",
+      response: "provider unavailable",
+      hadWatchedPr: true,
+    });
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("associated workers use an aborted response error as their last message", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+  process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setCurrentBranch("009-worker-recovery");
+  harness.setBranchEntries([
+    {
+      type: "message",
+      id: "assistant-aborted",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "Operation aborted",
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession();
+    await harness.settleAgent();
+    assert.equal(
+      (await harness.readWorkerSnapshot("session-123", "worker-session")).latestSettlement.response,
+      "Operation aborted",
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+for (const stopReason of ["toolUse", "length", "deferred", "pending"] as const) {
+  test(`associated workers publish a ${stopReason} settlement without response text`, async () => {
+    const harness = createHarness();
+    const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+    harness.setCurrentBranch("009-worker-recovery");
+    harness.setBranchEntries([
+      {
+        type: "message",
+        id: `assistant-${stopReason}`,
+        message: {
+          role: "assistant",
+          content:
+            stopReason === "toolUse"
+              ? [{ type: "toolCall", id: "call-1", name: "structured_output", arguments: {} }]
+              : [],
+          stopReason,
+        },
+      },
+    ]);
+
+    try {
+      await harness.startSession();
+      await harness.settleAgent();
+      assert.deepEqual(
+        (await harness.readWorkerSnapshot("session-123", "worker-session")).latestSettlement,
+        {
+          assistantEntryId: `assistant-${stopReason}`,
+          response: `Assistant stopped with reason: ${stopReason}.`,
+          hadWatchedPr: false,
+        },
+      );
+    } finally {
+      await harness.shutdown();
+      if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+      else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+    }
+  });
+}
+
+test("orchestration delivers each latest no-PR settlement once and suppresses watched-PR settlements", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+
+  try {
+    await harness.writeWorkerSnapshot("session-123", "worker-session", [], {
+      branch: "009-worker-recovery",
+      assistantEntryId: "assistant-one",
+      response: "A required credential is missing.",
+      hadWatchedPr: false,
+    });
+    await harness.startSession();
+
+    assert.match(
+      harness.sentMessages[0] ?? "",
+      /^worker 009-worker-recovery stopped without opening a pr and responded with the following message:\n\nA required credential is missing\.\n\n<!-- pr-watch-delivery:/,
+    );
+
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+
+    await harness.writeWorkerSnapshot("session-123", "worker-session", [], {
+      branch: "009-worker-recovery",
+      assistantEntryId: "assistant-two",
+      response: "The second attempt also stopped.",
+      hadWatchedPr: false,
+    });
+    await harness.runPoll();
+    assert.match(harness.sentMessages[1] ?? "", /The second attempt also stopped\./);
+
+    await harness.writeWorkerSnapshot("session-123", "worker-session", [104], {
+      branch: "009-worker-recovery",
+      assistantEntryId: "assistant-three",
+      response: "The pull request is open.",
+      hadWatchedPr: true,
+    });
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 2);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("resolved worker settlements stay deduplicated after orchestration resume", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  await harness.writeWorkerSnapshot("session-123", "worker-session", [], {
+    branch: "009-worker-recovery",
+    assistantEntryId: "assistant-one",
+    response: "A required credential is missing.",
+    hadWatchedPr: false,
+  });
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [],
+        pendingPrUpdates: [],
+        pendingWorkerSettlements: [],
+        recentGhOutputs: [],
+        orchestrationSessionId: "session-123",
+        resolvedWorkerSettlementIds: ["worker-session:assistant-one"],
+      },
+    },
+  ]);
+
+  try {
+    await harness.startSession("resume");
+    assert.deepEqual(harness.sentMessages, []);
+    await harness.runPoll();
+    assert.deepEqual(harness.sentMessages, []);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("worker fallback waits in the existing delivery loop while the orchestrator is busy", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setIdle(false);
+
+  try {
+    await harness.writeWorkerSnapshot("session-123", "worker-session", [], {
+      branch: "009-worker-recovery",
+      assistantEntryId: "assistant-one",
+      response: "A required credential is missing.",
+      hadWatchedPr: false,
+    });
+    await harness.startSession();
+    assert.deepEqual(harness.sentMessages, []);
+
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
 });
 
 test("adds PRs created in multiple worktrees without replacing earlier watches", async () => {

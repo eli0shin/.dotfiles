@@ -43,19 +43,35 @@ type PendingShaUpdate = {
   runsKey: string;
 };
 
+type WorkerSettlement = {
+  assistantEntryId: string;
+  response: string;
+  hadWatchedPr: boolean;
+};
+
+type PendingWorkerSettlement = {
+  workerSessionId: string;
+  assistantEntryId: string;
+  branch: string;
+  response: string;
+};
+
 type PendingDelivery = {
   id: string;
   message: string;
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
+  pendingWorkerSettlements?: PendingWorkerSettlement[];
 };
 
 type WorkerWatchSnapshot = {
-  version: 1;
+  version: 2;
   orchestrationId: string;
   workerSessionId: string;
   revision: number;
+  branch: string;
   watchedPrs: Array<Pick<WatchedPr, "repo" | "number" | "url">>;
+  latestSettlement?: WorkerSettlement;
 };
 
 type WatchState = {
@@ -65,12 +81,16 @@ type WatchState = {
   watchedSha?: WatchedSha;
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
+  pendingWorkerSettlements: PendingWorkerSettlement[];
   pendingDelivery?: PendingDelivery;
   recentGhOutputs: string[];
   orchestrationSessionId?: string;
   workerOrchestrationSessionId?: string;
+  workerBranch?: string;
+  latestWorkerSettlement?: WorkerSettlement;
   workerSnapshots?: Record<string, WorkerWatchSnapshot>;
   resolvedOrchestrationPrUrls?: string[];
+  resolvedWorkerSettlementIds?: string[];
   selfLogin?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -143,6 +163,7 @@ const initialState = (): WatchState => ({
   mode: "active",
   watchedPrs: [],
   pendingPrUpdates: [],
+  pendingWorkerSettlements: [],
   recentGhOutputs: [],
 });
 
@@ -198,21 +219,40 @@ export function prStatusIdentity(
   return `${repoName}#${pr.number}`;
 }
 
-function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
+function isWorkerSettlement(value: unknown): value is WorkerSettlement {
   return (
     isObject(value) &&
-    value.version === 1 &&
-    typeof value.orchestrationId === "string" &&
-    typeof value.workerSessionId === "string" &&
-    typeof value.revision === "number" &&
-    Array.isArray(value.watchedPrs) &&
-    value.watchedPrs.every(
+    typeof value.assistantEntryId === "string" &&
+    Boolean(value.assistantEntryId) &&
+    typeof value.response === "string" &&
+    Boolean(value.response) &&
+    typeof value.hadWatchedPr === "boolean"
+  );
+}
+
+function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
+  if (
+    !isObject(value) ||
+    value.version !== 2 ||
+    typeof value.orchestrationId !== "string" ||
+    typeof value.workerSessionId !== "string" ||
+    typeof value.revision !== "number" ||
+    !Array.isArray(value.watchedPrs) ||
+    !value.watchedPrs.every(
       (pr) =>
         isObject(pr) &&
         typeof pr.repo === "string" &&
         typeof pr.number === "number" &&
         typeof pr.url === "string",
     )
+  ) {
+    return false;
+  }
+
+  return (
+    typeof value.branch === "string" &&
+    Boolean(value.branch) &&
+    (value.latestSettlement === undefined || isWorkerSettlement(value.latestSettlement))
   );
 }
 
@@ -293,16 +333,24 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       const workerSessionId = ctx.sessionManager.getSessionId();
       const path = workerSnapshotPath(orchestrationId, workerSessionId);
+      if (!state.workerBranch) {
+        state.lastError = "Could not publish worker PR watch membership without a Git branch";
+        save();
+        setStatus(ctx);
+        return;
+      }
       const snapshot: WorkerWatchSnapshot = {
-        version: 1,
+        version: 2,
         orchestrationId,
         workerSessionId,
         revision: Date.now(),
+        branch: state.workerBranch,
         watchedPrs: state.watchedPrs.map(({ pr }) => ({
           repo: pr.repo,
           number: pr.number,
           url: pr.url,
         })),
+        latestSettlement: state.latestWorkerSettlement,
       };
 
       try {
@@ -318,6 +366,43 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     });
     await snapshotPublishQueue;
+  }
+
+  async function refreshWorkerBranch(): Promise<boolean> {
+    if (!state.workerOrchestrationSessionId) return false;
+
+    const result = await pi.exec("git", ["branch", "--show-current"], { timeout: 30_000 });
+    const branch = result.stdout.trim();
+    if (result.code === 0 && branch) {
+      state.workerBranch = branch;
+      return true;
+    }
+
+    state.lastError = `Could not resolve worker branch: ${result.stderr.trim() || "the current checkout has no branch"}`;
+    save();
+    return false;
+  }
+
+  async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
+    if (!state.workerOrchestrationSessionId || !(await refreshWorkerBranch())) return;
+
+    const entry = [...ctx.sessionManager.getBranch()].reverse().find(
+      (candidate) => candidate.type === "message" && candidate.message.role === "assistant",
+    );
+    if (!entry || entry.type !== "message" || entry.message.role !== "assistant") return;
+
+    const visibleText = Array.isArray(entry.message.content) ? textContent(entry.message.content).trim() : "";
+    const response =
+      visibleText ||
+      entry.message.errorMessage?.trim() ||
+      `Assistant stopped with reason: ${entry.message.stopReason}.`;
+
+    state.latestWorkerSettlement = {
+      assistantEntryId: entry.id,
+      response,
+      hadWatchedPr: state.watchedPrs.length > 0,
+    };
+    save();
   }
 
   async function reconcileOrchestrationMembership(ctx: ExtensionContext): Promise<string[]> {
@@ -379,6 +464,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (!presentWorkerIds.has(workerSessionId)) delete snapshots[workerSessionId];
     }
     state.workerSnapshots = snapshots;
+    reconcileWorkerSettlements(snapshots);
 
     const desired = new Map<string, Pick<WatchedPr, "repo" | "number" | "url">>();
     for (const snapshot of Object.values(snapshots)) {
@@ -409,11 +495,41 @@ export default function prWatch(pi: ExtensionAPI): void {
     return errors;
   }
 
+  function workerSettlementIdentity(
+    settlement: Pick<PendingWorkerSettlement, "workerSessionId" | "assistantEntryId">,
+  ): string {
+    return `${settlement.workerSessionId}:${settlement.assistantEntryId}`;
+  }
+
+  function reconcileWorkerSettlements(snapshots: Record<string, WorkerWatchSnapshot>): void {
+    const resolved = new Set(state.resolvedWorkerSettlementIds ?? []);
+
+    for (const [workerSessionId, snapshot] of Object.entries(snapshots)) {
+      const latest = snapshot.latestSettlement;
+      const latestId = latest
+        ? workerSettlementIdentity({ workerSessionId, assistantEntryId: latest.assistantEntryId })
+        : undefined;
+
+      state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
+        (pending) => pending.workerSessionId !== workerSessionId || workerSettlementIdentity(pending) === latestId,
+      );
+      if (!latest || latest.hadWatchedPr || !snapshot.branch || !latestId || resolved.has(latestId)) continue;
+      if (state.pendingWorkerSettlements.some((pending) => workerSettlementIdentity(pending) === latestId)) continue;
+
+      state.pendingWorkerSettlements.push({
+        workerSessionId,
+        assistantEntryId: latest.assistantEntryId,
+        branch: snapshot.branch,
+        response: latest.response,
+      });
+    }
+  }
+
   function pendingCount(): number {
     return state.pendingPrUpdates.reduce(
       (count, pending) =>
         count + (pending.checksKey ? 1 : 0) + (pending.conflictsKey ? 1 : 0) + pending.feedbackActivities.length,
-      state.pendingShaUpdate ? 1 : 0,
+      (state.pendingShaUpdate ? 1 : 0) + state.pendingWorkerSettlements.length,
     );
   }
 
@@ -889,6 +1005,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `${headline}\n\n${reviewerSafetyNotice(watched)}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${authorLogin}`;
   }
 
+  function buildWorkerSettlementMessage(settlement: PendingWorkerSettlement): string {
+    return `worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`;
+  }
+
   function buildBatchMessage(messages: string[]): string {
     if (messages.length === 1) return messages[0] ?? "";
     return `PR watch detected multiple updates.\n\n${messages
@@ -942,6 +1062,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   function buildPendingMessage(
     pendingPrUpdates: PendingPrUpdate[],
     pendingShaUpdate: PendingShaUpdate | undefined,
+    pendingWorkerSettlements: PendingWorkerSettlement[],
   ): string {
     const messages: string[] = [];
     for (const pending of pendingPrUpdates) {
@@ -953,6 +1074,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     }
     if (pendingShaUpdate) messages.push(buildShaChecksMessage(pendingShaUpdate));
+    for (const settlement of pendingWorkerSettlements) messages.push(buildWorkerSettlementMessage(settlement));
     return buildBatchMessage(messages);
   }
 
@@ -989,6 +1111,10 @@ export default function prWatch(pi: ExtensionAPI): void {
         return false;
       }
     }
+    const pendingWorkerIds = new Set(state.pendingWorkerSettlements.map(workerSettlementIdentity));
+    if ((delivery.pendingWorkerSettlements ?? []).some((settlement) => !pendingWorkerIds.has(workerSettlementIdentity(settlement)))) {
+      return false;
+    }
     return true;
   }
 
@@ -1004,11 +1130,13 @@ export default function prWatch(pi: ExtensionAPI): void {
       const id = randomUUID();
       const pendingPrUpdates = structuredClone(state.pendingPrUpdates);
       const pendingShaUpdate = structuredClone(state.pendingShaUpdate);
+      const pendingWorkerSettlements = structuredClone(state.pendingWorkerSettlements);
       state.pendingDelivery = {
         id,
-        message: `${buildPendingMessage(pendingPrUpdates, pendingShaUpdate)}\n\n${deliveryMarker(id)}`,
+        message: `${buildPendingMessage(pendingPrUpdates, pendingShaUpdate, pendingWorkerSettlements)}\n\n${deliveryMarker(id)}`,
         pendingPrUpdates,
         pendingShaUpdate,
+        pendingWorkerSettlements,
       };
       save();
     }
@@ -1054,6 +1182,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     ) {
       state.pendingShaUpdate = undefined;
     }
+
+    const deliveredWorkerIds = new Set((delivery.pendingWorkerSettlements ?? []).map(workerSettlementIdentity));
+    state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
+      (settlement) => !deliveredWorkerIds.has(workerSettlementIdentity(settlement)),
+    );
+    state.resolvedWorkerSettlementIds = [
+      ...new Set([...(state.resolvedWorkerSettlementIds ?? []), ...deliveredWorkerIds]),
+    ];
 
     state.pendingDelivery = undefined;
     deliveryAttemptedId = undefined;
@@ -1269,11 +1405,13 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;
       }
     }
+    state.pendingWorkerSettlements ??= [];
     if (state.orchestrationSessionId) {
       process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
     } else {
       delete process.env.PI_ORCHESTRATION_SESSION_ID;
     }
+    if (state.workerOrchestrationSessionId) await refreshWorkerBranch();
     reconcileDelivery(ctx);
 
     if (state.mode === "off") {
@@ -1316,6 +1454,10 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    if (state.workerOrchestrationSessionId) {
+      await captureWorkerSettlement(ctx);
+      await publishWorkerSnapshot(ctx, true);
+    }
     reconcileDelivery(ctx);
     flushPending(ctx);
   });
@@ -1467,6 +1609,9 @@ export default function prWatch(pi: ExtensionAPI): void {
           return `  PR ${pending.pr.repo}#${pending.pr.number}: ${updates.join(", ")}`;
         }),
         ...(state.pendingShaUpdate ? [`  SHA ${state.pendingShaUpdate.sha.slice(0, 7)}: CI complete`] : []),
+        ...state.pendingWorkerSettlements.map(
+          (settlement) => `  worker ${settlement.branch}: stopped without a watched PR`,
+        ),
       ];
       const lines = [
         `PR watch mode: ${state.mode}`,
