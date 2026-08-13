@@ -117,6 +117,10 @@
     "command": "tickets",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/tickets/main/install.sh | bash",
     "update": "curl -fsSL https://raw.githubusercontent.com/eli0shin/tickets/main/install.sh | bash"
-
+  },
+  {
+    "command": "artifact",
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/artifacts/main/apps/published-artifact/install.sh | bash",
+    "update": "curl -fsSL https://raw.githubusercontent.com/eli0shin/artifacts/main/apps/published-artifact/install.sh | bash"
   }
 ]
