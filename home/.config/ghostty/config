@@ -50,6 +50,7 @@ window-padding-balance = true
 # Cursor
 cursor-style = block
 cursor-style-blink = false
+shell-integration-features = no-cursor
 
 # Keybindings
 keybind = cmd+enter=toggle_fullscreen
