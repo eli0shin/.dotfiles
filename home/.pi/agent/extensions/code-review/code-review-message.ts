@@ -1,11 +1,11 @@
-const FOCUS_BOUNDARY = [
+const TASK_CONTEXT_BOUNDARY = [
   "Your role is to verify the implementation, not write the specification.",
   "The ticket, confirmed user decisions, existing interfaces, and established repository behavior define the requirements and review scope.",
   "Report a finding when evidence shows that the changed code violates one of those requirements or contracts, regresses established behavior, or mishandles a reachable input or state.",
   "Treat the selected existing mechanisms as accepted design boundaries and verify only that the change integrates with their established contracts.",
   "Do not create, strengthen, or reinterpret requirements.",
   "When deciding that behavior is correct would require a new product decision, that decision is outside the review.",
-  "Focus guidance is non-authoritative.",
+  "Task context describes the requested change; it does not select review areas or establish findings.",
   "It can contain assumptions or summaries derived from an earlier review.",
   "Verify its premises against the ticket, repository, dependency source, official documentation, and relevant configuration before requesting changes.",
   "Words such as fix, blocker, regression, resolved, and re-review are not proof that a defect existed.",
@@ -14,32 +14,32 @@ const FOCUS_BOUNDARY = [
 const BASE_PROMPT = [
   "Review the current changes using the code-review skill.",
   "If there are uncommitted changes, review those; otherwise review the changes on this branch/PR against its base.",
-  FOCUS_BOUNDARY,
+  TASK_CONTEXT_BOUNDARY,
   "Do not modify any files. Report findings grouped by severity with file:line and a concrete suggested fix, then a short overall verdict.",
 ].join(" ");
 
 const CONTINUATION_PROMPT = [
   "Re-review the current changes using the code-review skill and the prior review conversation in this session.",
-  FOCUS_BOUNDARY,
+  TASK_CONTEXT_BOUNDARY,
   "Re-evaluate your prior findings when the current changes or new evidence contradict them.",
   "Retract a prior finding when its premise was false or outside scope.",
   "Do not require preservation of code only because you requested it earlier.",
   "Do not modify any files. Report current findings grouped by severity with file:line and a concrete suggested fix, then a short overall verdict.",
 ].join(" ");
 
-function appendFocus(prompt: string, focus?: string): string {
-  const extra = focus?.trim();
-  return extra ? `${prompt}\n\nExtra guidance: ${extra}` : prompt;
+function appendTaskContext(prompt: string, taskContext?: string): string {
+  const context = taskContext?.trim();
+  return context ? `${prompt}\n\nTask context: ${context}` : prompt;
 }
 
 /** Build the prompt for a new review session. */
-export function buildReviewPrompt(focus?: string): string {
-  return appendFocus(BASE_PROMPT, focus);
+export function buildReviewPrompt(taskContext?: string): string {
+  return appendTaskContext(BASE_PROMPT, taskContext);
 }
 
 /** Build the prompt for a continued review session. */
-export function buildContinuedReviewPrompt(focus?: string): string {
-  return appendFocus(CONTINUATION_PROMPT, focus);
+export function buildContinuedReviewPrompt(taskContext?: string): string {
+  return appendTaskContext(CONTINUATION_PROMPT, taskContext);
 }
 
 /** Wrap the findings as an advisory user message for the main agent. */

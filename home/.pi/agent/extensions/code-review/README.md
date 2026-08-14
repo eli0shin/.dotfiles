@@ -26,12 +26,13 @@ not affect `pi -c` or `/resume`. The subagent is instructed to use the
 
 ```text
 /code-review                          # current changes, or branch/PR changes vs base
-/code-review focus on tests           # same review, with extra guidance
+/code-review FCC-114: add retry limits # same review, with task context
 ```
 
-Arguments are treated as optional, non-authoritative focus guidance for the
-reviewer. The reviewer must verify their premises. Scoped review arguments such
-as `branch <ref>` and `commit <sha>` are not currently parsed.
+Arguments are treated as optional task context. Include the original request,
+ticket key, requirements, acceptance criteria, and constraints when available.
+The context does not select review areas or establish findings. Scoped review
+arguments such as `branch <ref>` and `commit <sha>` are not currently parsed.
 
 ## Review continuation
 

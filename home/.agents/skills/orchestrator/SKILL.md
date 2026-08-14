@@ -58,7 +58,7 @@ Classify the event before delegating review:
 
 Never review a head while substantive checks are queued or in progress. Review each successful head once unless new relevant feedback requires a follow-up. Before review, confirm the successful checks belong to the current head and current landing-base merge ref, not an obsolete base.
 
-In `focus`, direct the reviewer to the worker worktree, PR, ticket, triggering CI-finished event, and relevant feedback, with this required return contract:
+In `taskContext`, describe the worker worktree, PR, ticket, triggering CI-finished event, and relevant feedback, with this required return contract:
 
 - reviewed head commit SHA;
 - confirmation that the PR targets the landing branch;

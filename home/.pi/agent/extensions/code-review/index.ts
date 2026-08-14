@@ -29,6 +29,23 @@ import { isReviewFailure, runReview } from "./code-review-runner.ts";
 import { presentReview } from "./code-review-ui.ts";
 import type { ReviewResult } from "./types.ts";
 
+const TASK_CONTEXT_DESCRIPTION = [
+  "Context for the task that the code change must implement.",
+  "Include the original request, ticket key, requirements, acceptance criteria, and constraints when available.",
+  "This input describes the task; the reviewer determines what to inspect.",
+  "Use only known task details.",
+].join(" ");
+
+function prepareTaskContextArguments<T>(args: unknown): T {
+  if (!args || typeof args !== "object") return args as T;
+
+  const input = args as Record<string, unknown>;
+  if (typeof input.focus !== "string" || input.taskContext !== undefined) return args as T;
+
+  const { focus, ...rest } = input;
+  return { ...rest, taskContext: focus } as T;
+}
+
 export default function (pi: ExtensionAPI) {
   // -------- /code-review command --------
   pi.registerCommand("code-review", {
@@ -109,11 +126,12 @@ export default function (pi: ExtensionAPI) {
       "Treat run_code_review findings as advisory: verify each against the code and address only valid, in-scope issues.",
     ],
     parameters: Type.Object({
-      focus: Type.Optional(Type.String({ description: "Optional extra guidance to focus the review" })),
+      taskContext: Type.Optional(Type.String({ description: TASK_CONTEXT_DESCRIPTION })),
     }),
+    prepareArguments: prepareTaskContextArguments,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Reviewing current changes…" }], details: {} });
-      const result = await runReview(buildReviewPrompt(params.focus), ctx.cwd, {
+      const result = await runReview(buildReviewPrompt(params.taskContext), ctx.cwd, {
         signal,
         model: ctx.model,
         thinkingLevel: pi.getThinkingLevel(),
@@ -156,11 +174,12 @@ export default function (pi: ExtensionAPI) {
       reviewSessionId: Type.String({
         description: "Exact full review session ID returned by run_code_review",
       }),
-      focus: Type.Optional(Type.String({ description: "Optional non-authoritative review focus" })),
+      taskContext: Type.Optional(Type.String({ description: TASK_CONTEXT_DESCRIPTION })),
     }),
+    prepareArguments: prepareTaskContextArguments,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Continuing code review…" }], details: {} });
-      const result = await runReview(buildContinuedReviewPrompt(params.focus), ctx.cwd, {
+      const result = await runReview(buildContinuedReviewPrompt(params.taskContext), ctx.cwd, {
         signal,
         model: ctx.model,
         thinkingLevel: pi.getThinkingLevel(),

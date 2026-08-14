@@ -28,20 +28,20 @@ test("buildReviewPrompt references the skill and preserves the requirements boun
   assert.match(p, /Do not modify any files/);
 });
 
-test("buildReviewPrompt makes focus guidance non-authoritative", () => {
-  const prompt = buildReviewPrompt("verify the prior blocker was fixed");
-  assert.match(prompt, /Extra guidance: verify the prior blocker was fixed/);
-  assert.match(prompt, /Focus guidance is non-authoritative/);
+test("buildReviewPrompt adds task context without selecting review areas", () => {
+  const prompt = buildReviewPrompt("FCC-114: add retry limits to payment submission");
+  assert.match(prompt, /Task context: FCC-114: add retry limits to payment submission/);
+  assert.match(prompt, /does not select review areas or establish findings/);
   assert.match(prompt, /not proof that a defect existed/);
-  assert.doesNotMatch(buildReviewPrompt("   "), /Extra guidance/);
+  assert.doesNotMatch(buildReviewPrompt("   "), /\n\nTask context:/);
 });
 
 test("buildContinuedReviewPrompt permits retracting prior findings", () => {
-  const prompt = buildContinuedReviewPrompt("check the fix");
+  const prompt = buildContinuedReviewPrompt("FCC-114: retry limits");
   assert.match(prompt, /prior review conversation in this session/);
   assert.match(prompt, /Retract a prior finding/);
   assert.match(prompt, /Do not require preservation of code/);
-  assert.match(prompt, /Extra guidance: check the fix/);
+  assert.match(prompt, /Task context: FCC-114: retry limits/);
 });
 
 test("buildAdvisoryMessage tells the agent to verify findings skeptically", () => {
