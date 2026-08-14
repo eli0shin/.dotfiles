@@ -21,9 +21,15 @@ Before reviewing:
 2. Read the ticket, pull request description, and linked decisions that are available.
 3. Identify the required outcome in one sentence.
 4. Inspect the complete diff and enough surrounding code to understand each changed path.
-5. Check relevant tests and CI results when they are available.
+5. For a pull request, read available CI results and failure output.
 
 The ticket defines the required outcome. The diff and the behavior it changes define the review scope.
+
+## Execution boundary
+
+Repository verification runs out of band. Assume automated repository checks pass. Do not run tests, lint, formatting, builds, type checks, or other repository verification commands.
+
+Inspect test code when it helps explain a contract or changed path. Execute code only to test a specific hypothesis found during review. Use a focused reproduction for that hypothesis, not the repository's existing test suite. A reproduction supplies review evidence; it does not duplicate CI.
 
 ## Finding gate
 
@@ -78,7 +84,7 @@ Do not turn a design suggestion into a new feature, broad refactor, dependency r
 1. State the required outcome and identify the changed execution paths.
 2. Try to falsify the change's material behavior, contract, safety, compatibility, rollout, and test claims.
 3. Inspect callers, callees, tests, and established repository patterns that are necessary to evaluate those paths.
-4. Run focused tests or reproductions when they can prove or disprove a candidate concern.
+4. Apply the execution boundary when a candidate concern needs runtime evidence.
 5. Research dependency behavior when a candidate concern depends on it.
 6. Apply the finding gate to every candidate. Discard candidates that fail any gate.
 7. Rank and report the admitted findings.
