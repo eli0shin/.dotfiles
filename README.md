@@ -8,17 +8,17 @@ Personal dotfiles managed with GNU Stow.
 # Clone the repo
 git clone git@github.com:eli0shin/.dotfiles.git ~/.dotfiles
 
-# Run initialization
-~/.dotfiles/dot init
+# Run setup
+~/.dotfiles/dot
 ```
 
 ## Commands
 
 ```bash
-dot init              # Full setup: brew, packages, stow
+dot                   # Full setup: brew, packages, stow
 dot stow              # Create symlinks
 dot unstow            # Remove symlinks
-dot update            # Pull repo and run init
+dot update            # Pull repo and run setup
 dot doctor            # Check installation health
 dot automount apply   # Configure macOS network automounts
 dot edit              # Open dotfiles in editor

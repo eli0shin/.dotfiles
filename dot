@@ -18,7 +18,7 @@ source "$DOTFILES_DIR/lib/dotfiles.sh"
 # shellcheck source=lib/maintenance.sh
 source "$DOTFILES_DIR/lib/maintenance.sh"
 
-cmd_init() {
+cmd_setup() {
     info "Initializing dotfiles..."
 
     cmd_package install
@@ -45,13 +45,14 @@ cmd_help() {
     cat << EOF
 dot - Dotfiles management CLI
 
-Usage: dot <command> [options]
+Usage: dot [command] [options]
+
+Running dot without a command performs the full setup.
 
 Commands:
-  init              Full setup: brew, packages, stow, config
   stow [-c|--clean] Create symlinks (--clean removes dirs first)
   unstow            Remove symlinks
-  update            Pull repo and run init
+  update            Pull repo and run setup
   doctor            Check installation health
   edit              Open dotfiles in editor
   package <subcmd>  Manage packages (brew and bash)
@@ -92,11 +93,11 @@ EOF
 # =============================================================================
 
 main() {
-    local cmd="${1:-help}"
+    local cmd="${1:-}"
     shift || true
 
     case "$cmd" in
-        init)    cmd_init "$@" ;;
+        "")      cmd_setup "$@" ;;
         stow)    cmd_stow "$@" ;;
         unstow)  cmd_unstow "$@" ;;
         update)  cmd_update "$@" ;;

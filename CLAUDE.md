@@ -9,11 +9,11 @@ Personal dotfiles managed with GNU Stow. The `dot` CLI handles all operations.
 ## Common Commands
 
 ```bash
-dot init              # Full setup: brew, packages, stow, services, system settings
+dot                   # Full setup: brew, packages, stow, services, system settings
 dot stow              # Create symlinks to ~ (runs merge first)
 dot stow --clean      # Remove dirs before stowing (use when stow conflicts)
 dot unstow            # Remove symlinks
-dot update            # Pull repo and run init
+dot update            # Pull repo and run setup
 dot doctor            # Check installation health
 dot merge             # Merge config files (*.base.json -> *.json)
 dot edit              # Open dotfiles in $EDITOR

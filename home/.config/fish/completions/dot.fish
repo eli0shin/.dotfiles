@@ -4,10 +4,9 @@
 complete -c dot -f
 
 # Top-level commands
-complete -c dot -n "__fish_use_subcommand" -a "init" -d "Full setup: brew, packages, stow, settings"
 complete -c dot -n "__fish_use_subcommand" -a "stow" -d "Create symlinks with GNU Stow"
 complete -c dot -n "__fish_use_subcommand" -a "unstow" -d "Remove symlinks"
-complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and run init"
+complete -c dot -n "__fish_use_subcommand" -a "update" -d "Pull repo and run setup"
 complete -c dot -n "__fish_use_subcommand" -a "doctor" -d "Check installation health"
 complete -c dot -n "__fish_use_subcommand" -a "edit" -d "Open dotfiles in editor"
 complete -c dot -n "__fish_use_subcommand" -a "package" -d "Manage packages"
