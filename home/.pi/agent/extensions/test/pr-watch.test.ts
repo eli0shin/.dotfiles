@@ -984,15 +984,29 @@ test("standard PR watch retains the last definitive status through an unknown me
   assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts/);
 });
 
-test("standard PR watch does not notify when conflicts existed before watching", async () => {
+test("standard PR watch notifies when initial unknown mergeability resolves to conflicting", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.mergeable = "UNKNOWN";
+  await harness.activate(104);
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts/);
+});
+
+test("standard PR watch notifies when conflicts exist before watching", async () => {
   const harness = createHarness();
   harness.prs.get(104)!.mergeable = "CONFLICTING";
 
   await harness.activate(104);
-  await harness.runPoll();
+  await harness.settleAgent();
   await harness.shutdown();
 
-  assert.equal(harness.sentMessages.length, 0);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts that need to be resolved/);
 });
 
 test("buffered conflict notification is discarded when the conflicts are resolved", async () => {
@@ -1215,24 +1229,29 @@ test("orchestration preserves its SHA baseline across session resume", async () 
   }
 });
 
-test("orchestration PR watch does not notify when a worker PR develops conflicts", async () => {
-  const harness = createHarness();
-  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
-  await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+for (const timing of ["before watching", "after watching"] as const) {
+  test(`orchestration PR watch does not notify when a worker PR has conflicts ${timing}`, async () => {
+    const harness = createHarness();
+    const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+    process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+    await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+    if (timing === "before watching") harness.prs.get(104)!.mergeable = "CONFLICTING";
 
-  try {
-    await harness.startSession();
-    harness.prs.get(104)!.mergeable = "CONFLICTING";
-    await harness.runPoll();
+    try {
+      await harness.startSession();
+      if (timing === "after watching") {
+        harness.prs.get(104)!.mergeable = "CONFLICTING";
+        await harness.runPoll();
+      }
 
-    assert.equal(harness.sentMessages.length, 0);
-  } finally {
-    await harness.shutdown();
-    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
-    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
-  }
-});
+      assert.equal(harness.sentMessages.length, 0);
+    } finally {
+      await harness.shutdown();
+      if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+      else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+    }
+  });
+}
 
 test("batches updates from multiple watched PRs into one agent message", async () => {
   const harness = createHarness();

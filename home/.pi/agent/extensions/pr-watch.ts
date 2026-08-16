@@ -639,22 +639,15 @@ export default function prWatch(pi: ExtensionAPI): void {
       const watchedKey = prIdentityKey(watchedPr);
       const existing = state.watchedPrs.find((candidate) => prIdentityKey(candidate.pr) === watchedKey);
       const wasAlreadyWatched = Boolean(existing);
+      const watched = existing ?? { pr: watchedPr, seenActivityIds: [] };
       if (existing) {
         existing.pr = watchedPr;
-        if (alreadyEnrolled) {
-          if (pr.mergeable === "MERGEABLE") clearPendingConflict(existing.pr);
-          if (isDefinitiveMergeable(pr.mergeable)) existing.mergeable = pr.mergeable;
-          await baselinePrState(existing, ctx);
-        }
+        if (alreadyEnrolled) await baselinePrState(existing, ctx);
       } else {
-        const added: WatchedPrState = {
-          pr: watchedPr,
-          seenActivityIds: [],
-          mergeable: isDefinitiveMergeable(pr.mergeable) ? pr.mergeable : undefined,
-        };
-        state.watchedPrs.push(added);
-        await baselinePrState(added, ctx);
+        state.watchedPrs.push(watched);
+        await baselinePrState(watched, ctx);
       }
+      reconcileMergeability(watched, pr.mergeable, true);
       reconcilePendingPr(watchedPr);
 
       if (!state.orchestrationSessionId) {
@@ -1047,6 +1040,31 @@ export default function prWatch(pi: ExtensionAPI): void {
     removeEmptyPendingPr(pr);
   }
 
+  function reconcileMergeability(
+    watched: WatchedPrState,
+    latest: string | undefined,
+    reportUnknownPrevious = false,
+  ): boolean {
+    if (!isDefinitiveMergeable(latest)) return false;
+
+    const shouldReportConflict =
+      !state.orchestrationSessionId &&
+      latest === "CONFLICTING" &&
+      (watched.mergeable === "MERGEABLE" || (reportUnknownPrevious && watched.mergeable === undefined));
+    watched.mergeable = latest;
+
+    if (latest === "MERGEABLE") {
+      clearPendingConflict(watched.pr);
+      return false;
+    }
+    if (!shouldReportConflict) return false;
+
+    const pending = pendingPr(watched);
+    if (pending.conflictsKey) return false;
+    pending.conflictsKey = randomUUID();
+    return true;
+  }
+
   function buildPrConflictsMessage(watched: WatchedPrState): string {
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}`;
     if (prWatchMode(watched) === "author") {
@@ -1222,20 +1240,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (latest.author?.login) watched.pr.authorLogin = latest.author.login;
     if (latest.headRefName) watched.pr.branch = latest.headRefName;
 
-    let addedCount = 0;
-    if (isDefinitiveMergeable(latest.mergeable)) {
-      if (
-        !state.orchestrationSessionId &&
-        watched.mergeable === "MERGEABLE" &&
-        latest.mergeable === "CONFLICTING"
-      ) {
-        pendingPr(watched).conflictsKey = randomUUID();
-        addedCount += 1;
-      } else if (latest.mergeable === "MERGEABLE") {
-        clearPendingConflict(watched.pr);
-      }
-      watched.mergeable = latest.mergeable;
-    }
+    let addedCount = reconcileMergeability(watched, latest.mergeable, true) ? 1 : 0;
 
     if (latest.headRefOid !== watched.pr.headSha) {
       watched.pr.headSha = latest.headRefOid;
