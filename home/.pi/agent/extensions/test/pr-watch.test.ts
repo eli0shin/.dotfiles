@@ -15,6 +15,7 @@ import prWatch, {
 
 const humanActivity = { id: 1, user: { login: "reviewer", type: "User" } };
 const botActivity = { id: 2, user: { login: "review-bot[bot]", type: "Bot" } };
+const codexActivity = { id: 3, user: { login: "chatgpt-codex-connector[bot]", type: "Bot" } };
 const pr104Url = "https://github.com/eli0shin/repos/pull/104";
 const pr105Url = "https://github.com/eli0shin/repos/pull/105";
 
@@ -387,6 +388,13 @@ test("ignores general PR comments from bots", () => {
 test("tracks reviews and inline review comments from bots", () => {
   assert.equal(shouldTrackActivity("review", botActivity), true);
   assert.equal(shouldTrackActivity("review-comment", botActivity), true);
+});
+
+test("orchestration ignores reviews and inline review comments from configured authors", () => {
+  assert.equal(shouldTrackActivity("review", codexActivity, true), false);
+  assert.equal(shouldTrackActivity("review-comment", codexActivity, true), false);
+  assert.equal(shouldTrackActivity("review", codexActivity), true);
+  assert.equal(shouldTrackActivity("review", botActivity, true), true);
 });
 
 test("ignores activities without an id", () => {
@@ -1557,7 +1565,10 @@ test("orchestration sessions receive a concise activity notification", async () 
 
   try {
     await harness.startSession();
-    harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+    harness.reviews.set(104, [
+      { id: 77, user: { login: "reviewer", type: "User" } },
+      { id: 78, user: { login: "chatgpt-codex-connector[bot]", type: "Bot" } },
+    ]);
     await harness.runPoll();
 
     assert.equal(harness.sentMessages.length, 1);
@@ -1565,6 +1576,7 @@ test("orchestration sessions receive a concise activity notification", async () 
       harness.sentMessages[0] ?? "",
       /^New activity on worker PR #104:\n- review:77 by reviewer\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
     );
+    assert.doesNotMatch(harness.sentMessages[0] ?? "", /chatgpt-codex-connector|review:78/);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;

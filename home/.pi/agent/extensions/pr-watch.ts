@@ -157,6 +157,7 @@ const CUSTOM_STATE = "pr-watch-state";
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 const WORKER_ORCHESTRATION_ENV = "PI_PARENT_ORCHESTRATION_SESSION_ID";
+const ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
 
 const initialState = (): WatchState => ({
   version: 4,
@@ -260,8 +261,20 @@ export function pullRequestUrlFromText(text: string): string | undefined {
   return Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g)).at(-1)?.[0];
 }
 
-export function shouldTrackActivity(kind: ActivityKind, activity: Activity): boolean {
+export function shouldTrackActivity(
+  kind: ActivityKind,
+  activity: Activity,
+  orchestrationMode = false,
+): boolean {
   if (activity.id === undefined || activity.id === null) return false;
+  const authorLogin = (activity.author ?? activity.user)?.login?.toLowerCase();
+  if (
+    orchestrationMode &&
+    authorLogin &&
+    ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS.includes(authorLogin)
+  ) {
+    return false;
+  }
   return kind !== "issue-comment" || !isBotActivity(activity);
 }
 
@@ -918,7 +931,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
     return (activities ?? [])
-      .filter((activity) => shouldTrackActivity(kind, activity))
+      .filter((activity) => shouldTrackActivity(kind, activity, Boolean(state.orchestrationSessionId)))
       .map((activity) => ({
         id: `${kind}:${activity.id}`,
         authorLogin: activityAuthorLogin(activity),
