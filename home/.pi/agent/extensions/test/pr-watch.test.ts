@@ -26,6 +26,7 @@ type PrFixture = {
   headSha: string;
   state: string;
   authorLogin: string;
+  headRepo: string;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 };
 
@@ -53,6 +54,7 @@ function createHarness() {
         headSha: "abc104",
         state: "OPEN",
         authorLogin: "eli0shin",
+        headRepo: "eli0shin/repos",
         mergeable: "MERGEABLE",
       },
     ],
@@ -65,6 +67,7 @@ function createHarness() {
         headSha: "abc105",
         state: "OPEN",
         authorLogin: "eli0shin",
+        headRepo: "eli0shin/repos",
         mergeable: "MERGEABLE",
       },
     ],
@@ -130,6 +133,7 @@ function createHarness() {
             headRefOid: pr.headSha,
             state: pr.state,
             author: { login: pr.authorLogin },
+            headRepository: { nameWithOwner: pr.headRepo },
             mergeable: pr.mergeable,
           }),
           stderr: "",
@@ -737,6 +741,58 @@ test("worker fallback waits in the existing delivery loop while the orchestrator
   }
 });
 
+test("watches the session branch SHA and a PR created from another worktree", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await harness.activate(104);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+});
+
+test("restores concurrent session-branch SHA and worktree PR watches on resume", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.activate(104);
+  const savedState = structuredClone(harness.savedStates.at(-1));
+  harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: savedState }]);
+
+  await harness.startSession("resume");
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+});
+
+test("does not watch a SHA separately when its session branch has an open PR", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("abc104");
+  await harness.startSession();
+
+  await harness.activate(104);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("a fork PR with the same branch name does not suppress the session repository SHA", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("session-repo-sha");
+  harness.prs.get(104)!.headRepo = "another-owner/repos";
+  await harness.startSession();
+
+  await harness.activate(104);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "session-repo-sha");
+});
+
 test("adds PRs created in multiple worktrees without replacing earlier watches", async () => {
   const harness = createHarness();
 
@@ -830,6 +886,89 @@ test("with no watched PRs, PR watch uses the current checkout branch tip", async
     ),
     true,
   );
+});
+
+test("a failed SHA baseline after the session-branch PR closes remains retryable", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("abc104");
+  await harness.startSession();
+  await harness.activate(104);
+  harness.prs.get(104)!.state = "MERGED";
+  harness.setRunsAvailable(false);
+
+  await harness.runPoll();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "abc104");
+
+  harness.setRunsAvailable(true);
+  harness.runs.push({
+    databaseId: 120,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/120",
+  });
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA abc104/);
+});
+
+test("a worktree PR keeps a failed restored SHA baseline retryable", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("abc104");
+  await harness.startSession();
+  await harness.activate(104);
+  await harness.activate(105);
+  harness.prs.get(104)!.state = "MERGED";
+  harness.setRunsAvailable(false);
+
+  await harness.runPoll();
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "abc104");
+
+  harness.setRunsAvailable(true);
+  harness.runs.push({
+    databaseId: 119,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/119",
+  });
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA abc104/);
+});
+
+test("an open worktree PR does not block CI for a changed session branch SHA", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.activate(104);
+  await harness.activate(105);
+  harness.prs.get(105)!.state = "MERGED";
+  harness.setCurrentSha("merged-105-sha");
+  harness.runs.push({
+    databaseId: 121,
+    attempt: 1,
+    name: "Terraform",
+    workflowName: "Terraform",
+    status: "completed",
+    conclusion: "success",
+    url: "https://github.com/eli0shin/repos/actions/runs/121",
+  });
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merged-105-sha");
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA merged-/);
 });
 
 test("SHA watch follows the remote branch tip when local HEAD is stale", async () => {
@@ -1306,6 +1445,22 @@ test("bot-authored reviews trigger feedback for the correct branch", async () =>
   assert.equal(harness.sentMessages.length, 1);
   assert.match(harness.sentMessages[0] ?? "", /New PR feedback was added for branch remove-collapse-command \(PR #104\)/);
   assert.match(harness.sentMessages[0] ?? "", /review:4689083037 by review-bot\[bot\]/);
+});
+
+test("manual removal restores the session branch SHA while other worktree PRs remain", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("abc104");
+  await harness.startSession();
+  await harness.activate(104);
+  await harness.activate(105);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+  await harness.commands.get("pr-watch")?.handler("remove 104", harness.ctx);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "abc104");
 });
 
 test("manual remove stops watching only the selected PR", async () => {

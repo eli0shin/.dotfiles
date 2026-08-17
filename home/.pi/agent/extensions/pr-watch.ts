@@ -11,6 +11,7 @@ type WatchedPr = {
   url: string;
   branch: string;
   headSha: string;
+  headRepo?: string;
   authorLogin?: string;
 };
 
@@ -145,7 +146,7 @@ type PrPollResult = {
 };
 
 type BranchTipResult =
-  | { ok: true; sha: string }
+  | { ok: true; branch: string; sha: string }
   | { ok: false; error: string };
 
 type ShaSyncResult = {
@@ -605,6 +606,12 @@ export default function prWatch(pi: ExtensionAPI): void {
     return repo;
   }
 
+  function hasWatchedPrForBranch(repo: string, branch: string): boolean {
+    return state.watchedPrs.some(
+      ({ pr }) => (pr.headRepo ?? pr.repo).toLowerCase() === repo.toLowerCase() && pr.branch === branch,
+    );
+  }
+
   async function watchCurrentBranch(
     ctx: ExtensionContext,
     repoName: string,
@@ -622,9 +629,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     await refreshSelfLogin(ctx);
 
-    if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
-    state.watchedSha = { repo: repoName, sha };
-    await baselineCurrentShaState(ctx);
+    if (!state.orchestrationSessionId && hasWatchedPrForBranch(repoName, branchTip.branch)) {
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+    } else {
+      if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
+      state.watchedSha = { repo: repoName, sha };
+      await baselineCurrentShaState(ctx);
+    }
 
     state.lastError = undefined;
     save();
@@ -649,12 +661,13 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const prViewArgs = ["pr", "view"];
     if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push("--json", "number,url,headRefName,headRefOid,state,author,mergeable");
+    prViewArgs.push("--json", "number,url,headRefName,headRefOid,headRepository,state,author,mergeable");
     const pr = await execJson<{
       number: number;
       url: string;
       headRefName: string;
       headRefOid: string;
+      headRepository?: { nameWithOwner?: string };
       state: string;
       author?: { login?: string };
       mergeable?: string;
@@ -676,6 +689,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         url: pr.url,
         branch: pr.headRefName,
         headSha: pr.headRefOid,
+        headRepo: pr.headRepository?.nameWithOwner,
         authorLogin: pr.author?.login,
       };
       const watchedKey = prIdentityKey(watchedPr);
@@ -692,10 +706,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       reconcileMergeability(watched, pr.mergeable, true);
       reconcilePendingPr(watchedPr);
 
-      if (!state.orchestrationSessionId) {
-        state.watchedSha = undefined;
-        state.pendingShaUpdate = undefined;
-      }
+      if (!state.orchestrationSessionId) await syncWatchedSha(ctx);
       state.lastError = undefined;
       save();
       startPolling(ctx);
@@ -779,7 +790,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     try {
       const commit = JSON.parse(commitResult.stdout) as { sha?: string };
-      if (commit.sha) return { ok: true, sha: commit.sha };
+      if (commit.sha) return { ok: true, branch, sha: commit.sha };
     } catch {
       // Report one branch-tip error below.
     }
@@ -787,11 +798,16 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
-    if (!state.orchestrationSessionId && !state.watchedSha) return { changed: false };
     const repo = await ensureCurrentRepo(ctx);
     if (!repo) return { changed: false, error: "Could not resolve the current GitHub repository" };
     const branchTip = await currentBranchTip(repo);
     if (!branchTip.ok) return { changed: false, error: branchTip.error };
+    if (!state.orchestrationSessionId && hasWatchedPrForBranch(repo, branchTip.branch)) {
+      const changed = Boolean(state.watchedSha);
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+      return { changed };
+    }
     const sha = branchTip.sha;
     if (state.watchedSha?.sha === sha) return { changed: false };
 
@@ -799,7 +815,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.watchedSha = { repo, sha };
     state.pendingShaUpdate = undefined;
     if (firstObservation && !(await baselineCurrentShaState(ctx))) {
-      state.watchedSha = undefined;
+      if (state.orchestrationSessionId) state.watchedSha = undefined;
       return { changed: false, error: `Could not baseline workflow runs for SHA ${sha}` };
     }
     return { changed: true };
@@ -1260,16 +1276,18 @@ export default function prWatch(pi: ExtensionAPI): void {
     const latest = await execJson<{
       headRefOid: string;
       headRefName?: string;
+      headRepository?: { nameWithOwner?: string };
       state: string;
       author?: { login?: string };
       mergeable?: string;
-    }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,state,author,mergeable"], ctx);
+    }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,headRepository,state,author,mergeable"], ctx);
 
     if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
     if (latest.state !== "OPEN") return { addedCount: 0, remove: true };
 
     if (latest.author?.login) watched.pr.authorLogin = latest.author.login;
     if (latest.headRefName) watched.pr.branch = latest.headRefName;
+    if (latest.headRepository?.nameWithOwner) watched.pr.headRepo = latest.headRepository.nameWithOwner;
 
     let addedCount = reconcileMergeability(watched, latest.mergeable, true) ? 1 : 0;
 
@@ -1360,12 +1378,17 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
       }
 
-      if (state.watchedPrs.length === 0 && !state.watchedSha && !state.orchestrationSessionId) {
-        const repo = await ensureCurrentRepo(ctx);
-        if (!repo) {
-          errors.push("Could not resolve the current GitHub repository");
-        } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false))) {
-          if (state.lastError) errors.push(state.lastError);
+      if (!state.watchedSha && !state.orchestrationSessionId) {
+        if (state.watchedPrs.length > 0) {
+          const postPrShaSync = await syncWatchedSha(ctx);
+          if (postPrShaSync.error) errors.push(postPrShaSync.error);
+        } else {
+          const repo = await ensureCurrentRepo(ctx);
+          if (!repo) {
+            errors.push("Could not resolve the current GitHub repository");
+          } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false)) && state.lastError) {
+            errors.push(state.lastError);
+          }
         }
       }
 
@@ -1476,21 +1499,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     let shaSyncError: string | undefined;
     if (state.orchestrationSessionId) {
       shaSyncError = (await syncWatchedSha(ctx)).error;
-    } else if (state.watchedPrs.length === 0) {
-      if (savedSha) {
-        state.watchedSha = structuredClone(savedSha);
-        const shaSync = await syncWatchedSha(ctx);
-        shaSyncError = shaSync.error;
-        if (!shaSync.changed && !shaSync.error && !(await baselineCurrentShaState(ctx))) {
-          shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
-        }
-      } else {
-        const repo = await ensureCurrentRepo(ctx);
-        if (!repo) {
-          shaSyncError = "Could not resolve the current GitHub repository";
-        } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false))) {
-          shaSyncError = state.lastError;
-        }
+    } else if (savedSha) {
+      state.watchedSha = structuredClone(savedSha);
+      const shaSync = await syncWatchedSha(ctx);
+      shaSyncError = shaSync.error;
+      if (!shaSync.changed && !shaSync.error && state.watchedSha && !(await baselineCurrentShaState(ctx))) {
+        shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
+      }
+    } else {
+      const repo = await ensureCurrentRepo(ctx);
+      if (!repo) {
+        shaSyncError = "Could not resolve the current GitHub repository";
+      } else if (!(await watchCurrentBranch(ctx, repo, "session branch", false))) {
+        shaSyncError = state.lastError;
       }
     }
 
@@ -1606,9 +1627,14 @@ export default function prWatch(pi: ExtensionAPI): void {
         if (watched) removePr(watched.pr);
         save();
         await publishWorkerSnapshot(ctx);
-        if (state.mode !== "off" && state.watchedPrs.length === 0 && !state.orchestrationSessionId) {
-          const repo = await ensureCurrentRepo(ctx);
-          if (repo) await watchCurrentBranch(ctx, repo, "no PRs are watched", false);
+        if (state.mode !== "off" && !state.orchestrationSessionId) {
+          if (state.watchedPrs.length > 0) {
+            await syncWatchedSha(ctx);
+          } else {
+            const repo = await ensureCurrentRepo(ctx);
+            if (repo) await watchCurrentBranch(ctx, repo, "no PRs are watched", false);
+          }
+          save();
         }
         if (!hasTargets()) stopPolling(ctx);
         setStatus(ctx);
