@@ -423,11 +423,7 @@ test("status identity omits the current repository and all organization prefixes
 test("status line prefixes only PRs from other repositories", async () => {
   const harness = createHarness();
   await harness.startSession();
-  assert.equal(
-    harness.execCalls.some(({ command, args }) => command === "gh" && args[0] === "repo"),
-    false,
-    "an empty watch should not resolve the current repository",
-  );
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
 
   await harness.activate(104);
   assert.equal(harness.statuses.at(-1), "PR watch: #104");
@@ -447,6 +443,7 @@ test("associated workers publish ordinary PR watch membership regardless of loca
   try {
     await harness.startSession();
     assert.equal(process.env.PI_PARENT_ORCHESTRATION_SESSION_ID, undefined);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
     assert.deepEqual(
       (await harness.readWorkerSnapshot("session-123", "worker-session")).watchedPrs,
       [],
@@ -471,6 +468,7 @@ test("ordinary sessions do not publish worker snapshots", async () => {
   const harness = createHarness();
   delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
   await harness.startSession();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
   await harness.activate(104);
 
   await assert.rejects(harness.readWorkerSnapshot("session-123", "worker-session"));
@@ -811,6 +809,26 @@ test("does not add a PR that is not open", async () => {
   assert.deepEqual(
     harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
     [104],
+  );
+});
+
+test("with no watched PRs, PR watch uses the current checkout branch tip", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.url = "https://github.com/another-owner/another-repo/pull/104";
+  harness.prs.get(104)!.state = "MERGED";
+
+  await harness.activate(104, "view");
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(
+    harness.execCalls.some(
+      ({ command, args }) =>
+        command === "gh" && args[0] === "api" && args[1] === "repos/eli0shin/repos/commits/main",
+    ),
+    true,
   );
 });
 
@@ -2062,6 +2080,7 @@ test("closing a PR or manually removing it discards its pending updates", async 
   harness.prs.get(104)!.state = "MERGED";
   await harness.runPoll();
   assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
 
   const secondHarness = createHarness();
   await secondHarness.activate(104);
@@ -2070,4 +2089,5 @@ test("closing a PR or manually removing it discards its pending updates", async 
   await secondHarness.runPoll();
   await secondHarness.commands.get("pr-watch")?.handler("remove 104", secondHarness.ctx);
   assert.deepEqual(secondHarness.savedStates.at(-1)?.pendingPrUpdates, []);
+  assert.equal(secondHarness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
 });

@@ -605,6 +605,35 @@ export default function prWatch(pi: ExtensionAPI): void {
     return repo;
   }
 
+  async function watchCurrentBranch(
+    ctx: ExtensionContext,
+    repoName: string,
+    reason: string,
+    notify: boolean,
+  ): Promise<boolean> {
+    const branchTip = await currentBranchTip(repoName);
+    if (!branchTip.ok) {
+      state.lastError = branchTip.error;
+      save();
+      setStatus(ctx);
+      return false;
+    }
+    const sha = branchTip.sha;
+
+    await refreshSelfLogin(ctx);
+
+    if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
+    state.watchedSha = { repo: repoName, sha };
+    await baselineCurrentShaState(ctx);
+
+    state.lastError = undefined;
+    save();
+    startPolling(ctx);
+    setStatus(ctx);
+    if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
+    return true;
+  }
+
   async function discover(
     ctx: ExtensionContext,
     reason: string,
@@ -695,32 +724,21 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
       setStatus(ctx);
       await publishWorkerSnapshot(ctx);
+      if (state.watchedPrs.length === 0 && !state.orchestrationSessionId) {
+        if (!repoForCurrentDirectory) {
+          state.lastError = "Could not resolve the current GitHub repository";
+          save();
+          setStatus(ctx);
+          return false;
+        }
+        return watchCurrentBranch(ctx, repoForCurrentDirectory, `${reason}; no PRs are watched`, notify);
+      }
       if (notify && pr) ctx.ui.notify(`PR #${pr.number} is not open; it was not added to PR watch.`, "info");
       return false;
     }
 
     if (state.orchestrationSessionId) return false;
-
-    const branchTip = await currentBranchTip(repoName);
-    if (!branchTip.ok) {
-      state.lastError = branchTip.error;
-      save();
-      setStatus(ctx);
-      return false;
-    }
-    const sha = branchTip.sha;
-
-    await refreshSelfLogin(ctx);
-
-    if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
-    state.watchedSha = { repo: repoName, sha };
-    await baselineCurrentShaState(ctx);
-
-    state.lastError = undefined;
-    save();
-    startPolling(ctx);
-    if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
-    return true;
+    return watchCurrentBranch(ctx, repoName, reason, notify);
   }
 
   function reconcilePendingPr(pr: WatchedPr): void {
@@ -1342,6 +1360,15 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
       }
 
+      if (state.watchedPrs.length === 0 && !state.watchedSha && !state.orchestrationSessionId) {
+        const repo = await ensureCurrentRepo(ctx);
+        if (!repo) {
+          errors.push("Could not resolve the current GitHub repository");
+        } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false))) {
+          if (state.lastError) errors.push(state.lastError);
+        }
+      }
+
       addedCount += await pollSha(ctx);
       state.lastPollAt = Date.now();
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
@@ -1449,12 +1476,21 @@ export default function prWatch(pi: ExtensionAPI): void {
     let shaSyncError: string | undefined;
     if (state.orchestrationSessionId) {
       shaSyncError = (await syncWatchedSha(ctx)).error;
-    } else if (state.watchedPrs.length === 0 && savedSha) {
-      state.watchedSha = structuredClone(savedSha);
-      const shaSync = await syncWatchedSha(ctx);
-      shaSyncError = shaSync.error;
-      if (!shaSync.changed && !shaSync.error && !(await baselineCurrentShaState(ctx))) {
-        shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
+    } else if (state.watchedPrs.length === 0) {
+      if (savedSha) {
+        state.watchedSha = structuredClone(savedSha);
+        const shaSync = await syncWatchedSha(ctx);
+        shaSyncError = shaSync.error;
+        if (!shaSync.changed && !shaSync.error && !(await baselineCurrentShaState(ctx))) {
+          shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
+        }
+      } else {
+        const repo = await ensureCurrentRepo(ctx);
+        if (!repo) {
+          shaSyncError = "Could not resolve the current GitHub repository";
+        } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false))) {
+          shaSyncError = state.lastError;
+        }
       }
     }
 
@@ -1568,9 +1604,13 @@ export default function prWatch(pi: ExtensionAPI): void {
         );
         const existed = Boolean(watched);
         if (watched) removePr(watched.pr);
-        if (!hasTargets()) stopPolling(ctx);
         save();
         await publishWorkerSnapshot(ctx);
+        if (state.mode !== "off" && state.watchedPrs.length === 0 && !state.orchestrationSessionId) {
+          const repo = await ensureCurrentRepo(ctx);
+          if (repo) await watchCurrentBranch(ctx, repo, "no PRs are watched", false);
+        }
+        if (!hasTargets()) stopPolling(ctx);
         setStatus(ctx);
         ctx.ui.notify(existed ? `Removed PR #${number} from PR watch.` : `PR #${number} was not being watched.`, "info");
         return;
