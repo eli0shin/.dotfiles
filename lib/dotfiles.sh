@@ -56,7 +56,7 @@ cmd_stow() {
     fi
 
     # Create directory symlinks from $HOME to dotfiles
-    stow -v --target="$HOME" --dir="$DOTFILES_DIR" home
+    stow -v --ignore='(^|/)\.DS_Store$' --target="$HOME" --dir="$DOTFILES_DIR" home
 
     success "Dotfiles stowed successfully"
 }
@@ -76,7 +76,7 @@ _clean_nested_git() {
 cmd_unstow() {
     info "Unstowing dotfiles..."
     cd "$DOTFILES_DIR"
-    stow -v --delete --target="$HOME" --dir="$DOTFILES_DIR" home
+    stow -v --delete --ignore='(^|/)\.DS_Store$' --target="$HOME" --dir="$DOTFILES_DIR" home
     success "Dotfiles unstowed"
 }
 
