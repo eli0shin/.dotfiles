@@ -41,6 +41,8 @@ scrollback-limit = 1000
 
 # Terminal compatibility
 term = xterm-256color
+# Allow remote applications such as Neovim to read the clipboard with OSC 52.
+clipboard-read = allow
 
 # Minimal visual preferences
 window-padding-x = 0
