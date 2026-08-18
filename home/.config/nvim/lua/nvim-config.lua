@@ -19,9 +19,10 @@ vim.opt.mouse = 'a'
 vim.opt.showmode = false
 
 -- Sync clipboard between OS and Neovim.
--- Use OSC 52 when no tmux or local graphical clipboard is available.
+-- Use OSC 52 only in remote (SSH) sessions without tmux.
+-- Locally, Neovim finds the system clipboard tool (pbcopy/pbpaste on macOS).
 -- See `:help 'clipboard'` and `:help clipboard-osc52`.
-if vim.env.TMUX == nil and vim.env.DISPLAY == nil and vim.env.WAYLAND_DISPLAY == nil then
+if vim.env.SSH_TTY ~= nil and vim.env.TMUX == nil then
   vim.g.clipboard = 'osc52'
 end
 vim.opt.clipboard = 'unnamedplus'
