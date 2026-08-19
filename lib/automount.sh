@@ -94,7 +94,7 @@ cmd_automount() {
 
             {
                 echo "$AUTOMOUNT_MARKER"
-                jq -r --arg home "$HOME" '.shares | to_entries | sort_by(.key)[] | "\($home)/\(.key) -fstype=smbfs,soft,rw,filemode=0777,dirmode=0777,nodev \(.value)"' "$AUTOMOUNTS_FILE"
+                jq -r --arg home "$HOME" '.shares | to_entries | sort_by(.key)[] | "\($home)/\(.key) -fstype=smbfs,soft \(.value)"' "$AUTOMOUNTS_FILE"
             } > "$temp_map"
             _automount_unconfigured_smb_maps | sort -u > "$stale_maps_file"
             _automount_write_reconciled_master "$temp_master"
