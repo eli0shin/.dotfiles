@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# macOS SMB automount configuration.
+# macOS NFSv4 automount configuration.
 
 AUTOMOUNTS_FILE="$SETTINGS_DIR/automounts.json"
 AUTOMOUNT_MASTER_FILE="${AUTOMOUNT_MASTER_FILE:-/etc/auto_master}"
@@ -94,7 +94,7 @@ cmd_automount() {
 
             {
                 echo "$AUTOMOUNT_MARKER"
-                jq -r --arg home "$HOME" '.shares | to_entries | sort_by(.key)[] | "\($home)/\(.key) -fstype=smbfs,soft \(.value)"' "$AUTOMOUNTS_FILE"
+                jq -r --arg home "$HOME" '.shares | to_entries | sort_by(.key)[] | "\($home)/\(.key) -fstype=nfs,rw,vers=4,tcp,hard,resvport,nfc,nosuid,nodev \(.value)"' "$AUTOMOUNTS_FILE"
             } > "$temp_map"
             _automount_unconfigured_smb_maps | sort -u > "$stale_maps_file"
             _automount_write_reconciled_master "$temp_master"
@@ -106,18 +106,18 @@ cmd_automount() {
             fi
             while IFS= read -r mountpoint; do
                 if [[ ! -d "$mountpoint" ]]; then
-                    info "Creating SMB automount point: $mountpoint"
+                    info "Creating NFSv4 automount point: $mountpoint"
                     sudo install -d -o root -g wheel -m 0755 "$mountpoint" || return 1
                     changed=true
                 fi
             done < <(jq -r --arg home "$HOME" '.shares | keys[] | "\($home)/\(.)"' "$AUTOMOUNTS_FILE")
             if ! cmp -s "$temp_map" "$AUTOMOUNT_MAP_FILE"; then
-                info "Installing SMB automount map: $AUTOMOUNT_MAP_FILE"
+                info "Installing NFSv4 automount map: $AUTOMOUNT_MAP_FILE"
                 sudo install -o root -g wheel -m 0644 "$temp_map" "$AUTOMOUNT_MAP_FILE" || return 1
                 changed=true
             fi
             if ! cmp -s "$temp_master" "$AUTOMOUNT_MASTER_FILE"; then
-                info "Reconciling direct SMB automount maps in $AUTOMOUNT_MASTER_FILE"
+                info "Reconciling direct automount maps in $AUTOMOUNT_MASTER_FILE"
                 sudo install -o root -g wheel -m 0644 "$temp_master" "$AUTOMOUNT_MASTER_FILE" || return 1
                 changed=true
             fi
@@ -130,7 +130,7 @@ cmd_automount() {
             if [[ "$changed" == true ]]; then
                 info "Reloading automount configuration"
                 sudo automount -vc || return 1
-                success "Configured SMB automounts"
+                success "Configured NFSv4 automounts"
             else
                 success "Automount configuration already current"
             fi
@@ -154,7 +154,7 @@ cmd_automount() {
             _automount_write_reconciled_master "$temp_master"
 
             if ! cmp -s "$temp_master" "$AUTOMOUNT_MASTER_FILE"; then
-                info "Removing SMB automount maps from $AUTOMOUNT_MASTER_FILE"
+                info "Removing managed automounts from $AUTOMOUNT_MASTER_FILE"
                 sudo install -o root -g wheel -m 0644 "$temp_master" "$AUTOMOUNT_MASTER_FILE" || return 1
                 changed=true
             fi
@@ -164,7 +164,7 @@ cmd_automount() {
                 changed=true
             done < "$stale_maps_file"
             if [[ -f "$AUTOMOUNT_MAP_FILE" ]] && grep -Fqx "$AUTOMOUNT_MARKER" "$AUTOMOUNT_MAP_FILE"; then
-                info "Removing SMB automount map: $AUTOMOUNT_MAP_FILE"
+                info "Removing managed automount map: $AUTOMOUNT_MAP_FILE"
                 sudo rm -f "$AUTOMOUNT_MAP_FILE" || return 1
                 changed=true
             fi

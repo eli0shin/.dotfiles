@@ -1,5 +1,5 @@
 {
   "shares": {
-    "NAS": "://guest:@nas.home.arpa/personal"
+    "NAS": "nas.home.arpa:/srv/data/personal"
   }
 }
