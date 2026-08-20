@@ -235,6 +235,32 @@ function createHarness() {
     );
   }
 
+  async function merge(): Promise<void> {
+    await withFakeTimer(() =>
+      handlers.get("tool_result")?.(
+        {
+          toolName: "bash",
+          input: { command: "gh pr merge --squash --delete-branch" },
+          content: [{ type: "text", text: "Merged pull request\n" }],
+        },
+        ctx,
+      ),
+    );
+  }
+
+  async function rerun(): Promise<void> {
+    await withFakeTimer(() =>
+      handlers.get("tool_result")?.(
+        {
+          toolName: "bash",
+          input: { command: "gh run rerun --failed" },
+          content: [{ type: "text", text: "Requested rerun\n" }],
+        },
+        ctx,
+      ),
+    );
+  }
+
   async function runPoll(): Promise<void> {
     assert.ok(intervalCallback, "polling interval was not registered");
     await withFakeTimer(() => intervalCallback?.());
@@ -314,6 +340,8 @@ function createHarness() {
     ctx,
     activate,
     push,
+    merge,
+    rerun,
     runPoll,
     startSession,
     settleAgent,
@@ -427,6 +455,7 @@ test("status identity omits the current repository and all organization prefixes
 test("status line prefixes only PRs from other repositories", async () => {
   const harness = createHarness();
   await harness.startSession();
+  await harness.push();
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
 
   await harness.activate(104);
@@ -446,6 +475,7 @@ test("associated workers publish ordinary PR watch membership regardless of loca
 
   try {
     await harness.startSession();
+    await harness.push();
     assert.equal(process.env.PI_PARENT_ORCHESTRATION_SESSION_ID, undefined);
     assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
     assert.deepEqual(
@@ -472,6 +502,7 @@ test("ordinary sessions do not publish worker snapshots", async () => {
   const harness = createHarness();
   delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
   await harness.startSession();
+  await harness.push();
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
   await harness.activate(104);
 
@@ -1000,6 +1031,53 @@ test("SHA watch follows the remote branch tip when local HEAD is stale", async (
     ),
     true,
   );
+});
+
+test("session start alone does not start SHA watch", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("gh pr merge starts SHA watch for the current branch", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+  await harness.merge();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+});
+
+test("gh run rerun starts SHA watch when nothing is being watched", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+  await harness.rerun();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+});
+
+test("gh run rerun does not add a second watch when a PR is already watched", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  harness.setCurrentSha("abc104");
+  await harness.startSession();
+  await harness.activate(104);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+  await harness.rerun();
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
 });
 
 test("ordinary SHA watch resolves a stale saved SHA on session resume", async () => {

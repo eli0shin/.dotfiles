@@ -1441,6 +1441,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     return /(^|[;&|\n]\s*)git\s+push\b/.test(command);
   }
 
+  function isPrMerge(command: string): boolean {
+    return /(^|[;&|\n]\s*)gh\s+pr\s+merge\b/.test(command);
+  }
+
+  function isRunRerun(command: string): boolean {
+    return /(^|[;&|\n]\s*)gh\s+run\s+rerun\b/.test(command);
+  }
+
   pi.on("session_start", async (event, ctx) => {
     state = initialState();
     deliveryAttemptedId = undefined;
@@ -1506,13 +1514,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (!shaSync.changed && !shaSync.error && state.watchedSha && !(await baselineCurrentShaState(ctx))) {
         shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
       }
-    } else {
-      const repo = await ensureCurrentRepo(ctx);
-      if (!repo) {
-        shaSyncError = "Could not resolve the current GitHub repository";
-      } else if (!(await watchCurrentBranch(ctx, repo, "session branch", false))) {
-        shaSyncError = state.lastError;
-      }
     }
 
     if (shaSyncError) reconciliationErrors.unshift(shaSyncError);
@@ -1557,7 +1558,21 @@ export default function prWatch(pi: ExtensionAPI): void {
       return;
     }
 
-    if (isGitPush(command)) await discover(ctx, "git push", false);
+    if (isGitPush(command)) {
+      await discover(ctx, "git push", false);
+      return;
+    }
+
+    if (isPrMerge(command)) {
+      await discover(ctx, "gh pr merge", false);
+      return;
+    }
+
+    // A rerun on an already-watched PR or SHA is caught by polling (the run
+    // attempt/check keys change), so only a rerun with no active watch needs to
+    // start one. discover picks PR watch when the active branch has an open PR
+    // and otherwise starts SHA watch.
+    if (isRunRerun(command) && !hasTargets()) await discover(ctx, "gh run rerun", false);
   });
 
   pi.registerCommand("pr-watch", {
