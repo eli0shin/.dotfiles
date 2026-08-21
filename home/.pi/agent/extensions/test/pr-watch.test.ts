@@ -40,7 +40,9 @@ function createHarness() {
   const savedStates: any[] = [];
   const notifications: string[] = [];
   const statuses: Array<string | undefined> = [];
+  const issueComments = new Map<number, unknown[]>();
   const reviews = new Map<number, unknown[]>();
+  const reviewComments = new Map<number, unknown[]>();
   const checks = new Map<number, unknown[]>();
   const runs: unknown[] = [];
   const unavailablePrs = new Set<number>();
@@ -79,6 +81,8 @@ function createHarness() {
   let localSha = "main-sha";
   let remoteBranchSha = "main-sha";
   let repoAvailable = true;
+  let selfLoginAvailable = true;
+  let activitiesAvailable = true;
   let shaAvailable = true;
   let branchTipAvailable = true;
   let runsAvailable = true;
@@ -143,7 +147,9 @@ function createHarness() {
         return { code: 0, stdout: JSON.stringify(checks.get(prNumberFromArgs(args) ?? -1) ?? []), stderr: "" };
       }
       if (command === "gh" && args[0] === "api" && args[1] === "user") {
-        return { code: 0, stdout: JSON.stringify({ login: "eli0shin" }), stderr: "" };
+        return selfLoginAvailable
+          ? { code: 0, stdout: JSON.stringify({ login: "eli0shin" }), stderr: "" }
+          : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "api" && args[1]?.startsWith("repos/eli0shin/repos/commits/")) {
         return shaAvailable && branchTipAvailable
@@ -151,8 +157,14 @@ function createHarness() {
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "api") {
-        const number = Number(args[1]?.match(/\/(\d+)\//)?.[1]);
-        const payload = args[1]?.includes("/reviews") ? reviews.get(number) ?? [] : [];
+        if (!activitiesAvailable) return { code: 1, stdout: "", stderr: "temporary failure" };
+        const endpoint = args[1] ?? "";
+        const number = Number(endpoint.match(/\/(\d+)\//)?.[1]);
+        const payload = endpoint.includes("/issues/")
+          ? issueComments.get(number) ?? []
+          : endpoint.includes("/reviews")
+            ? reviews.get(number) ?? []
+            : reviewComments.get(number) ?? [];
         return { code: 0, stdout: JSON.stringify(payload), stderr: "" };
       }
       if (command === "git" && args[0] === "branch" && args[1] === "--show-current") {
@@ -219,6 +231,17 @@ function createHarness() {
         },
         ctx,
       ),
+    );
+  }
+
+  async function recordGhOutput(output: string): Promise<void> {
+    await handlers.get("tool_result")?.(
+      {
+        toolName: "bash",
+        input: { command: "gh api /user" },
+        content: [{ type: "text", text: output }],
+      },
+      ctx,
     );
   }
 
@@ -332,13 +355,16 @@ function createHarness() {
     savedStates,
     notifications,
     statuses,
+    issueComments,
     reviews,
+    reviewComments,
     checks,
     runs,
     prs,
     unavailablePrs,
     ctx,
     activate,
+    recordGhOutput,
     push,
     merge,
     rerun,
@@ -373,6 +399,12 @@ function createHarness() {
     setCurrentTargetAvailable(value: boolean) {
       repoAvailable = value;
       shaAvailable = value;
+    },
+    setSelfLoginAvailable(value: boolean) {
+      selfLoginAvailable = value;
+    },
+    setActivitiesAvailable(value: boolean) {
+      activitiesAvailable = value;
     },
     setBranchTipAvailable(value: boolean) {
       branchTipAvailable = value;
@@ -1525,6 +1557,71 @@ test("bot-authored reviews trigger feedback for the correct branch", async () =>
   assert.match(harness.sentMessages[0] ?? "", /review:4689083037 by review-bot\[bot\]/);
 });
 
+test("pending author feedback remains deliverable after a later gh output contains its id", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  harness.setIdle(false);
+  harness.reviews.set(104, [{ id: 77, user: { login: "eli0shin", type: "User" } }]);
+
+  await harness.runPoll();
+  await harness.recordGhOutput("review id: 77");
+  await harness.runPoll();
+  harness.setIdle(true);
+  await harness.settleAgent();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /review:77 by eli0shin/);
+});
+
+test("reviewer pending self-feedback is discarded when the next activity refresh fails", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.authorLogin = "another-author";
+  await harness.activate(104);
+  harness.setIdle(false);
+  harness.setSelfLoginAvailable(false);
+  harness.reviews.set(104, [{ id: 77, user: { login: "eli0shin", type: "User" } }]);
+  await harness.runPoll();
+  assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates[0]?.feedbackActivities.length, 1);
+
+  harness.setSelfLoginAvailable(true);
+  harness.setActivitiesAvailable(false);
+  await harness.runPoll();
+  harness.setIdle(true);
+  await harness.settleAgent();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 0);
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+});
+
+test("reviewer notifications exclude the reviewer's own comments and reviews", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.authorLogin = "another-author";
+  await harness.activate(104);
+  harness.issueComments.set(104, [
+    { id: 11, user: { login: "eli0shin", type: "User" } },
+    { id: 12, user: { login: "another-reviewer", type: "User" } },
+  ]);
+  harness.reviews.set(104, [
+    { id: 21, user: { login: "eli0shin", type: "User" } },
+    { id: 22, user: { login: "another-reviewer", type: "User" } },
+  ]);
+  harness.reviewComments.set(104, [
+    { id: 31, user: { login: "eli0shin", type: "User" } },
+    { id: 32, user: { login: "another-reviewer", type: "User" } },
+  ]);
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /issue-comment:12 by another-reviewer/);
+  assert.match(harness.sentMessages[0] ?? "", /review:22 by another-reviewer/);
+  assert.match(harness.sentMessages[0] ?? "", /review-comment:32 by another-reviewer/);
+  assert.doesNotMatch(harness.sentMessages[0] ?? "", /(?:issue-comment:11|review:21|review-comment:31)/);
+});
+
 test("manual removal restores the session branch SHA while other worktree PRs remain", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("remove-collapse-command");
@@ -2097,6 +2194,49 @@ for (const reason of ["reload", "resume"]) {
     }
   });
 }
+
+test("reviewer restart discards persisted self-authored feedback when activity refresh fails", async () => {
+  const harness = createHarness();
+  const pr = harness.prs.get(104)!;
+  pr.authorLogin = "another-author";
+  harness.setActivitiesAvailable(false);
+  const pendingPrUpdate = {
+    pr: {
+      repo: "eli0shin/repos",
+      number: pr.number,
+      url: pr.url,
+      branch: pr.branch,
+      headSha: pr.headSha,
+      authorLogin: pr.authorLogin,
+    },
+    feedbackActivities: [{ id: "review:77", authorLogin: "eli0shin" }],
+  };
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [{ pr: pendingPrUpdate.pr, seenActivityIds: [] }],
+        pendingPrUpdates: [pendingPrUpdate],
+        pendingDelivery: {
+          id: "persisted-self-feedback",
+          message: "stale self-authored feedback",
+          pendingPrUpdates: [pendingPrUpdate],
+        },
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  await harness.startSession();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 0);
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+  assert.equal(harness.savedStates.at(-1)?.pendingDelivery, undefined);
+});
 
 test("version 4 paused pending state survives session restart", async () => {
   const harness = createHarness();

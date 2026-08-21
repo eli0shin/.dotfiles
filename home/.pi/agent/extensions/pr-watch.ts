@@ -931,7 +931,9 @@ export default function prWatch(pi: ExtensionAPI): void {
         watched.notifiedChecksKey = checksNotifiable ? checksKey : undefined;
       }
     }
-    watched.seenActivityIds = ((await fetchActivities(watched, ctx)) ?? []).map((activity) => activity.id);
+    const activities = await fetchActivities(watched, ctx);
+    watched.seenActivityIds = (activities ?? []).map((activity) => activity.id);
+    reconcilePendingFeedback(watched, activities);
   }
 
   async function baselineCurrentShaState(ctx: ExtensionContext): Promise<boolean> {
@@ -976,10 +978,38 @@ export default function prWatch(pi: ExtensionAPI): void {
     return (activity.author ?? activity.user)?.login;
   }
 
-  function isSuppressedSelfActivity(activity: TrackedActivity): boolean {
+  function isIgnoredReviewerSelfActivity(watched: WatchedPrState, activity: TrackedActivity): boolean {
+    return (
+      Boolean(state.selfLogin) &&
+      activity.authorLogin === state.selfLogin &&
+      !state.orchestrationSessionId &&
+      prWatchMode(watched) === "reviewer"
+    );
+  }
+
+  function isSuppressedSelfActivity(watched: WatchedPrState, activity: TrackedActivity): boolean {
     if (!state.selfLogin || activity.authorLogin !== state.selfLogin) return false;
+    if (isIgnoredReviewerSelfActivity(watched, activity)) return true;
     const bareId = bareActivityId(activity.id);
     return Boolean(bareId) && state.recentGhOutputs.some((output) => output.includes(bareId));
+  }
+
+  function reconcilePendingFeedback(watched: WatchedPrState, currentActivities?: TrackedActivity[]): void {
+    const pending = state.pendingPrUpdates.find(
+      (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
+    );
+    if (!pending) return;
+
+    const currentActivityIds = currentActivities
+      ? new Set(currentActivities.map((activity) => activity.id))
+      : undefined;
+    pending.pr = structuredClone(watched.pr);
+    pending.feedbackActivities = pending.feedbackActivities.filter(
+      (activity) =>
+        !isIgnoredReviewerSelfActivity(watched, activity) &&
+        (!currentActivityIds || currentActivityIds.has(activity.id)),
+    );
+    removeEmptyPendingPr(watched.pr);
   }
 
   function formatActivityList(activities: TrackedActivity[]): string {
@@ -1326,23 +1356,16 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     const currentActivities = await fetchActivities(watched, ctx);
-    if (!currentActivities) return { addedCount };
-    const currentActivityIds = currentActivities.map((activity) => activity.id);
-    const currentActivityIdSet = new Set(currentActivityIds);
-    const existingPending = state.pendingPrUpdates.find(
-      (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(watched.pr),
-    );
-    if (existingPending) {
-      existingPending.pr = structuredClone(watched.pr);
-      existingPending.feedbackActivities = existingPending.feedbackActivities.filter((activity) =>
-        currentActivityIdSet.has(activity.id),
-      );
-      removeEmptyPendingPr(watched.pr);
+    if (!currentActivities) {
+      reconcilePendingFeedback(watched);
+      return { addedCount };
     }
+    const currentActivityIds = currentActivities.map((activity) => activity.id);
+    reconcilePendingFeedback(watched, currentActivities);
 
     const seen = new Set(watched.seenActivityIds);
     const newActivities = currentActivities.filter((activity) => !seen.has(activity.id));
-    const triggeringActivities = newActivities.filter((activity) => !isSuppressedSelfActivity(activity));
+    const triggeringActivities = newActivities.filter((activity) => !isSuppressedSelfActivity(watched, activity));
     if (triggeringActivities.length > 0) {
       const pending = pendingPr(watched);
       const pendingIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
