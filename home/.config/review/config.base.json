@@ -1,0 +1,36 @@
+{
+  "reviewCommand": "pi \"review the changes in this pr and report your findings to me: $REVIEW_PR_URL\"",
+  "keyBindings": {
+    "selectPrevious": [
+      "k",
+      "up"
+    ],
+    "selectNext": [
+      "j",
+      "down"
+    ],
+    "openDiff": [
+      "d",
+      "enter"
+    ],
+    "runReviewCommand": [
+      "c"
+    ],
+    "composeReviewSubmission": [
+      "s"
+    ],
+    "refresh": [
+      "r"
+    ],
+    "showHelp": [
+      "?"
+    ],
+    "quit": [
+      "q"
+    ]
+  },
+  "config": {
+    "updateBehavior": "auto",
+    "updateCheckIntervalHours": 24
+  }
+}

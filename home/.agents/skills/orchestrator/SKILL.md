@@ -16,7 +16,7 @@ Act as an **event-driven control plane**. Coordinate workers and reviewers. One 
 Never implement ticket changes yourself. After spawning a worker:
 
 - Never block the orchestration loop with `gh pr watch`, `gh run watch`, repeated `sleep`/status loops, or manual watching of GitHub, CI, worker sessions, or worker worktrees. One-shot state retrieval is not polling: use `gh pr list`, `gh pr view`, `gh run view`, and equivalent metadata queries whenever needed to reconcile state, respond to the user, or direct a review.
-- Never read a worker diff, changed file, or worker worktree yourself; delegate change inspection to `run_code_review`. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts.
+- Never read a worker diff, changed file, or worker worktree yourself; delegate change inspection to `run_code_review`. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
 - Never edit, commit, or push a worker branch, and never send manual instructions into a healthy worker's tmux session.
 
 If information is missing, ask for it in a concise PR comment, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.

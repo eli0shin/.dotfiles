@@ -17,6 +17,8 @@ SYMLINKS=(
     "$HOME/.config/git"
     "$HOME/.config/omf"
     "$HOME/.config/opencode"
+    "$HOME/.config/ghui"
+    "$HOME/.config/review"
     "$HOME/.homebrew"
     "$HOME/.agents"
     "$HOME/.claude"
