@@ -55,6 +55,12 @@ cmd-shift-j = "move --boundaries all-monitors-outer-frame down"
 cmd-shift-k = "move --boundaries all-monitors-outer-frame up"
 cmd-shift-l = "move --boundaries all-monitors-outer-frame right"
 
+# Resize the focused window without entering a separate mode.
+cmd-alt-h = "resize width -50"
+cmd-alt-j = "resize height +50"
+cmd-alt-k = "resize height -50"
+cmd-alt-l = "resize width +50"
+
 # Direct workspace navigation. Zero selects workspace 10.
 cmd-1 = "workspace 1"
 cmd-2 = "workspace 2"
