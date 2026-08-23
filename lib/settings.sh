@@ -4,6 +4,7 @@
 PMSET_FILE="$SETTINGS_DIR/pmset.json"
 DEFAULTS_FILE="$SETTINGS_DIR/defaults.json"
 KEYBOARD_FILE="$SETTINGS_DIR/keyboard.json"
+SYMBOLIC_HOTKEYS_FILE="$SETTINGS_DIR/symbolic-hotkeys.json"
 
 cmd_pmset() {
     local subcmd="${1:-apply}"
@@ -80,6 +81,114 @@ _defaults_write() {
     gtimeout 3 defaults write "$@" 2>/dev/null
 }
 
+_defaults_read_object() {
+    gtimeout 3 defaults export "$1" - 2>/dev/null \
+        | plutil -extract "$2" json -o - - 2>/dev/null \
+        | jq -cS '.' 2>/dev/null
+}
+
+_defaults_write_object() {
+    local domain="$1"
+    local key="$2"
+    local value="$3"
+    local args=()
+    local entry
+
+    while IFS= read -r entry; do
+        local entry_key entry_type entry_value
+        entry_key=$(jq -r '.key' <<< "$entry")
+        entry_type=$(jq -r '.value | type' <<< "$entry")
+        entry_value=$(jq -r '.value' <<< "$entry")
+
+        case "$entry_type" in
+            string)
+                args+=("$entry_key" "$entry_value")
+                ;;
+            boolean)
+                args+=("$entry_key" -bool "$entry_value")
+                ;;
+            number)
+                if [[ "$entry_value" =~ ^-?[0-9]+$ ]]; then
+                    args+=("$entry_key" -int "$entry_value")
+                else
+                    args+=("$entry_key" -float "$entry_value")
+                fi
+                ;;
+            *)
+                warn "Unsupported nested defaults value: $domain $key.$entry_key"
+                return 1
+                ;;
+        esac
+    done < <(jq -c 'to_entries[]' <<< "$value")
+
+    _defaults_write "$domain" "$key" -dict "${args[@]}"
+}
+
+_apply_symbolic_hotkeys() {
+    if [[ "$(uname -s)" != "Darwin" || ! -f "$SYMBOLIC_HOTKEYS_FILE" ]]; then
+        return 0
+    fi
+
+    local plist
+    plist=$(mktemp)
+    if ! defaults export com.apple.symbolichotkeys "$plist" 2>/dev/null; then
+        rm -f "$plist"
+        error "Failed to read macOS symbolic hotkeys"
+        return 1
+    fi
+
+    local changed=false
+    local hotkey_id
+    while IFS= read -r hotkey_id; do
+        local path="AppleSymbolicHotKeys.$hotkey_id.enabled"
+        local enabled
+        enabled=$(plutil -extract "$path" raw -o - "$plist" 2>/dev/null || true)
+
+        if [[ "$enabled" == "false" ]]; then
+            continue
+        fi
+
+        if [[ -n "$enabled" ]]; then
+            plutil -replace "$path" -bool false "$plist"
+        elif plutil -extract "AppleSymbolicHotKeys.$hotkey_id" json -o - "$plist" >/dev/null 2>&1; then
+            plutil -insert "$path" -bool false "$plist"
+        else
+            plutil -insert "AppleSymbolicHotKeys.$hotkey_id" -json '{"enabled":false}' "$plist"
+        fi
+        changed=true
+    done < <(jq -r '.disabled[]' "$SYMBOLIC_HOTKEYS_FILE")
+
+    if [[ "$changed" == true ]]; then
+        info "Disabling conflicting macOS shortcuts..."
+        if ! defaults import com.apple.symbolichotkeys "$plist" 2>/dev/null; then
+            rm -f "$plist"
+            error "Failed to update macOS symbolic hotkeys"
+            return 1
+        fi
+    fi
+
+    # Writing the plist does not update the live system hotkey registry.
+    # activateSettings is the macOS mechanism that applies symbolic hotkeys
+    # without a logout or restart.
+    local activate_settings="/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
+    defaults read com.apple.symbolichotkeys.plist >/dev/null 2>&1 || true
+    if [[ -x "$activate_settings" ]]; then
+        if ! "$activate_settings" -u; then
+            rm -f "$plist"
+            error "Failed to activate macOS symbolic hotkeys"
+            return 1
+        fi
+    else
+        killall SystemUIServer 2>/dev/null || true
+    fi
+
+    if [[ "$changed" == true ]]; then
+        success "Disabled conflicting macOS shortcuts"
+    fi
+
+    rm -f "$plist"
+}
+
 _get_app_for_domain() {
     case "$1" in
         com.apple.finder) echo "Finder" ;;
@@ -121,15 +230,22 @@ cmd_defaults() {
                     value_type=$(jq -r --arg d "$domain" --arg k "$key" '.[$d][$k] | type' "$DEFAULTS_FILE")
 
                     # Get current value (with timeout to handle corrupt containers)
-                    current=$(_defaults_read "$domain" "$key")
-                    if [[ $? -ne 0 ]] || [[ -z "$current" ]]; then
+                    local read_succeeded=true
+                    if [[ "$value_type" == "object" ]]; then
+                        current=$(_defaults_read_object "$domain" "$key") || read_succeeded=false
+                    else
+                        current=$(_defaults_read "$domain" "$key") || read_succeeded=false
+                    fi
+                    if [[ "$read_succeeded" == false || -z "$current" ]]; then
                         current="__NOT_SET__"
                     fi
 
-                    # Convert JSON booleans to defaults format (1/0)
+                    # Convert JSON values to a stable defaults representation.
                     local expected="$value"
                     if [[ "$value_type" == "boolean" ]]; then
                         [[ "$value" == "true" ]] && expected="1" || expected="0"
+                    elif [[ "$value_type" == "object" ]]; then
+                        expected=$(jq -cS '.' <<< "$value")
                     fi
 
                     if [[ "$current" == "$expected" ]]; then
@@ -145,11 +261,14 @@ cmd_defaults() {
                                 ;;
                             number)
                                 # Check if it's an integer or float
-                                if [[ "$value" =~ ^[0-9]+$ ]]; then
+                                if [[ "$value" =~ ^-?[0-9]+$ ]]; then
                                     _defaults_write "$domain" "$key" -int "$value"
                                 else
                                     _defaults_write "$domain" "$key" -float "$value"
                                 fi
+                                ;;
+                            object)
+                                _defaults_write_object "$domain" "$key" "$value"
                                 ;;
                             *)
                                 _defaults_write "$domain" "$key" -string "$value"
@@ -167,6 +286,8 @@ cmd_defaults() {
                     fi
                 done <<< "$keys"
             done <<< "$domains"
+
+            _apply_symbolic_hotkeys || return 1
 
             # Restart affected apps
             if [[ ${#apps_to_restart[@]} -gt 0 ]]; then

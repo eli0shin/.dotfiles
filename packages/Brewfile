@@ -3,6 +3,7 @@ tap "nikitabobko/tap", trusted: true
 tap "hashicorp/tap", trusted: true
 tap "sst/tap", trusted: true
 tap "jnsahaj/lumen", trusted: true
+tap "FelixKratz/formulae", trusted: true
 
 brew "ast-grep"
 brew "bash"
@@ -72,11 +73,12 @@ if OS.mac?
   brew "terminal-notifier"
   brew "pngpaste"
   brew "nginx", restart_service: :changed
+  brew "felixkratz/formulae/sketchybar"
 
   cask "claude"
   cask "chatgpt"
   cask "nkzw-tech/tap/codiff"
-  cask "amethyst"
+  cask "aerospace"
   cask "ghostty"
   cask "mitmproxy"
   cask "opencode-desktop"

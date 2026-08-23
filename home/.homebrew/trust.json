@@ -2,6 +2,7 @@
   "trustedtaps": [
     "anomalyco/tap",
     "atlassian/acli",
+    "felixkratz/formulae",
     "hashicorp/tap",
     "https://github.com/anomalyco/homebrew-tap.git",
     "jnsahaj/lumen",
@@ -13,9 +14,11 @@
     "tilt-dev/tap"
   ],
   "trustedformulae": [
-    "datadog/lapdog/lapdog"
+    "datadog/lapdog/lapdog",
+    "felixkratz/formulae/sketchybar"
   ],
   "trustedcasks": [
+    "nikitabobko/tap/aerospace",
     "nkzw-tech/tap/codiff"
   ]
 }

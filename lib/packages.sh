@@ -33,6 +33,23 @@ _ensure_package_managers() {
     brew trust hashicorp/tap >/dev/null 2>&1 || true
 }
 
+_remove_conflicting_macos_window_managers() {
+    if [[ "$(uname -s)" != "Darwin" ]] || ! brew list --cask amethyst >/dev/null 2>&1; then
+        return 0
+    fi
+
+    info "Removing Amethyst before installing AeroSpace..."
+    osascript -e 'tell application "Amethyst" to quit' 2>/dev/null || true
+    osascript -e 'tell application "System Events" to delete login item "Amethyst"' 2>/dev/null || true
+
+    if brew uninstall --cask amethyst; then
+        success "Removed Amethyst (configuration preserved)"
+    else
+        error "Failed to remove Amethyst; refusing to install a second window manager"
+        return 1
+    fi
+}
+
 _ensure_bash_packages_file() {
     local file="$1"
     if [[ ! -f "$file" ]]; then
@@ -505,6 +522,7 @@ cmd_package() {
             ;;
         install)
             _ensure_package_managers
+            _remove_conflicting_macos_window_managers || return 1
 
             local profile
             profile=$(_get_profile)

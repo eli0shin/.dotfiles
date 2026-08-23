@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "${1:-}" == "--toggle" ]]; then
+    launchctl kill SIGUSR1 "gui/$(id -u)/com.elioshinsky.app-launcher"
+    exit 0
+fi
+
+source_dir="$HOME/.local/share/app-launcher"
+binary_dir="$HOME/.local/libexec"
+binary="$binary_dir/app-launcher"
+needs_build=false
+
+if [[ ! -x "$binary" ]]; then
+    needs_build=true
+elif find "$source_dir/Sources" "$source_dir/Tests" -type f -newer "$binary" -print -quit | grep -q .; then
+    needs_build=true
+fi
+
+if [[ "$needs_build" == true ]]; then
+    build_dir=$(mktemp -d)
+    trap 'rm -rf "$build_dir"' EXIT
+    mkdir -p "$binary_dir"
+
+    xcrun swiftc \
+        "$source_dir/Sources/Matcher.swift" \
+        "$source_dir/Tests/MatcherTests.swift" \
+        -o "$build_dir/matcher-tests"
+    "$build_dir/matcher-tests"
+
+    xcrun swiftc -O -whole-module-optimization \
+        "$source_dir/Sources/Matcher.swift" \
+        "$source_dir/Sources/main.swift" \
+        -framework AppKit \
+        -o "$build_dir/app-launcher"
+    mv "$build_dir/app-launcher" "$binary"
+fi
+
+if [[ "${1:-}" == "--build" ]]; then
+    exit 0
+fi
+
+exec "$binary"

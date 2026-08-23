@@ -48,14 +48,12 @@ clipboard-read = allow
 window-padding-x = 0
 window-padding-y = 0
 window-padding-balance = true
+window-decoration = false
 
 # Cursor
 cursor-style = block
 cursor-style-blink = false
 shell-integration-features = no-cursor
-
-# Keybindings
-keybind = cmd+enter=toggle_fullscreen
 
 # Don't prompt before closing
 confirm-close-surface = false

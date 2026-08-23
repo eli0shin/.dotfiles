@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "label": "com.elioshinsky.app-launcher",
+    "script": "~/.local/bin/app-launcher",
+    "run_at_load": true,
+    "stdout_log": "~/Library/Logs/dotfiles/app-launcher.log",
+    "stderr_log": "~/Library/Logs/dotfiles/app-launcher.err.log"
+  }
+]

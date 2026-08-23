@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/sketchybar}"
+PLUGIN_DIR="$CONFIG_DIR/plugins"
+
+# Fill the built-in display's notch area. AeroSpace reserves the same height
+# on external displays so this bar remains portable.
+sketchybar --bar \
+    position=top \
+    height=32 \
+    notch_display_height=32 \
+    color=0xff1e1e1e \
+    border_width=0 \
+    corner_radius=0 \
+    blur_radius=0 \
+    margin=0 \
+    y_offset=0 \
+    padding_left=8 \
+    padding_right=0 \
+    shadow=off \
+    topmost=window \
+    sticky=on \
+    display=all
+
+sketchybar --remove '/space\..*/' 2>/dev/null || true
+sketchybar --remove workspace_observer 2>/dev/null || true
+sketchybar --remove clock 2>/dev/null || true
+sketchybar --add event aerospace_workspace_change
+
+for workspace in {1..10}; do
+    item="space.$workspace"
+    label="$workspace"
+    [[ "$workspace" == "10" ]] && label="0"
+
+    sketchybar --add item "$item" left \
+        --set "$item" \
+            width=20 \
+            padding_left=1 \
+            padding_right=1 \
+            icon.drawing=off \
+            label="$label" \
+            label.align=center \
+            label.width=20 \
+            label.font="Menlo:Regular:12.0" \
+            label.color=0xff686868 \
+            background.drawing=off \
+            click_script="$PLUGIN_DIR/aerospace-workspace.sh $workspace"
+done
+
+# One observer calculates all workspace states so AeroSpace is queried once per
+# update. Polling also catches windows that close on an unfocused workspace.
+sketchybar --add item workspace_observer left \
+    --set workspace_observer \
+        drawing=off \
+        update_freq=5 \
+        script="$PLUGIN_DIR/aerospace-workspace.sh" \
+    --subscribe workspace_observer aerospace_workspace_change system_woke
+
+sketchybar --add item clock right \
+    --set clock \
+        padding_left=8 \
+        padding_right=16 \
+        icon.drawing=off \
+        label.font="Menlo:Bold:12.0" \
+        label.color=0xff8f8f8f \
+        background.drawing=off \
+        update_freq=10 \
+        script="$PLUGIN_DIR/clock.sh" \
+    --subscribe clock system_woke
+
+sketchybar --update

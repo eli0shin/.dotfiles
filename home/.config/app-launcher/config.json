@@ -1,0 +1,16 @@
+{
+  "exclude": [
+    "About This Mac",
+    "Adobe*",
+    "AirPort Utility",
+    "Creative Cloud*",
+    "Home"
+  ],
+  "aliases": {
+    "Google Chrome": [
+      "chrome",
+      "browser",
+      "ch"
+    ]
+  }
+}

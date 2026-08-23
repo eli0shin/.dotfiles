@@ -1,0 +1,91 @@
+# Omarchy-style keyboard-first desktop for macOS.
+config-version = 2
+
+start-at-login = true
+auto-reload-config = true
+
+exec.env-vars.PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+exec-on-workspace-change = [
+    "/bin/bash",
+    "-c",
+    "sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE",
+]
+
+# Keep the layout tree predictable as windows open and close.
+enable-normalization-flatten-containers = true
+enable-normalization-opposite-orientation-for-nested-containers = true
+
+default-root-container-layout = "tiles"
+default-root-container-orientation = "auto"
+accordion-padding = 0
+
+# These workspaces remain available when they are empty.
+persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+
+# Hidden applications do not fit the workspace model.
+automatically-unhide-macos-hidden-apps = true
+
+# Follow keyboard focus when it crosses displays.
+on-focused-monitor-changed = ["move-mouse monitor-lazy-center"]
+focus-follows-mouse.enabled = false
+
+[gaps]
+inner.horizontal = 0
+inner.vertical = 0
+outer.left = 0
+outer.bottom = 0
+# The built-in display already reserves its notch area. External displays need
+# room for the same 32-point SketchyBar.
+outer.top = [{ monitor."built-in" = 0 }, 32]
+outer.right = 0
+
+[mode.main.binding]
+# AeroSpace owns the global launcher shortcut, as it does desktop navigation.
+cmd-space = "exec-and-forget $HOME/.local/bin/app-launcher --toggle"
+
+# Focus windows spatially, including across a second monitor.
+cmd-h = "focus --boundaries all-monitors-outer-frame left"
+cmd-j = "focus --boundaries all-monitors-outer-frame down"
+cmd-k = "focus --boundaries all-monitors-outer-frame up"
+cmd-l = "focus --boundaries all-monitors-outer-frame right"
+
+# Move windows through the same spatial model.
+cmd-shift-h = "move --boundaries all-monitors-outer-frame left"
+cmd-shift-j = "move --boundaries all-monitors-outer-frame down"
+cmd-shift-k = "move --boundaries all-monitors-outer-frame up"
+cmd-shift-l = "move --boundaries all-monitors-outer-frame right"
+
+# Direct workspace navigation. Zero selects workspace 10.
+cmd-1 = "workspace 1"
+cmd-2 = "workspace 2"
+cmd-3 = "workspace 3"
+cmd-4 = "workspace 4"
+cmd-5 = "workspace 5"
+cmd-6 = "workspace 6"
+cmd-7 = "workspace 7"
+cmd-8 = "workspace 8"
+cmd-9 = "workspace 9"
+cmd-0 = "workspace 10"
+
+# Move a window to a workspace and follow it.
+cmd-shift-1 = "move-node-to-workspace 1; workspace 1"
+cmd-shift-2 = "move-node-to-workspace 2; workspace 2"
+cmd-shift-3 = "move-node-to-workspace 3; workspace 3"
+cmd-shift-4 = "move-node-to-workspace 4; workspace 4"
+cmd-shift-5 = "move-node-to-workspace 5; workspace 5"
+cmd-shift-6 = "move-node-to-workspace 6; workspace 6"
+cmd-shift-7 = "move-node-to-workspace 7; workspace 7"
+cmd-shift-8 = "move-node-to-workspace 8; workspace 8"
+cmd-shift-9 = "move-node-to-workspace 9; workspace 9"
+cmd-shift-0 = "move-node-to-workspace 10; workspace 10"
+
+cmd-left = "workspace prev"
+cmd-right = "workspace next"
+
+# Zoom the focused tile without creating a macOS Space.
+cmd-alt-f = "fullscreen --no-outer-gaps"
+
+# The workspace bindings replace the native screenshot shortcuts.
+ctrl-shift-3 = "exec-and-forget screencapture -c"
+ctrl-shift-4 = "exec-and-forget screencapture -i -c"
+ctrl-shift-5 = "exec-and-forget open -a Screenshot"

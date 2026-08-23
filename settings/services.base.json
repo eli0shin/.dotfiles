@@ -1,1 +1,6 @@
-[]
+[
+  {
+    "name": "sketchybar",
+    "post_start": "sketchybar --reload"
+  }
+]

@@ -62,6 +62,9 @@ resize_mode = ""
 
 [ui]
 agent_panel_sort = "priority"
+sidebar_width = 48
+sidebar_min_width = 24
+sidebar_max_width = 72
 sidebar_start_collapsed = true
 sidebar_collapsed_mode = "hidden"
 pane_borders = false

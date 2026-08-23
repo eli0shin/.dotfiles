@@ -43,6 +43,7 @@ settings/keyboard.json
 settings/launch-agents.json
 settings/pmset.json
 settings/services.json
+settings/symbolic-hotkeys.json
 
 # Local config overrides
 home/.config/git/config.local

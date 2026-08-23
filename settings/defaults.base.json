@@ -15,7 +15,16 @@
     "NSNavPanelExpandedStateForSaveMode2": true,
     "PMPrintingExpandedStateForPrint": true,
     "PMPrintingExpandedStateForPrint2": true,
-    "NSDocumentSaveNewDocumentsToCloud": false
+    "NSDocumentSaveNewDocumentsToCloud": false,
+    "NSAutomaticWindowAnimationsEnabled": false,
+    "NSBrowserColumnAnimationSpeedMultiplier": 0,
+    "NSDocumentRevisionsWindowTransformAnimation": false,
+    "NSScrollAnimationEnabled": false,
+    "NSToolbarFullScreenAnimationDuration": 0,
+    "NSWindowResizeTime": 0.001,
+    "QLPanelAnimationDuration": 0,
+    "com.apple.SwiftUI.DisableSolarium": true,
+    "_HIHideMenuBar": true
   },
   "com.apple.finder": {
     "FXPreferredViewStyle": "Nlsv",
@@ -24,7 +33,8 @@
     "AppleShowAllFiles": true,
     "FXEnableExtensionChangeWarning": false,
     "_FXShowPosixPathInTitle": true,
-    "FXDefaultSearchScope": "SCcf"
+    "FXDefaultSearchScope": "SCcf",
+    "DisableAllAnimations": true
   },
   "com.apple.dock": {
     "tilesize": 37,
@@ -33,7 +43,11 @@
     "orientation": "right",
     "show-recents": false,
     "minimize-to-application": true,
-    "expose-animation-duration": 0.15
+    "autohide-delay": 0,
+    "autohide-time-modifier": 0,
+    "expose-animation-duration": 0,
+    "launchanim": false,
+    "workspaces-auto-swoosh": false
   },
   "com.apple.screencapture": {
     "location": "~/Desktop/Screenshots",
@@ -61,5 +75,10 @@
   },
   "com.apple.Accessibility": {
     "ReduceMotionEnabled": true
+  },
+  "com.google.Chrome": {
+    "NSUserKeyEquivalents": {
+      "Open Location…": "^l"
+    }
   }
 }
