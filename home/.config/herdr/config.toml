@@ -69,3 +69,6 @@ pane_scrollbars = false
 hide_tab_bar_when_single_tab = true
 tab_bar_position = "top"
 prompt_new_tab_name = false
+
+[ui.sound]
+enabled = false
