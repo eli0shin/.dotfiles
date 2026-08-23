@@ -11,19 +11,26 @@ accessibility-tree snapshots and compact `@eN` element refs.
 
 Install: `npm i -g agent-browser && agent-browser install`
 
+## Local browser rules
+
+These rules override the CLI-provided skills:
+
+- For authenticated tasks, use `agent-browser profiles` to find the Chrome profile, then start a named, isolated session with `--profile <name>`. This copies the profile to a temporary directory and does not control the visible Chrome window. Ask the user to select the profile when the choice is ambiguous.
+- Derive one stable session ID with `agent-browser session id --scope worktree --prefix <task>` and pass `--session <id>` on every browser command.
+- Work only in the session's active tab. Use `get url` and `snapshot -i` to inspect it.
+- **Never list tabs. Do not run `tab list`, including for diagnostics or recovery.** Open a new isolated session if the active tab cannot be recovered.
+- **Never use `--auto-connect` or `--cdp`.** They can attach to the user's visible, authenticated browser and disrupt it.
+
 ## Start here
 
-This file is a discovery stub, not the usage guide. Before running any
-`agent-browser` command, load the actual workflow content from the CLI:
+Before running any other `agent-browser` command, load the version-matched workflow content:
 
 ```bash
-agent-browser skills get core             # start here — workflows, common patterns, troubleshooting
-agent-browser skills get core --full      # include full command reference and templates
+agent-browser skills get core
+agent-browser skills get core --full      # only when the full command reference is necessary
 ```
 
-The CLI serves skill content that always matches the installed version,
-so instructions never go stale. The content in this stub cannot change
-between releases, which is why it just points at `skills get core`.
+Apply the local browser rules above if the CLI-provided content conflicts with them.
 
 ## Specialized skills
 
