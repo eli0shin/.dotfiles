@@ -85,9 +85,6 @@ cmd-shift-8 = "move-node-to-workspace 8; workspace 8"
 cmd-shift-9 = "move-node-to-workspace 9; workspace 9"
 cmd-shift-0 = "move-node-to-workspace 10; workspace 10"
 
-cmd-left = "workspace prev"
-cmd-right = "workspace next"
-
 # Zoom the focused tile without creating a macOS Space.
 cmd-alt-f = "fullscreen --no-outer-gaps"
 
