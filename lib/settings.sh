@@ -193,7 +193,7 @@ _get_app_for_domain() {
     case "$1" in
         com.apple.finder) echo "Finder" ;;
         com.apple.dock|com.apple.WindowManager) echo "Dock" ;;
-        com.apple.SystemUIServer) echo "SystemUIServer" ;;
+        com.apple.SystemUIServer|com.apple.desktopsettings.menubar) echo "SystemUIServer" ;;
         com.apple.screencapture) echo "SystemUIServer" ;;
         com.apple.menuextra.clock) echo "SystemUIServer" ;;
         *) echo "" ;;

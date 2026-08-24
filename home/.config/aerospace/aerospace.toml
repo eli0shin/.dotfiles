@@ -11,6 +11,15 @@ exec-on-workspace-change = [
     "sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE",
 ]
 
+# System Settings reports its main window as a dialog. Keep the application in
+# the tiling layout while AeroSpace continues to float normal dialog windows.
+on-window-detected = [
+    {
+        if = "test %{app-bundle-id} = com.apple.systempreferences",
+        run = "layout tiling",
+    },
+]
+
 # Keep the layout tree predictable as windows open and close.
 enable-normalization-flatten-containers = true
 enable-normalization-opposite-orientation-for-nested-containers = true

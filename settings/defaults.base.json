@@ -67,6 +67,9 @@
     "Clicking": true,
     "TrackpadThreeFingerDrag": true
   },
+  "com.apple.desktopsettings.menubar": {
+    "showOpaqueMenuBar": true
+  },
   "com.apple.menuextra.clock": {
     "Show24Hour": true,
     "ShowSeconds": false
