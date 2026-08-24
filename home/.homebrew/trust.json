@@ -9,13 +9,16 @@
     "launchdarkly/tap",
     "nikitabobko/tap",
     "opencode-ai/tap",
+    "osx-cross/arm",
+    "qmk/qmk",
     "shaharia-lab/tap",
     "sst/tap",
     "tilt-dev/tap"
   ],
   "trustedformulae": [
     "datadog/lapdog/lapdog",
-    "felixkratz/formulae/sketchybar"
+    "felixkratz/formulae/sketchybar",
+    "qmk/qmk/qmk"
   ],
   "trustedcasks": [
     "nikitabobko/tap/aerospace",

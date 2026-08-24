@@ -1,6 +1,9 @@
 # Personal packages - not for work computers
 # Install with: brew bundle --file=Brewfile.personal
 
+tap "qmk/qmk", trusted: true
+tap "osx-cross/arm", trusted: true
+
 if OS.mac?
 	mas "Developer", id: 640199958
 	mas "Grocery", id: 1195676848
@@ -14,6 +17,7 @@ if OS.mac?
 
 	brew "jdtls"
 	brew "openjdk"
+	brew "qmk/qmk/qmk"
 	brew "r"
 	brew "render"
 	brew "tailscale"
