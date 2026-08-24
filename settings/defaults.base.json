@@ -36,6 +36,11 @@
     "FXDefaultSearchScope": "SCcf",
     "DisableAllAnimations": true
   },
+  "com.apple.WindowManager": {
+    "StandardHideDesktopIcons": true,
+    "HideDesktop": true,
+    "EnableStandardClickToShowDesktop": false
+  },
   "com.apple.dock": {
     "tilesize": 37,
     "autohide": true,

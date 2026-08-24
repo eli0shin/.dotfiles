@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Neovim.app is only supported on macOS" >&2
+    exit 0
+fi
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
+SOURCE_DIR="$DOTFILES_DIR/home/.local/share/neovim-app/Sources"
+APP_DIR="$HOME/Applications/Neovim.app"
+BUNDLE_ID="com.elioshinsky.Neovim"
+APP_BUILD_VERSION="1"
+BUILD_STATE_FILE="$HOME/Library/Caches/$BUNDLE_ID/source.sha256"
+APPLY_ASSOCIATIONS=false
+[[ "${1:-}" == "--apply-associations" ]] && APPLY_ASSOCIATIONS=true
+
+for command in xcrun utiluti jq; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Required command not found: $command" >&2
+        exit 1
+    fi
+done
+
+build_dir=$(mktemp -d)
+trap 'rm -rf "$build_dir"' EXIT
+source_hash=$(
+    { printf '%s\n' "$APP_BUILD_VERSION"; shasum -a 256 "$SOURCE_DIR"/*.swift; } \
+        | shasum -a 256 \
+        | awk '{print $1}'
+)
+
+if [[ -f "$BUILD_STATE_FILE" ]] \
+    && [[ "$(<"$BUILD_STATE_FILE")" == "$source_hash" ]] \
+    && codesign --verify --deep --strict "$APP_DIR" >/dev/null 2>&1; then
+    echo "$APP_DIR is up to date"
+else
+    bundle="$build_dir/Neovim.app"
+    mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+
+xcrun swiftc -warnings-as-errors -O \
+    "$SOURCE_DIR/EditorLaunch.swift" \
+    "$SOURCE_DIR/main.swift" \
+    -framework AppKit \
+    -o "$bundle/Contents/MacOS/Neovim"
+
+cat > "$bundle/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>Neovim</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>txt</string><string>text</string><string>md</string><string>markdown</string>
+                <string>json</string><string>jsonc</string><string>yaml</string><string>yml</string>
+                <string>toml</string><string>xml</string><string>csv</string><string>log</string>
+                <string>conf</string><string>config</string><string>ini</string><string>env</string>
+                <string>c</string><string>h</string><string>cc</string><string>cpp</string><string>hpp</string>
+                <string>m</string><string>mm</string><string>swift</string><string>go</string><string>rs</string>
+                <string>py</string><string>rb</string><string>php</string><string>java</string><string>kt</string>
+                <string>kts</string><string>scala</string><string>js</string><string>jsx</string>
+                <string>ts</string><string>tsx</string><string>vue</string><string>svelte</string>
+                <string>sh</string><string>bash</string><string>zsh</string><string>fish</string>
+                <string>lua</string><string>vim</string><string>sql</string><string>html</string><string>htm</string>
+                <string>css</string><string>scss</string><string>sass</string><string>less</string>
+            </array>
+            <key>CFBundleTypeName</key>
+            <string>Text and source code</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+                <string>public.source-code</string>
+                <string>public.script</string>
+                <string>public.shell-script</string>
+                <string>public.json</string>
+                <string>public.yaml</string>
+                <string>public.xml</string>
+                <string>public.html</string>
+                <string>public.css</string>
+                <string>public.comma-separated-values-text</string>
+                <string>net.daringfireball.markdown</string>
+                <string>com.elioshinsky.neovim-source-code</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleExecutable</key>
+    <string>Neovim</string>
+    <key>CFBundleIconFile</key>
+    <string>Neovim.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.elioshinsky.Neovim</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Neovim</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Open text and code files in Neovim inside Ghostty.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.source-code</string></array>
+            <key>UTTypeDescription</key>
+            <string>Neovim source code</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.elioshinsky.neovim-source-code</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>jsonc</string><string>conf</string><string>env</string><string>go</string>
+                    <string>rs</string><string>kt</string><string>kts</string><string>scala</string>
+                    <string>jsx</string><string>vue</string><string>svelte</string><string>fish</string>
+                    <string>lua</string><string>vim</string><string>scss</string><string>sass</string><string>less</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>
+PLIST
+
+icon_source="$(brew --prefix neovim)/share/icons/hicolor/128x128/apps/nvim.png"
+if [[ -f "$icon_source" ]]; then
+    iconset="$build_dir/Neovim.iconset"
+    mkdir -p "$iconset"
+    for spec in "16:icon_16x16.png" "32:icon_16x16@2x.png" "32:icon_32x32.png" \
+        "64:icon_32x32@2x.png" "128:icon_128x128.png" "256:icon_128x128@2x.png" \
+        "256:icon_256x256.png" "512:icon_256x256@2x.png" "512:icon_512x512.png" \
+        "1024:icon_512x512@2x.png"; do
+        size=${spec%%:*}
+        filename=${spec#*:}
+        sips -z "$size" "$size" "$icon_source" --out "$iconset/$filename" >/dev/null
+    done
+    iconutil -c icns "$iconset" -o "$bundle/Contents/Resources/Neovim.icns"
+fi
+
+plutil -lint "$bundle/Contents/Info.plist" >/dev/null
+codesign --force --sign - --identifier "$BUNDLE_ID" "$bundle" >/dev/null
+mkdir -p "$HOME/Applications"
+rm -rf "$APP_DIR"
+mv "$bundle" "$APP_DIR"
+
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$lsregister" -f "$APP_DIR"
+mkdir -p "$(dirname "$BUILD_STATE_FILE")"
+printf '%s\n' "$source_hash" > "$BUILD_STATE_FILE"
+echo "Installed $APP_DIR"
+fi
+
+if [[ "$APPLY_ASSOCIATIONS" == true ]]; then
+    # macOS 26.4 and newer asks the user to confirm each distinct type change.
+    # Resolve and deduplicate extension types to avoid duplicate prompts.
+    extensions=(
+        txt text md markdown json jsonc yaml yml toml xml csv log conf config ini env
+        c h cc cpp hpp m mm swift go rs py rb php java kt kts scala
+        # macOS treats .ts as MPEG transport-stream video, so it cannot be
+        # assigned safely as TypeScript without also replacing the video handler.
+        js jsx tsx vue svelte sh bash zsh fish lua vim sql css scss sass less
+    )
+    types_list="$build_dir/types.txt"
+    # Do not assign public.source-code: public.html conforms to it, and macOS
+    # couples the HTML handler to the default browser.
+    printf '%s\n' public.plain-text public.script public.shell-script > "$types_list"
+    for extension in "${extensions[@]}"; do
+        utiluti get-uti "$extension" --show-dynamic >> "$types_list"
+    done
+
+    types_json="$build_dir/types.json"
+    sort -u "$types_list" \
+        | jq -Rn --arg bundle "$BUNDLE_ID" '[inputs | select(length > 0)] | map({key: ., value: $bundle}) | from_entries' \
+        > "$types_json"
+    plutil -convert xml1 "$types_json"
+
+    echo "macOS can ask you to confirm each default editor change. Choose Change for each prompt."
+    utiluti manage --type-file "$types_json"
+    echo "Registered Neovim as the default text/code editor"
+fi

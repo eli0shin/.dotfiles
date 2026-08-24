@@ -192,7 +192,7 @@ _apply_symbolic_hotkeys() {
 _get_app_for_domain() {
     case "$1" in
         com.apple.finder) echo "Finder" ;;
-        com.apple.dock) echo "Dock" ;;
+        com.apple.dock|com.apple.WindowManager) echo "Dock" ;;
         com.apple.SystemUIServer) echo "SystemUIServer" ;;
         com.apple.screencapture) echo "SystemUIServer" ;;
         com.apple.menuextra.clock) echo "SystemUIServer" ;;
@@ -288,6 +288,7 @@ cmd_defaults() {
             done <<< "$domains"
 
             _apply_symbolic_hotkeys || return 1
+            _apply_default_editor || return 1
 
             # Restart affected apps
             if [[ ${#apps_to_restart[@]} -gt 0 ]]; then
@@ -310,6 +311,7 @@ cmd_defaults() {
             else
                 echo "(no config file)"
             fi
+            _show_default_editor
             ;;
         *)
             error "Usage: dot defaults [apply|show]"
@@ -413,6 +415,30 @@ cmd_keyboard() {
 # =============================================================================
 # Commands
 # =============================================================================
+
+_apply_default_editor() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        return 0
+    fi
+    "$DOTFILES_DIR/home/.local/bin/install-neovim-app" --apply-associations
+}
+
+_show_default_editor() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        return 0
+    fi
+    if ! command -v utiluti >/dev/null 2>&1; then
+        warn "utiluti is not installed"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${BLUE}=== Default text editor ===${NC}"
+    utiluti type public.plain-text
+    echo ""
+    echo -e "${BLUE}=== Default Swift editor ===${NC}"
+    utiluti type "$(utiluti get-uti swift)"
+}
 
 _set_login_shell() {
     local fish_path

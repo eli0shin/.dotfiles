@@ -70,6 +70,7 @@ end
 
 if OS.mac?
   brew "mas"
+  brew "utiluti"
   brew "terminal-notifier"
   brew "pngpaste"
   brew "nginx", restart_service: :changed

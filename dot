@@ -72,7 +72,7 @@ Commands:
     list                    List configured LaunchAgents
   pmset [apply|show]  Manage power settings
   automount [apply|show|remove]  Manage macOS network automounts
-  defaults [apply|show]  Manage macOS defaults
+  defaults [apply|show]  Manage macOS defaults and file associations
   keyboard [apply|show]  Manage keyboard remappings
   backup            Backup existing configs before stow
   restore [--list|--merge]  Restore configs (--merge only restores extra files)
