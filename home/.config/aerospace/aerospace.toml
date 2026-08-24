@@ -55,6 +55,12 @@ cmd-shift-j = "move --boundaries all-monitors-outer-frame down"
 cmd-shift-k = "move --boundaries all-monitors-outer-frame up"
 cmd-shift-l = "move --boundaries all-monitors-outer-frame right"
 
+# Group windows into nested layouts.
+cmd-ctrl-h = "join-with left"
+cmd-ctrl-j = "join-with down"
+cmd-ctrl-k = "join-with up"
+cmd-ctrl-l = "join-with right"
+
 # Resize the focused window without entering a separate mode.
 cmd-alt-h = "resize width -50"
 cmd-alt-j = "resize height +50"
