@@ -54,8 +54,8 @@ cmd-space = "exec-and-forget $HOME/.local/bin/app-launcher --toggle"
 
 # Focus windows spatially, including across a second monitor.
 cmd-h = "focus --boundaries all-monitors-outer-frame left"
-cmd-j = "focus --boundaries all-monitors-outer-frame down"
-cmd-k = "focus --boundaries all-monitors-outer-frame up"
+cmd-alt-j = "focus --boundaries all-monitors-outer-frame down"
+cmd-alt-k = "focus --boundaries all-monitors-outer-frame up"
 cmd-l = "focus --boundaries all-monitors-outer-frame right"
 
 # Move windows through the same spatial model.
@@ -72,8 +72,6 @@ cmd-ctrl-l = "join-with right"
 
 # Resize the focused window without entering a separate mode.
 cmd-alt-h = "resize width -50"
-cmd-alt-j = "resize height +50"
-cmd-alt-k = "resize height -50"
 cmd-alt-l = "resize width +50"
 
 # Direct workspace navigation. Zero selects workspace 10.
