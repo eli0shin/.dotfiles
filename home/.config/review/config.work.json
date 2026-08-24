@@ -1,5 +1,5 @@
 {
   "github": {
-    "search": "is:pr author:@me state:open"
+    "search": "is:pr review-requested:@me state:open archived:false sort:updated-desc team-review-requested:fanatics-gaming/ffs-engineering"
   }
 }
