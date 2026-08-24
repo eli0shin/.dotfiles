@@ -25,6 +25,7 @@ set --global fish_color_autosuggestion 858585
 set -p fish_function_path ~/.config/fish/local_functions
 
 alias tmux "tmux -u"
+alias dvo "nvim +DiffviewOpen"
 
 set -gx NVM_DIR $HOME/.nvm
 set -gx NOOP_MODEL_API_KEY "*"
