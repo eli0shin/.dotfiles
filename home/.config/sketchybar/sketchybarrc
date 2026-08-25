@@ -50,13 +50,14 @@ for workspace in {1..10}; do
 done
 
 # One observer calculates all workspace states so AeroSpace is queried once per
-# update. Polling also catches windows that close on an unfocused workspace.
+# update. Window events provide immediate updates; polling is a fallback for
+# AeroSpace-only occupancy changes that macOS does not report.
 sketchybar --add item workspace_observer left \
     --set workspace_observer \
         drawing=off \
         update_freq=5 \
         script="$PLUGIN_DIR/aerospace-workspace.sh" \
-    --subscribe workspace_observer aerospace_workspace_change system_woke
+    --subscribe workspace_observer aerospace_workspace_change space_windows_change system_woke
 
 sketchybar --add item clock right \
     --set clock \
