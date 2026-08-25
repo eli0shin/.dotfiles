@@ -127,5 +127,11 @@
     "command": "artifact",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/artifacts/main/apps/published-artifact/install.sh | bash",
     "update": "curl -fsSL https://raw.githubusercontent.com/eli0shin/artifacts/main/apps/published-artifact/install.sh | bash"
+  },
+  {
+    "command": "gh-dash",
+    "check": "gh extension list | grep -q 'dlvhdr/gh-dash'",
+    "install": "gh extension install dlvhdr/gh-dash",
+    "update": "gh extension upgrade dash"
   }
 ]
