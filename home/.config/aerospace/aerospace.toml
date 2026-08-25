@@ -64,6 +64,9 @@ cmd-shift-j = "move --boundaries all-monitors-outer-frame down"
 cmd-shift-k = "move --boundaries all-monitors-outer-frame up"
 cmd-shift-l = "move --boundaries all-monitors-outer-frame right"
 
+# Correct AeroSpace's automatic layout decision for the focused window.
+cmd-semicolon = "layout floating tiling"
+
 # Group windows into nested layouts.
 cmd-ctrl-h = "join-with left"
 cmd-ctrl-j = "join-with down"

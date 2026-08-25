@@ -43,3 +43,5 @@ end
 
 brew "mosh"
 brew "iperf3"
+
+cask "bitwarden"
