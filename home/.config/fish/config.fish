@@ -36,6 +36,10 @@ set -gx OPENCODE_ENABLE_EXA 1
 set -gx DD_TOKEN_STORAGE file
 set -gx HOMEBREW_NO_REQUIRE_TAP_TRUST 1
 
+if test -r "$HOME/.config/certs/homelab-local-ca.crt"
+    set -gx NODE_EXTRA_CA_CERTS "$HOME/.config/certs/homelab-local-ca.crt"
+end
+
 # Set turborepo remote cache token
 set -gx TURBO_TOKEN c2F2ZS11cy10dXJibw==
 

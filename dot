@@ -5,6 +5,8 @@ DOTFILES_DIR="${DOTFILES_DIR:-$HOME/.dotfiles}"
 
 # shellcheck source=lib/common.sh
 source "$DOTFILES_DIR/lib/common.sh"
+# shellcheck source=lib/certificates.sh
+source "$DOTFILES_DIR/lib/certificates.sh"
 # shellcheck source=lib/packages.sh
 source "$DOTFILES_DIR/lib/packages.sh"
 # shellcheck source=lib/daemons.sh
@@ -22,6 +24,7 @@ cmd_setup() {
     info "Initializing dotfiles..."
 
     cmd_package install
+    _install_homelab_ca
     _install_git_hooks
     cmd_stow --clean
     _install_omf_bundle
