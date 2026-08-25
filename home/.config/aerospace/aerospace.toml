@@ -52,6 +52,9 @@ outer.right = 0
 # AeroSpace owns the global launcher shortcut, as it does desktop navigation.
 cmd-space = "exec-and-forget $HOME/.local/bin/app-launcher --toggle"
 
+# Close only the window focused in AeroSpace's current workspace.
+cmd-w = "close"
+
 # Focus windows spatially, including across a second monitor.
 cmd-h = "focus --boundaries all-monitors-outer-frame left"
 cmd-alt-j = "focus --boundaries all-monitors-outer-frame down"

@@ -86,7 +86,8 @@
   },
   "com.google.Chrome": {
     "NSUserKeyEquivalents": {
-      "Open Location…": "^l"
+      "Open Location…": "^l",
+      "Close Tab": "^w"
     }
   }
 }
