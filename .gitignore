@@ -45,6 +45,9 @@ settings/pmset.json
 settings/services.json
 settings/symbolic-hotkeys.json
 
+# Generated LaunchAgent files (created by dot launch-agent install)
+home/Library/LaunchAgents/com.elioshinsky.app-launcher.plist
+
 # Local config overrides
 home/.config/git/config.local
 home/.pi/web-search.local.json
