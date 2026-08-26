@@ -58,6 +58,16 @@
     }
   },
   {
+    "command": "meetily-actually-free",
+    "check": "test -d '/Applications/Meetily - Actually Free.app'",
+    "platforms": {
+      "darwin": {
+        "install": "(set -e; tmp_dir=$(mktemp -d); mount_dir=$(mktemp -d); trap 'hdiutil detach \"$mount_dir\" >/dev/null 2>&1 || true; rm -rf \"$tmp_dir\" \"$mount_dir\"' EXIT; tag=$(gh api repos/TylerBuza/Meetily-ActuallyFree/releases --jq 'map(select(.assets[].name | endswith(\"_aarch64.dmg\")))[0].tag_name'); gh release download \"$tag\" --repo TylerBuza/Meetily-ActuallyFree --pattern '*_aarch64.dmg' --dir \"$tmp_dir\"; hdiutil attach \"$tmp_dir\"/*_aarch64.dmg -nobrowse -mountpoint \"$mount_dir\"; rm -rf '/Applications/Meetily - Actually Free.app'; ditto \"$mount_dir/Meetily - Actually Free.app\" '/Applications/Meetily - Actually Free.app')",
+        "update": "(set -e; tag=$(gh api repos/TylerBuza/Meetily-ActuallyFree/releases --jq 'map(select(.assets[].name | endswith(\"_aarch64.dmg\")))[0].tag_name'); latest_version=${tag#v}; latest_version=${latest_version%-macos}; installed_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' '/Applications/Meetily - Actually Free.app/Contents/Info.plist' 2>/dev/null || true); if [[ \"$installed_version\" == \"$latest_version\" ]]; then exit 0; fi; tmp_dir=$(mktemp -d); mount_dir=$(mktemp -d); trap 'hdiutil detach \"$mount_dir\" >/dev/null 2>&1 || true; rm -rf \"$tmp_dir\" \"$mount_dir\"' EXIT; gh release download \"$tag\" --repo TylerBuza/Meetily-ActuallyFree --pattern '*_aarch64.dmg' --dir \"$tmp_dir\"; hdiutil attach \"$tmp_dir\"/*_aarch64.dmg -nobrowse -mountpoint \"$mount_dir\"; rm -rf '/Applications/Meetily - Actually Free.app'; ditto \"$mount_dir/Meetily - Actually Free.app\" '/Applications/Meetily - Actually Free.app')"
+      }
+    }
+  },
+  {
     "command": "omf",
     "check": "fish -lc 'type -q omf'",
     "install": "curl https://raw.githubusercontent.com/oh-my-fish/oh-my-fish/master/bin/install | fish -c 'source - --noninteractive --yes'",
