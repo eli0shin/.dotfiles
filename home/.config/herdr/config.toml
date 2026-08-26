@@ -81,3 +81,6 @@ prompt_new_tab_name = false
 
 [ui.sound]
 enabled = false
+
+[experimental]
+kitty_graphics = true
