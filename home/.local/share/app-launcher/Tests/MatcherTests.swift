@@ -21,7 +21,8 @@ struct MatcherTests {
         testTrailingWildcardExclusion()
         testSurroundingWildcardExclusion()
         testStableEmptyQuery()
-        print("Matcher tests passed")
+        testLaunchPolicy()
+        print("Matcher and launch policy tests passed")
     }
 
     private static func testExactAliasResolvesConflict() {
@@ -106,6 +107,34 @@ struct MatcherTests {
     private static func testStableEmptyQuery() {
         let results = ApplicationMatcher.rank(query: "", candidates: apps)
         expect(results.map(\.candidate.name) == ["ChatGPT", "Ghostty", "Google Chrome", "Visual Studio Code"], "empty query must use stable name order")
+    }
+
+    private static func testLaunchPolicy() {
+        expect(
+            ApplicationLaunchPolicy.action(intent: .open, isRunning: false, existingWindowCount: 0)
+                == .openWindowInCurrentWorkspace,
+            "a closed app must open in the current workspace"
+        )
+        expect(
+            ApplicationLaunchPolicy.action(intent: .open, isRunning: true, existingWindowCount: 2)
+                == .focusExistingWindow,
+            "an open app must focus an existing window"
+        )
+        expect(
+            ApplicationLaunchPolicy.action(intent: .open, isRunning: true, existingWindowCount: 0)
+                == .openWindowInCurrentWorkspace,
+            "a windowless running app must open in the current workspace"
+        )
+        expect(
+            ApplicationLaunchPolicy.action(intent: .newWindow, isRunning: true, existingWindowCount: 1)
+                == .createWindowInCurrentWorkspace,
+            "the explicit new-window action must create a window in the current workspace"
+        )
+        expect(
+            ApplicationLaunchPolicy.action(intent: .newWindow, isRunning: true, existingWindowCount: 0)
+                == .openWindowInCurrentWorkspace,
+            "the new-window action must not create two windows for a windowless app"
+        )
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

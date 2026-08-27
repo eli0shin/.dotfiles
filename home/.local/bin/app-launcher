@@ -2,10 +2,16 @@
 
 set -euo pipefail
 
-if [[ "${1:-}" == "--toggle" ]]; then
-    launchctl kill SIGUSR1 "gui/$(id -u)/com.elioshinsky.app-launcher"
-    exit 0
-fi
+case "${1:-}" in
+    --toggle)
+        launchctl kill SIGUSR1 "gui/$(id -u)/com.elioshinsky.app-launcher"
+        exit 0
+        ;;
+    --focus-sink)
+        launchctl kill SIGUSR2 "gui/$(id -u)/com.elioshinsky.app-launcher"
+        exit 0
+        ;;
+esac
 
 source_dir="$HOME/.local/share/app-launcher"
 binary_dir="$HOME/.local/libexec"
@@ -25,12 +31,14 @@ if [[ "$needs_build" == true ]]; then
 
     xcrun swiftc \
         "$source_dir/Sources/Matcher.swift" \
+        "$source_dir/Sources/LaunchPolicy.swift" \
         "$source_dir/Tests/MatcherTests.swift" \
         -o "$build_dir/matcher-tests"
     "$build_dir/matcher-tests"
 
     xcrun swiftc -O -whole-module-optimization \
         "$source_dir/Sources/Matcher.swift" \
+        "$source_dir/Sources/LaunchPolicy.swift" \
         "$source_dir/Sources/main.swift" \
         -framework AppKit \
         -o "$build_dir/app-launcher"

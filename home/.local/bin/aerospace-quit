@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+# Quit the focused application without leaving AeroSpace's visible workspace
+# and internal focused workspace out of sync.
+set -uo pipefail
+
+AEROSPACE_BIN=${AEROSPACE_BIN:-/opt/homebrew/bin/aerospace}
+OSASCRIPT_BIN=${OSASCRIPT_BIN:-/usr/bin/osascript}
+APP_LAUNCHER_BIN=${APP_LAUNCHER_BIN:-$HOME/.local/bin/app-launcher}
+poll_interval=${AEROSPACE_QUIT_POLL_INTERVAL:-0.05}
+max_poll_count=${AEROSPACE_QUIT_MAX_POLLS:-100}
+focus_delay=${AEROSPACE_QUIT_FOCUS_DELAY:-0.1}
+
+workspace=$("$AEROSPACE_BIN" list-workspaces --focused 2>/dev/null) || exit 1
+pid=$("$AEROSPACE_BIN" list-windows --focused --format '%{app-pid}' 2>/dev/null) || exit 1
+[[ -n "$workspace" && "$pid" =~ ^[0-9]+$ ]] || exit 1
+
+# Give macOS a frontmost application with no managed windows. It then has no
+# reason to raise a hidden window from another AeroSpace workspace on quit.
+"$APP_LAUNCHER_BIN" --focus-sink || exit 1
+sleep "$focus_delay"
+
+# Keep the target PID stable even if macOS changes focus while the app quits.
+# NSRunningApplication.terminate() requests a normal, cancelable termination
+# without requiring Automation access to every application.
+if ! "$OSASCRIPT_BIN" -l JavaScript - "$pid" <<'JXA'
+ObjC.import('AppKit')
+
+function run(argv) {
+    const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]))
+    if (!app.terminate) {
+        throw new Error('The application rejected the quit request')
+    }
+}
+JXA
+then
+    exit 1
+fi
+
+# Do not repair the workspace until AeroSpace has removed the app's windows.
+# If the app displays a save dialog or cancels the quit, leave focus unchanged.
+quit_completed=false
+for ((poll_count = 0; poll_count < max_poll_count; poll_count++)); do
+    app_pids=$("$AEROSPACE_BIN" list-windows --all --format '%{app-pid}' 2>/dev/null) || exit 1
+    if ! grep -Fxq "$pid" <<<"$app_pids"; then
+        quit_completed=true
+        break
+    fi
+    sleep "$poll_interval"
+done
+[[ "$quit_completed" == true ]] || exit 1
+
+# A real window gives AeroSpace an unambiguous native focus target. If the
+# workspace is empty, keep the invisible launcher as the native focus sink.
+remaining_window=$(
+    "$AEROSPACE_BIN" list-windows --workspace "$workspace" --format '%{window-id}' 2>/dev/null |
+        head -n 1
+) || exit 1
+if [[ -n "$remaining_window" ]]; then
+    "$AEROSPACE_BIN" focus --window-id "$remaining_window" >/dev/null || exit 1
+fi

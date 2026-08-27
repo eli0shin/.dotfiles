@@ -55,6 +55,10 @@ cmd-space = "exec-and-forget $HOME/.local/bin/app-launcher --toggle"
 # Close only the window focused in AeroSpace's current workspace.
 cmd-w = "close"
 
+# Keep the visible workspace and AeroSpace focus in sync after macOS chooses a
+# different frontmost application during quit.
+cmd-q = "exec-and-forget $HOME/.local/bin/aerospace-quit"
+
 # Focus windows spatially, including across a second monitor.
 cmd-h = "focus --boundaries all-monitors-outer-frame left"
 cmd-alt-j = "focus --boundaries all-monitors-outer-frame down"
