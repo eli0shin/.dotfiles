@@ -104,12 +104,6 @@ private enum AeroSpaceClient {
         "/usr/local/bin/aerospace",
     ]
 
-    static func focusedWorkspace() -> String? {
-        run(["list-workspaces", "--focused"])?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
-    }
-
     static func windowIDs(bundleIdentifier: String) -> [String]? {
         guard let output = run([
             "list-windows", "--all", "--format", "%{window-id}|%{app-bundle-id}",
@@ -122,10 +116,7 @@ private enum AeroSpaceClient {
         }
     }
 
-    static func moveAndFocus(windowID: String, to workspace: String) {
-        guard run(["move-node-to-workspace", "--window-id", windowID, workspace]) != nil else {
-            return
-        }
+    static func focus(windowID: String) {
         _ = run(["focus", "--window-id", windowID])
     }
 
@@ -161,13 +152,8 @@ private enum AeroSpaceClient {
     }
 }
 
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
-}
-
 private final class ApplicationLaunchCoordinator {
     private static let pollInterval: TimeInterval = 0.1
-    private static let newWindowRequestDelay: TimeInterval = 2
     private static let timeout: TimeInterval = 15
 
     private let operationLock = NSLock()
@@ -181,36 +167,20 @@ private final class ApplicationLaunchCoordinator {
         action: ApplicationLaunchAction,
         applicationURL: URL,
         bundleIdentifier: String,
-        targetWorkspace: String,
         existingWindowIDs: Set<String>,
         completion: @escaping () -> Void
     ) {
-        let operationID = UUID()
-        operationLock.withLock { activeOperationID = operationID }
-
+        cancel()
         switch action {
         case .focusExistingWindow:
-            open(applicationURL, activates: true) { [weak self] _ in
-                self?.finish(operationID: operationID, completion: completion)
-            }
+            open(applicationURL, activates: true)
         case .openWindowInCurrentWorkspace:
-            open(applicationURL, activates: false) { [weak self] runningApplication in
-                guard let self, self.isActive(operationID) else { return }
-                guard let runningApplication else {
-                    self.finish(operationID: operationID, completion: completion)
-                    return
-                }
-                self.waitForNewWindows(
-                    bundleIdentifier: bundleIdentifier,
-                    existingWindowIDs: existingWindowIDs,
-                    targetWorkspace: targetWorkspace,
-                    requestWindowFrom: runningApplication.processIdentifier,
-                    requestDelay: Self.newWindowRequestDelay,
-                    operationID: operationID,
-                    completion: completion
-                )
-            }
+            // AeroSpace assigns a new window to focus.workspace. Keep the
+            // launcher key until the application activates and creates it.
+            open(applicationURL, activates: true)
         case .createWindowInCurrentWorkspace:
+            let operationID = UUID()
+            operationLock.withLock { activeOperationID = operationID }
             open(applicationURL, activates: false) { [weak self] runningApplication in
                 guard let self, self.isActive(operationID) else { return }
                 guard let runningApplication else {
@@ -227,9 +197,6 @@ private final class ApplicationLaunchCoordinator {
                 self.waitForNewWindows(
                     bundleIdentifier: bundleIdentifier,
                     existingWindowIDs: existingWindowIDs,
-                    targetWorkspace: targetWorkspace,
-                    requestWindowFrom: nil,
-                    requestDelay: nil,
                     operationID: operationID,
                     completion: completion
                 )
@@ -256,43 +223,25 @@ private final class ApplicationLaunchCoordinator {
     private func waitForNewWindows(
         bundleIdentifier: String,
         existingWindowIDs: Set<String>,
-        targetWorkspace: String,
-        requestWindowFrom processIdentifier: pid_t?,
-        requestDelay: TimeInterval?,
         operationID: UUID,
         completion: @escaping () -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let startedAt = Date()
-            var didRequestWindow = false
 
             while Date().timeIntervalSince(startedAt) < Self.timeout {
                 guard self.isActive(operationID) else { return }
                 if let windowIDs = AeroSpaceClient.windowIDs(bundleIdentifier: bundleIdentifier),
                    let newWindowID = windowIDs.first(where: { !existingWindowIDs.contains($0) }) {
-                    self.moveAndFinish(
+                    self.focusAndFinish(
                         windowID: newWindowID,
-                        to: targetWorkspace,
                         operationID: operationID,
                         completion: completion
                     )
                     return
                 }
 
-                if let processIdentifier,
-                   let requestDelay,
-                   !didRequestWindow,
-                   Date().timeIntervalSince(startedAt) >= requestDelay {
-                    didRequestWindow = true
-                    guard self.requestNewWindow(
-                        processIdentifier: processIdentifier,
-                        operationID: operationID
-                    ) else {
-                        self.finish(operationID: operationID, completion: completion)
-                        return
-                    }
-                }
                 Thread.sleep(forTimeInterval: Self.pollInterval)
             }
             Self.report("timed out waiting for a window from \(bundleIdentifier)")
@@ -304,15 +253,14 @@ private final class ApplicationLaunchCoordinator {
         operationLock.withLock { activeOperationID == operationID }
     }
 
-    private func moveAndFinish(
+    private func focusAndFinish(
         windowID: String,
-        to workspace: String,
         operationID: UUID,
         completion: @escaping () -> Void
     ) {
         let mustScheduleCompletion = operationLock.withLock {
             guard activeOperationID == operationID else { return false }
-            AeroSpaceClient.moveAndFocus(windowID: windowID, to: workspace)
+            AeroSpaceClient.focus(windowID: windowID)
             return true
         }
         if mustScheduleCompletion {
@@ -443,10 +391,6 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
         focusSinkPanel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         focusSinkPanel.makeKey()
-    }
-
-    private func hidePanelKeepingApplicationActive() {
-        panel.orderOut(nil)
     }
 
     private func show() {
@@ -698,10 +642,8 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
         let application = results[index]
         let applicationURL = URL(fileURLWithPath: application.path)
         guard let bundleIdentifier = Bundle(url: applicationURL)?.bundleIdentifier,
-              let targetWorkspace = AeroSpaceClient.focusedWorkspace(),
               let windowIDs = AeroSpaceClient.windowIDs(bundleIdentifier: bundleIdentifier)
         else {
-            hide()
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration)
@@ -720,14 +662,11 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
 
         if action == .focusExistingWindow {
             hide()
-        } else {
-            hidePanelKeepingApplicationActive()
         }
         launchCoordinator.perform(
             action: action,
             applicationURL: applicationURL,
             bundleIdentifier: bundleIdentifier,
-            targetWorkspace: targetWorkspace,
             existingWindowIDs: existingWindowIDs
         ) { [weak self] in
             self?.hide()
