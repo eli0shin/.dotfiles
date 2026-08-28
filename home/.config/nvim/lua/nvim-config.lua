@@ -22,7 +22,7 @@ vim.opt.showmode = false
 -- Use OSC 52 only in remote (SSH) sessions without tmux.
 -- Locally, Neovim finds the system clipboard tool (pbcopy/pbpaste on macOS).
 -- See `:help 'clipboard'` and `:help clipboard-osc52`.
-if vim.env.SSH_TTY ~= nil and vim.env.TMUX == nil then
+if vim.env.SSH_CONNECTION ~= nil and vim.env.TMUX == nil then
   vim.g.clipboard = 'osc52'
 end
 vim.opt.clipboard = 'unnamedplus'
