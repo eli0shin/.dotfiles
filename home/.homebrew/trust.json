@@ -18,6 +18,7 @@
   "trustedformulae": [
     "datadog/lapdog/lapdog",
     "felixkratz/formulae/sketchybar",
+    "hashicorp/tap/terraform",
     "qmk/qmk/qmk"
   ],
   "trustedcasks": [
