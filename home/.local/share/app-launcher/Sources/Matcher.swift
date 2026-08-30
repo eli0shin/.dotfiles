@@ -3,6 +3,13 @@ import Foundation
 struct LaunchCandidate: Equatable {
     let name: String
     let path: String
+    let iconVersion: String
+
+    init(name: String, path: String, iconVersion: String = "") {
+        self.name = name
+        self.path = path
+        self.iconVersion = iconVersion
+    }
 }
 
 struct RankedCandidate: Equatable {

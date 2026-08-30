@@ -70,7 +70,7 @@ private enum ApplicationDiscovery {
         let finderPath = "/System/Library/CoreServices/Finder.app"
         if FileManager.default.fileExists(atPath: finderPath) {
             seenPaths.insert(finderPath)
-            applications.append(LaunchCandidate(name: "Finder", path: finderPath))
+            applications.append(candidate(at: URL(fileURLWithPath: finderPath), name: "Finder"))
         }
 
         for root in roots where FileManager.default.fileExists(atPath: root) {
@@ -83,10 +83,41 @@ private enum ApplicationDiscovery {
             for case let url as URL in enumerator where url.pathExtension.lowercased() == "app" {
                 let path = url.standardizedFileURL.path
                 guard seenPaths.insert(path).inserted else { continue }
-                applications.append(LaunchCandidate(name: applicationName(at: url), path: path))
+                applications.append(candidate(at: url, name: applicationName(at: url)))
             }
         }
         return applications
+    }
+
+    private static func candidate(at url: URL, name: String) -> LaunchCandidate {
+        LaunchCandidate(
+            name: name,
+            path: url.standardizedFileURL.path,
+            iconVersion: iconVersion(at: url)
+        )
+    }
+
+    private static func iconVersion(at applicationURL: URL) -> String {
+        let bundle = Bundle(url: applicationURL)
+        let resourcesURL = applicationURL.appendingPathComponent("Contents/Resources")
+        var inputs = [
+            applicationURL,
+            applicationURL.appendingPathComponent("Contents/Info.plist"),
+            resourcesURL.appendingPathComponent("Assets.car"),
+        ]
+
+        if let iconFile = bundle?.object(forInfoDictionaryKey: "CFBundleIconFile") as? String {
+            let iconName = iconFile.hasSuffix(".icns") ? iconFile : "\(iconFile).icns"
+            inputs.append(resourcesURL.appendingPathComponent(iconName))
+        }
+
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey]
+        return inputs.map { input in
+            let values = try? input.resourceValues(forKeys: keys)
+            let modifiedAt = values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+            let size = values?.fileSize ?? 0
+            return "\(input.path):\(modifiedAt):\(size)"
+        }.joined(separator: "|")
     }
 
     private static func applicationName(at url: URL) -> String {
@@ -314,6 +345,101 @@ private final class ApplicationLaunchCoordinator {
     }
 }
 
+private final class ApplicationIconCache {
+    private struct Version: Equatable {
+        let value: String
+    }
+
+    private let loadQueue = DispatchQueue(label: "app-launcher.icon-loader", qos: .utility)
+    private var icons: [String: NSImage] = [:]
+    private var versions: [String: Version] = [:]
+    private var pendingPaths = Set<String>()
+    var didLoadIcon: ((String) -> Void)?
+
+    func refresh(_ applications: [LaunchCandidate]) {
+        dispatchPrecondition(condition: .onQueue(.main))
+
+        let activePaths = Set(applications.map(\.path))
+        icons = icons.filter { activePaths.contains($0.key) }
+        versions = versions.filter { activePaths.contains($0.key) }
+
+        for application in applications {
+            let version = Version(value: application.iconVersion)
+            if versions[application.path] != version {
+                icons.removeValue(forKey: application.path)
+                versions[application.path] = version
+            }
+            loadIfNeeded(path: application.path, version: version)
+        }
+    }
+
+    func icon(for path: String) -> NSImage? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let version = versions[path] else { return nil }
+        loadIfNeeded(path: path, version: version)
+        return icons[path]
+    }
+
+    private func loadIfNeeded(path: String, version: Version) {
+        guard icons[path] == nil, pendingPaths.insert(path).inserted else { return }
+
+        loadQueue.async { [weak self] in
+            let icon = autoreleasepool {
+                Self.rasterizedIcon(forFile: path)
+            }
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pendingPaths.remove(path)
+                guard self.versions[path] == version else {
+                    if let currentVersion = self.versions[path] {
+                        self.loadIfNeeded(path: path, version: currentVersion)
+                    }
+                    return
+                }
+                self.icons[path] = icon
+                self.didLoadIcon?(path)
+            }
+        }
+    }
+
+    private static func rasterizedIcon(forFile path: String) -> NSImage {
+        let pointSize = NSSize(width: 28, height: 28)
+        let pixelSize = 56
+        let source = NSWorkspace.shared.icon(forFile: path)
+        var sourceRect = NSRect(origin: .zero, size: pointSize)
+
+        guard let sourceImage = source.cgImage(
+            forProposedRect: &sourceRect,
+            context: nil,
+            hints: nil
+        ),
+        let context = CGContext(
+            data: nil,
+            width: pixelSize,
+            height: pixelSize,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            source.size = pointSize
+            return source
+        }
+
+        context.interpolationQuality = .high
+        context.draw(
+            sourceImage,
+            in: CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize)
+        )
+        guard let rasterizedImage = context.makeImage() else {
+            source.size = pointSize
+            return source
+        }
+        return NSImage(cgImage: rasterizedImage, size: pointSize)
+    }
+}
+
 private final class LauncherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -351,6 +477,11 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
     private var excludedApplications: [String] = []
     private var aliases: [String: [String]] = [:]
     private let launchCoordinator = ApplicationLaunchCoordinator()
+    private let iconCache = ApplicationIconCache()
+    private let placeholderIcon = NSImage(
+        systemSymbolName: "app.dashed",
+        accessibilityDescription: "Application"
+    )
 
     override init() {
         panel = LauncherPanel(
@@ -372,6 +503,10 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
         configureInput()
         configureTable()
         layoutViews()
+        iconCache.didLoadIcon = { [weak self] path in
+            self?.reloadIcon(forApplicationAt: path)
+        }
+        iconCache.refresh(applications)
     }
 
     func toggle() {
@@ -416,6 +551,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
                 guard let self else { return }
                 let selectedPath = self.selectedApplicationPath
                 self.applications = applications
+                self.iconCache.refresh(applications)
                 if self.panel.isVisible {
                     self.updateResults(selecting: selectedPath, resetScrollPosition: false)
                 }
@@ -687,8 +823,19 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
             ?? makeApplicationCell(identifier: identifier)
         let application = results[row]
         cell.textField?.stringValue = application.name
-        cell.imageView?.image = NSWorkspace.shared.icon(forFile: application.path)
+        cell.imageView?.image = iconCache.icon(for: application.path) ?? placeholderIcon
         return cell
+    }
+
+    private func reloadIcon(forApplicationAt path: String) {
+        guard panel.isVisible,
+              let row = results.firstIndex(where: { $0.path == path }),
+              table.rowView(atRow: row, makeIfNecessary: false) != nil
+        else { return }
+        table.reloadData(
+            forRowIndexes: IndexSet(integer: row),
+            columnIndexes: IndexSet(integer: 0)
+        )
     }
 
     private func makeApplicationCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
