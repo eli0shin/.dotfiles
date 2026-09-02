@@ -2,24 +2,36 @@
 set -euo pipefail
 
 label="homebrew.mxcl.tailscale"
-resolver_dir="/etc/resolver"
-resolver_file="$resolver_dir/home.arpa"
+platform=$(uname -s)
 
-expected_resolver=$(mktemp)
-trap 'rm -f "$expected_resolver"' EXIT
-printf 'nameserver 100.100.100.100\ndomain home.arpa\nsearch_order 1\ntimeout 5\n' > "$expected_resolver"
+if [[ "$platform" == "Darwin" ]]; then
+    resolver_dir="/etc/resolver"
+    resolver_file="$resolver_dir/home.arpa"
 
-# Remove the old user service if it is still present from an earlier setup.
-user_plist="$HOME/Library/LaunchAgents/$label.plist"
-if [[ -e "$user_plist" ]]; then
-    launchctl bootout "gui/$(id -u)" "$user_plist" >/dev/null 2>&1 || true
-    rm -f "$user_plist"
+    expected_resolver=$(mktemp)
+    trap 'rm -f "$expected_resolver"' EXIT
+    printf 'nameserver 100.100.100.100\ndomain home.arpa\nsearch_order 1\ntimeout 5\n' > "$expected_resolver"
+
+    # Remove the old user service if it is still present from an earlier setup.
+    user_plist="$HOME/Library/LaunchAgents/$label.plist"
+    if [[ -e "$user_plist" ]]; then
+        launchctl bootout "gui/$(id -u)" "$user_plist" >/dev/null 2>&1 || true
+        rm -f "$user_plist"
+    fi
+
+    if [[ ! -f "$resolver_file" ]] || ! cmp -s "$expected_resolver" "$resolver_file"; then
+        echo "Updating Tailscale DNS resolver..."
+        sudo install -d -m 755 "$resolver_dir"
+        sudo install -o root -g wheel -m 644 "$expected_resolver" "$resolver_file"
+    fi
 fi
 
-if [[ ! -f "$resolver_file" ]] || ! cmp -s "$expected_resolver" "$resolver_file"; then
-    echo "Updating Tailscale DNS resolver..."
-    sudo install -d -m 755 "$resolver_dir"
-    sudo install -o root -g wheel -m 644 "$expected_resolver" "$resolver_file"
+if [[ "$platform" == "Linux" ]]; then
+    if ! systemctl is-active --quiet homebrew.tailscale.service; then
+        echo "Starting Tailscale service..."
+        sudo --preserve-env=HOME,XDG_CACHE_HOME "$(command -v brew)" services start tailscale
+    fi
+    exit 0
 fi
 
 if ! launchctl print "system/$label" >/dev/null 2>&1; then

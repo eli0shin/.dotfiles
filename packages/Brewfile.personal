@@ -20,7 +20,6 @@ if OS.mac?
 	brew "qmk/qmk/qmk"
 	brew "r"
 	brew "render"
-	brew "tailscale"
 
 	cask "arduino-ide"
 	cask "autodesk-fusion"
@@ -28,7 +27,6 @@ if OS.mac?
 	cask "discord"
 	cask "electron-fiddle"
 	cask "firefox"
-	cask "google-chrome"
 	cask "keybase"
 	cask "obs"
 	cask "openscad"
@@ -43,5 +41,8 @@ end
 
 brew "mosh"
 brew "iperf3"
+brew "tailscale"
+cask "google-chrome"
+cask "bitwarden"
 
 cask "bitwarden"

@@ -5,6 +5,50 @@ SERVICES_FILE="$SETTINGS_DIR/services.json"
 LAUNCH_AGENTS_FILE="$SETTINGS_DIR/launch-agents.json"
 LAUNCH_AGENTS_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/launch-agents"
 LAUNCH_AGENTS_LABELS_FILE="$LAUNCH_AGENTS_STATE_DIR/labels.txt"
+LINUXBREW_SUDOERS_FILE="/etc/sudoers.d/linuxbrew"
+
+_linuxbrew_sudoers_content() {
+    local prefix="$1"
+    printf 'Defaults secure_path="%s/bin:%s/sbin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin"\n' \
+        "$prefix" "$prefix"
+}
+
+_configure_linuxbrew_sudo() {
+    [[ "$(_current_platform)" == "linux" ]] || return 0
+
+    local brew_bin prefix sudoers_file
+    brew_bin="$(_brew_shellenv_path)"
+    [[ -n "$brew_bin" ]] || return 0
+
+    prefix="$("$brew_bin" --prefix)"
+
+    has visudo || {
+        warn "Cannot configure sudo for Linuxbrew: visudo is not installed"
+        return 1
+    }
+
+    sudoers_file=$(mktemp)
+    _linuxbrew_sudoers_content "$prefix" > "$sudoers_file"
+
+    if ! visudo -cf "$sudoers_file" >/dev/null; then
+        rm -f "$sudoers_file"
+        error "Refusing to install invalid Linuxbrew sudo configuration"
+        return 1
+    fi
+
+    if sudo /usr/bin/cmp -s "$sudoers_file" "$LINUXBREW_SUDOERS_FILE"; then
+        rm -f "$sudoers_file"
+        return 0
+    fi
+
+    info "Adding Linuxbrew to sudo secure_path..."
+    if ! sudo /usr/bin/install -o root -g root -m 0440 "$sudoers_file" "$LINUXBREW_SUDOERS_FILE"; then
+        rm -f "$sudoers_file"
+        return 1
+    fi
+    rm -f "$sudoers_file"
+    success "Linuxbrew is available to sudo"
+}
 
 _start_services() {
     if ! _is_macos && ! _has_systemd; then
@@ -20,6 +64,10 @@ _start_services() {
     count=$(jq 'length' "$SERVICES_FILE")
     if [[ "$count" -eq 0 ]]; then
         return 0
+    fi
+
+    if ! _configure_linuxbrew_sudo; then
+        warn "Linuxbrew sudo configuration could not be applied"
     fi
 
     info "Starting brew services..."
