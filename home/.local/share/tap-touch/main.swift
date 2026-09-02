@@ -16,6 +16,7 @@ private let pointerGestureDelay = 0.075
 private let pointerDragThreshold = 4.0
 private let scrollArmingDelay = 0.03
 private let scrollSensitivity = 1.0
+private let pointerRestoreDelay = 0.15
 
 private struct Options {
     var displayName = "FLARE"
@@ -58,6 +59,19 @@ private struct ContactState {
     var hasY = false
 }
 
+private struct FocusSnapshot {
+    let application: NSRunningApplication
+
+    static func capture() -> FocusSnapshot? {
+        guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+        return FocusSnapshot(application: application)
+    }
+
+    func restore() {
+        application.activate(options: [])
+    }
+}
+
 private final class TouchMapper {
     private let options: Options
     private var displayBounds: CGRect?
@@ -74,6 +88,9 @@ private final class TouchMapper {
     private var scrollReadyAt = 0.0
     private var scrollRemainder = CGPoint.zero
     private var suppressPointerUntilRelease = false
+    private var savedPointerLocation: CGPoint?
+    private var savedFocus: FocusSnapshot?
+    private var pointerRestoreTimer: Timer?
 
     init(options: Options) {
         self.options = options
@@ -109,6 +126,7 @@ private final class TouchMapper {
         changedCollections.removeAll()
         cancelPendingPointer()
         releasePointer()
+        restorePointerLocation()
         isScrolling = false
         lastScrollCentroid = nil
         scrollReadyAt = 0
@@ -132,6 +150,9 @@ private final class TouchMapper {
         switch (usagePage, usage) {
         case (0x0d, 0x42): // Tip Switch
             let isTouching = integerValue != 0
+            if !contact.isTouching, isTouching {
+                postponePointerRestoration()
+            }
             if contact.isTouching != isTouching, gestureUpdateTimer != nil {
                 flushGestureUpdates()
             }
@@ -199,6 +220,7 @@ private final class TouchMapper {
                 scrollReadyAt = now + scrollArmingDelay
                 scrollRemainder = .zero
                 lastPoint = centroid
+                savePointerLocation()
                 post(type: .mouseMoved, at: centroid)
                 if options.debug { print("scroll start point=\(centroid)") }
             }
@@ -218,6 +240,8 @@ private final class TouchMapper {
         guard let (cookie, contact) = touching.first else {
             if let pendingCollection, let pending = contacts[pendingCollection],
                !suppressPointerUntilRelease, let point = map(pending) {
+                saveInteractionState(restoreFocus: true)
+                activateTargetApplication(at: point)
                 post(type: .mouseMoved, at: point)
                 post(type: .leftMouseDown, at: point)
                 post(type: .leftMouseUp, at: point)
@@ -225,10 +249,12 @@ private final class TouchMapper {
             }
             cancelPendingPointer()
             releasePointer()
+            restorePointerLocation()
             suppressPointerUntilRelease = false
             return
         }
         guard !suppressPointerUntilRelease, let point = map(contact) else { return }
+        postponePointerRestoration()
 
         if activeCollection == nil {
             if pendingCollection == nil {
@@ -262,6 +288,8 @@ private final class TouchMapper {
 
         activeCollection = cookie
         lastPoint = point
+        saveInteractionState(restoreFocus: true)
+        activateTargetApplication(at: point)
         post(type: .mouseMoved, at: point)
         post(type: .leftMouseDown, at: point)
         if options.debug { print("down id=\(contact.identifier) point=\(point)") }
@@ -279,6 +307,61 @@ private final class TouchMapper {
         post(type: .leftMouseUp, at: lastPoint)
         activeCollection = nil
         if options.debug { print("up point=\(lastPoint)") }
+    }
+
+    private func savePointerLocation() {
+        saveInteractionState(restoreFocus: false)
+    }
+
+    private func saveInteractionState(restoreFocus: Bool) {
+        postponePointerRestoration()
+        if restoreFocus, savedFocus == nil {
+            savedFocus = FocusSnapshot.capture()
+        }
+        guard savedPointerLocation == nil else { return }
+        savedPointerLocation = CGEvent(source: nil)?.location
+    }
+
+    private func activateTargetApplication(at point: CGPoint) {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+
+        for window in windows {
+            guard (window[kCGWindowLayer as String] as? Int) == 0,
+                  let processID = window[kCGWindowOwnerPID as String] as? pid_t,
+                  processID != ProcessInfo.processInfo.processIdentifier,
+                  let boundsDictionary = window[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  bounds.contains(point),
+                  let application = NSRunningApplication(processIdentifier: processID) else {
+                continue
+            }
+
+            let applicationElement = AXUIElementCreateApplication(processID)
+            AXUIElementSetAttributeValue(applicationElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            application.activate(options: [])
+            return
+        }
+    }
+
+    private func postponePointerRestoration() {
+        pointerRestoreTimer?.invalidate()
+        pointerRestoreTimer = nil
+    }
+
+    private func restorePointerLocation() {
+        guard savedPointerLocation != nil else { return }
+        pointerRestoreTimer?.invalidate()
+        pointerRestoreTimer = Timer.scheduledTimer(withTimeInterval: pointerRestoreDelay, repeats: false) { [weak self] _ in
+            guard let self, let location = self.savedPointerLocation else { return }
+            self.pointerRestoreTimer = nil
+            self.savedPointerLocation = nil
+            let focus = self.savedFocus
+            self.savedFocus = nil
+            CGWarpMouseCursorPosition(location)
+            focus?.restore()
+            if self.options.debug { print("restored pointer to \(location)") }
+        }
     }
 
     private func postScroll(delta: CGPoint) {
@@ -326,8 +409,8 @@ if !AXIsProcessTrustedWithOptions(trustPrompt) {
     exit(1)
 }
 
-// Initialize AppKit's display-change handling before NSScreen is queried.
-_ = NSApplication.shared
+// Run AppKit's event loop so NSScreen stays current as displays connect and disconnect.
+private let application = NSApplication.shared
 
 private let mapper = TouchMapper(options: options)
 _ = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
@@ -370,4 +453,4 @@ guard result == kIOReturnSuccess else {
 }
 
 print("tap-touch is running. Press Control-C to stop.")
-CFRunLoopRun()
+application.run()
