@@ -4,6 +4,9 @@ import CoreGraphics
 import Foundation
 import IOKit.hid
 
+setbuf(stdout, nil)
+setbuf(stderr, nil)
+
 private let tapVendorID = 0x222a
 private let tapProductID = 0x0001
 private let touchReportID: UInt32 = 4
@@ -90,6 +93,10 @@ private final class TouchMapper {
         }
 
         let bounds = CGDisplayBounds(displayID)
+        guard CGDisplayIsOnline(displayID) != 0, bounds.width > 0, bounds.height > 0 else {
+            return
+        }
+
         if displayBounds != bounds {
             displayBounds = bounds
             print("Mapping ILITEK-TP touch to \(screen.localizedName) at \(bounds)")
@@ -319,6 +326,9 @@ if !AXIsProcessTrustedWithOptions(trustPrompt) {
     exit(1)
 }
 
+// Initialize AppKit's display-change handling before NSScreen is queried.
+_ = NSApplication.shared
+
 private let mapper = TouchMapper(options: options)
 _ = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
     mapper.refreshDisplay()
@@ -333,9 +343,20 @@ IOHIDManagerRegisterInputValueCallback(manager, { _, result, _, value in
     guard result == kIOReturnSuccess else { return }
     mapper.handle(value: value)
 }, nil)
-IOHIDManagerRegisterDeviceMatchingCallback(manager, { _, _, _, device in
+IOHIDManagerRegisterDeviceMatchingCallback(manager, { _, result, _, device in
+    guard result == kIOReturnSuccess else {
+        fputs("HID matching failed: 0x\(String(UInt32(bitPattern: result), radix: 16))\n", stderr)
+        return
+    }
+
+    let claimResult = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+    guard claimResult == kIOReturnSuccess else {
+        fputs("Could not reclaim touch device: 0x\(String(UInt32(bitPattern: claimResult), radix: 16))\n", stderr)
+        return
+    }
+
     let product = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? "touch device"
-    print("Connected to \(product)")
+    print("Connected to and reclaimed \(product)")
 }, nil)
 IOHIDManagerRegisterDeviceRemovalCallback(manager, { _, _, _, _ in
     mapper.cancel()
