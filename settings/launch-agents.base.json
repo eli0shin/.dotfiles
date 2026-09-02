@@ -5,5 +5,12 @@
     "run_at_load": true,
     "stdout_log": "~/Library/Logs/dotfiles/app-launcher.log",
     "stderr_log": "~/Library/Logs/dotfiles/app-launcher.err.log"
+  },
+  {
+    "label": "com.elioshinsky.tap-touch",
+    "script": "~/.local/bin/tap-touch",
+    "run_at_load": true,
+    "stdout_log": "~/Library/Logs/dotfiles/tap-touch.log",
+    "stderr_log": "~/Library/Logs/dotfiles/tap-touch.err.log"
   }
 ]

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_file="$HOME/.local/share/tap-touch/main.swift"
+app="$HOME/Applications/Tap Touch.app"
+contents="$app/Contents"
+binary="$contents/MacOS/tap-touch"
+plist="$contents/Info.plist"
+
+needs_signing=false
+signature_info="$(codesign -dv --verbose=2 "$app" 2>&1 || true)"
+if [[ ! -x "$binary" || "$source_file" -nt "$binary" ]]; then
+  mkdir -p "$contents/MacOS"
+  cat >"$plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Tap Touch</string>
+  <key>CFBundleExecutable</key>
+  <string>tap-touch</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.elioshinsky.tap-touch</string>
+  <key>CFBundleName</key>
+  <string>Tap Touch</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+  xcrun swiftc -O -framework AppKit -framework ApplicationServices -framework IOKit \
+    "$source_file" -o "$binary"
+  needs_signing=true
+elif [[ "$signature_info" != *"Authority=Apple Development:"* ]]; then
+  needs_signing=true
+fi
+
+if [[ "$needs_signing" == true ]]; then
+  identity="$(security find-identity -v -p codesigning | awk '/"Apple Development:/{print $2; exit}')"
+  if [[ -z "$identity" ]]; then
+    echo "No Apple Development signing identity is available in the keychain." >&2
+    exit 1
+  fi
+  codesign --force --sign "$identity" "$app" >/dev/null
+  codesign --verify --strict "$app"
+fi
+
+exec "$binary" "$@"
