@@ -1,6 +1,6 @@
 ## Global defaults
 
-- Start by reading any project `AGENTS.md`, `CLAUDE.md`, or `README.md` files that apply in the current directory.
+- Start by reading any project `AGENTS.md`, `CLAUDE.md`, or `README.md` files that exist in the current directory only.
 - Follow existing repo conventions and extend existing patterns before inventing new ones.
 - Keep changes scoped to the request; do not refactor unrelated code.
 - After completing non-trivial code changes, call the `run_code_review` tool before your final response to self-review. Skip it only for documentation-only, trivial, or explicitly-excluded changes.
