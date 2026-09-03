@@ -47,7 +47,7 @@ Report a finding only when all of these statements are true:
 4. **Proven:** Repository evidence, a reproduction, a test, or verified dependency evidence supports the claim.
 5. **Scoped:** The proposed action is the smallest reasonable correction for this change.
 
-For all potential findings, trace the causal path from the changed line to the harmful result. Reject a candidate finding when a required step in that path is only an assumption. Do not reject a potential finding until the entire causal path has been traces.
+For all potential findings, trace the causal path from the changed line to the harmful result. Reject a candidate finding when a required step in that path is only an assumption. Do not reject a potential finding until the entire causal path has been traced.
 
 Do not report speculative hardening, unrelated pre-existing defects, personal preferences, or hypothetical future requirements as findings.
 
