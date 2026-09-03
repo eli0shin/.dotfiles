@@ -92,6 +92,7 @@ if OS.mac?
 end
 
 cask "codex"
+cask "lm-studio"
 
 go "github.com/air-verse/air"
 go "github.com/go-delve/delve/cmd/dlv"
