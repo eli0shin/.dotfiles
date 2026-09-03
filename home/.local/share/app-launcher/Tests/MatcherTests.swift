@@ -12,6 +12,7 @@ struct MatcherTests {
     static func main() {
         testExactAliasResolvesConflict()
         testAlternateNameIsSearchable()
+        testAliasRanksAboveEquivalentNameMatch()
         testWordBoundaries()
         testConsecutiveCharacters()
         testLeadingMatchBeatsShortTrailingMatch()
@@ -41,6 +42,19 @@ struct MatcherTests {
             aliases: ["Google Chrome": ["browser"]]
         )
         expect(results.first?.candidate.name == "Google Chrome", "aliases must participate in fuzzy matching")
+    }
+
+    private static func testAliasRanksAboveEquivalentNameMatch() {
+        let candidates = [
+            LaunchCandidate(name: "System Information", path: "/Applications/System Information.app"),
+            LaunchCandidate(name: "System Settings", path: "/Applications/System Settings.app"),
+        ]
+        let results = ApplicationMatcher.rank(
+            query: "sys",
+            candidates: candidates,
+            aliases: ["System Settings": ["system"]]
+        )
+        expect(results.first?.candidate.name == "System Settings", "an alias must rank above an equivalent name match")
     }
 
     private static func testWordBoundaries() {

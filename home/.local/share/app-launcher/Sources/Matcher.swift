@@ -43,6 +43,7 @@ enum ApplicationMatcher {
             var bestScore = fuzzyScore(query: normalizedQuery, target: candidate.name)
             for alias in configuredAliases {
                 guard var score = fuzzyScore(query: normalizedQuery, target: alias) else { continue }
+                score += 1
                 if searchable(alias) == normalizedQuery {
                     score += 100_000
                 }

@@ -57,12 +57,15 @@ private struct LauncherConfiguration: Decodable {
 private enum ApplicationDiscovery {
     static func installedApplications() -> [LaunchCandidate] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let roots = [
+        var roots = [
             "/Applications",
             "/System/Applications",
             "\(home)/Applications",
             "/System/Library/CoreServices/Applications",
         ]
+        if let developerApplicationsRoot {
+            roots.append(developerApplicationsRoot)
+        }
 
         var applications: [LaunchCandidate] = []
         var seenPaths = Set<String>()
@@ -87,6 +90,32 @@ private enum ApplicationDiscovery {
             }
         }
         return applications
+    }
+
+    private static var developerApplicationsRoot: String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        process.arguments = ["-p"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let developerDirectory = String(
+                    data: output.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                  )?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !developerDirectory.isEmpty
+            else { return nil }
+            return URL(fileURLWithPath: developerDirectory)
+                .appendingPathComponent("Applications")
+                .path
+        } catch {
+            return nil
+        }
     }
 
     private static func candidate(at url: URL, name: String) -> LaunchCandidate {
