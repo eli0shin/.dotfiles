@@ -89,6 +89,7 @@ if OS.mac?
   cask "logitune"
   cask "superwhisper"
   cask "kitlangton-hex"
+  cask "macparakeet"
 end
 
 cask "codex"
