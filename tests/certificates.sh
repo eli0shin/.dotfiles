@@ -83,4 +83,47 @@ grep -Fqx 'update-ca-trust' "$COMMAND_LOG" || {
     exit 1
 }
 
+# An existing matching certificate in the macOS System keychain must not prompt
+# for sudo again.
+_current_platform() { printf '%s\n' darwin; }
+has() {
+    case "$1" in
+        curl|openssl|security|sudo) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+security() {
+    case "$1" in
+        find-certificate)
+            printf '%s\n' "SHA-256 hash: ${MOCK_KEYCHAIN_FINGERPRINT:-$HOMELAB_CA_SHA256}"
+            ;;
+        verify-cert)
+            [[ ${MOCK_KEYCHAIN_TRUSTED:-true} == true ]]
+            ;;
+    esac
+}
+
+: > "$COMMAND_LOG"
+_trust_homelab_ca_globally "$user_ca"
+[[ ! -s $COMMAND_LOG ]] || {
+    echo "FAIL: an existing trusted homelab CA was trusted again on macOS" >&2
+    exit 1
+}
+
+MOCK_KEYCHAIN_TRUSTED=false
+_trust_homelab_ca_globally "$user_ca"
+grep -Fqx "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $user_ca" "$COMMAND_LOG" || {
+    echo "FAIL: an untrusted homelab CA was not trusted on macOS" >&2
+    exit 1
+}
+
+unset MOCK_KEYCHAIN_TRUSTED
+: > "$COMMAND_LOG"
+MOCK_KEYCHAIN_FINGERPRINT=0000000000000000000000000000000000000000000000000000000000000000
+_trust_homelab_ca_globally "$user_ca"
+grep -Fqx "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $user_ca" "$COMMAND_LOG" || {
+    echo "FAIL: a missing homelab CA was not trusted on macOS" >&2
+    exit 1
+}
+
 printf 'PASS: homelab CA system trust\n'

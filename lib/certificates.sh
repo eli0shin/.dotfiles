@@ -4,6 +4,21 @@
 HOMELAB_CA_URL="${HOMELAB_CA_URL:-http://ca.home.arpa/homelab-local-ca.crt}"
 HOMELAB_CA_SHA256="${HOMELAB_CA_SHA256:-DCA9E760BFAD7D3E4237B83F3B790C83F554D9BA0F63B3FA729F5F157E6EC8D1}"
 
+_homelab_ca_is_trusted_in_macos_system_keychain() {
+    local source_ca="$1"
+    local fingerprint
+    local keychain_certificates
+
+    fingerprint=$(openssl x509 -in "$source_ca" -noout -fingerprint -sha256 \
+        | awk -F= 'NR == 1 { print $2 }' | tr -d '[:space:]:') || return 1
+    keychain_certificates=$(security find-certificate -a -Z \
+        /Library/Keychains/System.keychain 2>/dev/null) || return 1
+
+    grep -Fqx "SHA-256 hash: $fingerprint" <<< "$keychain_certificates" \
+        && security verify-cert -c "$source_ca" \
+            -k /Library/Keychains/System.keychain >/dev/null 2>&1
+}
+
 _trust_homelab_ca_globally() {
     local source_ca="$1"
     local system_ca
@@ -44,9 +59,18 @@ _trust_homelab_ca_globally() {
             fi
             ;;
         darwin)
-            if ! has security \
-                || ! sudo security add-trusted-cert -d -r trustRoot \
-                    -k /Library/Keychains/System.keychain "$source_ca"; then
+            if ! has security; then
+                warn "Could not add the homelab CA to the system keychain"
+                return 0
+            fi
+
+            if _homelab_ca_is_trusted_in_macos_system_keychain "$source_ca"; then
+                success "Homelab CA already trusted globally"
+                return 0
+            fi
+
+            if ! sudo security add-trusted-cert -d -r trustRoot \
+                -k /Library/Keychains/System.keychain "$source_ca"; then
                 warn "Could not add the homelab CA to the system keychain"
                 return 0
             fi

@@ -1,6 +1,5 @@
 {
   "sleep": 0,
-  "disksleep": 0,
   "powernap": 0,
   "tcpkeepalive": 1,
   "womp": 1,

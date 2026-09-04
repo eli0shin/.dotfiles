@@ -6,6 +6,17 @@ DEFAULTS_FILE="$SETTINGS_DIR/defaults.json"
 KEYBOARD_FILE="$SETTINGS_DIR/keyboard.json"
 SYMBOLIC_HOTKEYS_FILE="$SETTINGS_DIR/symbolic-hotkeys.json"
 
+_pmset_ac_value() {
+    local custom_settings="$1"
+    local key="$2"
+
+    awk -v key="$key" '
+        /^AC Power:$/ { in_ac = 1; next }
+        /^[^[:space:]].*:$/ { in_ac = 0 }
+        in_ac && $1 == key { print $2; exit }
+    ' <<< "$custom_settings"
+}
+
 cmd_pmset() {
     local subcmd="${1:-apply}"
 
@@ -25,13 +36,15 @@ cmd_pmset() {
 
             info "Checking pmset settings..."
 
+            local custom_settings
+            custom_settings=$(pmset -g custom)
             local needs_change=false
 
             while IFS= read -r line; do
                 local key value current
                 key=$(echo "$line" | awk '{print $1}')
                 value=$(echo "$line" | awk '{print $2}')
-                current=$(pmset -g | grep -E "^\s*$key\s+" | awk '{print $2}')
+                current=$(_pmset_ac_value "$custom_settings" "$key")
 
                 if [[ "$current" == "$value" ]]; then
                     success "$key already set to $value"
