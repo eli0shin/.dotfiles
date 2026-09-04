@@ -1,7 +1,7 @@
 #!/bin/sh
 # macOS sudo askpass helper.
 #
-# Called by sudo when a password is needed and no terminal is available
+# Called by `sudo -A` when a password is needed
 # (wired up via /private/etc/sudo.conf by `dot askpass apply`).
 # Prints the collected password to stdout; exits nonzero when no GUI
 # session is available or the user cancels, so sudo fails cleanly.
@@ -21,7 +21,7 @@ prompt=${1:-Password:}
 
 password=$(
     osascript -e 'on run argv
-        display dialog (item 1 of argv) ¬
+        set dialogResult to display dialog (item 1 of argv) ¬
             default answer "" ¬
             with hidden answer ¬
             with title "sudo" ¬
@@ -29,8 +29,8 @@ password=$(
             default button "OK" ¬
             with icon caution ¬
             giving up after 120
-        if gave up of result then return ""
-        text returned of result
+        if gave up of dialogResult then return ""
+        text returned of dialogResult
     end run' "$prompt"
 ) || exit 1
 

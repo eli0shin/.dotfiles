@@ -1,0 +1,75 @@
+#!/bin/sh
+# Use the configured macOS GUI askpass helper when sudo has no terminal.
+
+system_sudo=${DOT_SUDO_BIN:-/usr/bin/sudo}
+
+if [ "$(uname -s)" != "Darwin" ] || [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then
+    exec "$system_sudo" "$@"
+fi
+
+# Return success when sudo's option section explicitly selects askpass or
+# stdin. Stop at the command so its arguments cannot be mistaken for options.
+has_password_mode() {
+    expect_value=false
+
+    for arg do
+        if [ "$expect_value" = true ]; then
+            expect_value=false
+            continue
+        fi
+
+        case "$arg" in
+            --)
+                return 1
+                ;;
+            --as*|--st*)
+                return 0
+                ;;
+            --cl*=*|--chd*=*|--chr*=*|--co*=*|--g*=*|--ho*=*|--pro*=*|--o*=*|--u*=*)
+                continue
+                ;;
+            --cl*|--chd*|--chr*|--co*|--g*|--ho*|--pro*|--o*|--u*)
+                expect_value=true
+                continue
+                ;;
+            --*=*|--*)
+                continue
+                ;;
+            -?*)
+                options=${arg#-}
+                while [ -n "$options" ]; do
+                    option=${options%"${options#?}"}
+                    options=${options#?}
+                    case "$option" in
+                        A|S)
+                            return 0
+                            ;;
+                        C|D|g|h|p|R|T|U|u)
+                            if [ -z "$options" ]; then
+                                expect_value=true
+                            fi
+                            break
+                            ;;
+                    esac
+                done
+                ;;
+            /*=*)
+                return 1
+                ;;
+            *=*)
+                continue
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+if has_password_mode "$@"; then
+    exec "$system_sudo" "$@"
+fi
+
+exec "$system_sudo" -A "$@"

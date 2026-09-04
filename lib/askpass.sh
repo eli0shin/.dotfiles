@@ -1,10 +1,10 @@
 # shellcheck shell=bash
 # macOS GUI sudo password prompt.
 #
-# sudo reads its password from the terminal when one exists (SSH sessions,
-# shells inside herdr). When there is no terminal - GUI apps, agents, no-tty
-# remote commands - sudo needs an askpass helper, otherwise it exits with
-# "a terminal is required to read the password".
+# sudo reads its password from the terminal unless the caller supplies -A.
+# The stowed ~/bin/sudo wrapper adds -A on macOS when it has no terminal;
+# Fish puts that wrapper before /usr/bin/sudo. Interactive calls and explicit
+# -A or -S calls keep their standard behavior.
 #
 # This module installs a line in /private/etc/sudo.conf pointing sudo at the
 # stowed helper in ~/bin/askpass. The helper shows a native macOS dialog and

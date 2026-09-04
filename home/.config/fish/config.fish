@@ -1,3 +1,7 @@
+if test -d "$HOME/bin"
+    fish_add_path --prepend --path "$HOME/bin"
+end
+
 if test -d /opt/homebrew/opt/git/bin
     fish_add_path --prepend --path /opt/homebrew/opt/git/bin
 end
