@@ -30,6 +30,12 @@
     "update": "pi update --all"
   },
   {
+    "command": "pi-extension-dependencies",
+    "check": "test -f \"$DOTFILES_DIR/home/.pi/agent/extensions/node_modules/marked/package.json\"",
+    "install": "\"$DOTFILES_DIR/scripts/install-pi-extension-dependencies.sh\"",
+    "update": "\"$DOTFILES_DIR/scripts/install-pi-extension-dependencies.sh\""
+  },
+  {
     "command": "repos",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/repos/main/install.sh | bash",
     "update": "repos update"

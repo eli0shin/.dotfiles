@@ -4,6 +4,9 @@
   "collapseChangelog": true,
   "doubleEscapeAction": "tree",
   "tuiMode": "fullscreen",
+  "terminal": {
+    "hyperlinks": true
+  },
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
