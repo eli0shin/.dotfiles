@@ -1,0 +1,41 @@
+#!/bin/sh
+# macOS sudo askpass helper.
+#
+# Called by sudo when a password is needed and no terminal is available
+# (wired up via /private/etc/sudo.conf by `dot askpass apply`).
+# Prints the collected password to stdout; exits nonzero when no GUI
+# session is available or the user cancels, so sudo fails cleanly.
+
+# Only meaningful inside a macOS GUI login session. Over SSH, or on any
+# other platform, bail out so sudo errors instead of hanging or popping
+# a dialog on a screen nobody is looking at.
+if [ "$(uname -s)" != "Darwin" ]; then
+    exit 1
+fi
+
+if [ "$(launchctl managername 2>/dev/null)" != "Aqua" ]; then
+    exit 1
+fi
+
+prompt=${1:-Password:}
+
+password=$(
+    osascript -e 'on run argv
+        display dialog (item 1 of argv) ¬
+            default answer "" ¬
+            with hidden answer ¬
+            with title "sudo" ¬
+            buttons {"Cancel", "OK"} ¬
+            default button "OK" ¬
+            with icon caution ¬
+            giving up after 120
+        if gave up of result then return ""
+        text returned of result
+    end run' "$prompt"
+) || exit 1
+
+# User cancelled (Cancel button), the dialog timed out, or nothing was
+# typed. Any of these means authentication cannot complete.
+[ -n "$password" ] || exit 1
+
+printf '%s\n' "$password"

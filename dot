@@ -13,6 +13,8 @@ source "$DOTFILES_DIR/lib/packages.sh"
 source "$DOTFILES_DIR/lib/daemons.sh"
 # shellcheck source=lib/settings.sh
 source "$DOTFILES_DIR/lib/settings.sh"
+# shellcheck source=lib/askpass.sh
+source "$DOTFILES_DIR/lib/askpass.sh"
 # shellcheck source=lib/automount.sh
 source "$DOTFILES_DIR/lib/automount.sh"
 # shellcheck source=lib/dotfiles.sh
@@ -37,6 +39,7 @@ cmd_setup() {
         cmd_automount apply || warn "automount settings could not be applied"
         cmd_defaults apply || warn "macOS defaults could not be applied"
         cmd_keyboard apply || warn "keyboard remappings could not be applied"
+        cmd_askpass apply || warn "sudo askpass could not be configured"
     else
         warn "Skipping macOS system settings on $(uname -s)"
     fi
@@ -77,6 +80,7 @@ Commands:
   automount [apply|show|remove]  Manage macOS network automounts
   defaults [apply|show]  Manage macOS defaults and file associations
   keyboard [apply|show]  Manage keyboard remappings
+  askpass [apply|show]  Manage GUI sudo password prompt (macOS)
   backup            Backup existing configs before stow
   restore [--list|--merge]  Restore configs (--merge only restores extra files)
   benchmark-shell [-r N] [-v]  Benchmark Fish shell startup performance
@@ -114,6 +118,7 @@ main() {
         automount) cmd_automount "$@" ;;
         defaults) cmd_defaults "$@" ;;
         keyboard) cmd_keyboard "$@" ;;
+        askpass) cmd_askpass "$@" ;;
         backup)  cmd_backup "$@" ;;
         restore) cmd_restore "$@" ;;
         benchmark-shell) cmd_benchmark_shell "$@" ;;

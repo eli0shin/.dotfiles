@@ -16,6 +16,7 @@ complete -c dot -n "__fish_use_subcommand" -a "pmset" -d "Manage power settings"
 complete -c dot -n "__fish_use_subcommand" -a "automount" -d "Manage macOS network automounts"
 complete -c dot -n "__fish_use_subcommand" -a "defaults" -d "Manage macOS defaults"
 complete -c dot -n "__fish_use_subcommand" -a "keyboard" -d "Manage keyboard remappings"
+complete -c dot -n "__fish_use_subcommand" -a "askpass" -d "Manage GUI sudo password prompt"
 complete -c dot -n "__fish_use_subcommand" -a "backup" -d "Backup existing configs"
 complete -c dot -n "__fish_use_subcommand" -a "restore" -d "Restore configs from backup"
 complete -c dot -n "__fish_use_subcommand" -a "benchmark-shell" -d "Benchmark Fish startup performance"
@@ -47,6 +48,7 @@ complete -c dot -n "__fish_seen_subcommand_from pmset" -a "apply show" -d "apply
 complete -c dot -n "__fish_seen_subcommand_from automount" -a "apply show remove" -d "apply, show, or remove"
 complete -c dot -n "__fish_seen_subcommand_from defaults" -a "apply show" -d "apply or show"
 complete -c dot -n "__fish_seen_subcommand_from keyboard" -a "apply show" -d "apply or show"
+complete -c dot -n "__fish_seen_subcommand_from askpass" -a "apply show" -d "apply or show"
 
 # restore options
 complete -c dot -n "__fish_seen_subcommand_from restore" -l list -d "List backup contents"
