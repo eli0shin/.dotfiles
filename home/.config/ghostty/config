@@ -4,6 +4,8 @@
 # Font Configuration
 font-family = "Operator Mono Medium"
 font-size = 16
+# Optional machine-specific overrides (ignored by Git).
+config-file = ?"~/.config/ghostty/ghostty-local.conf"
 
 # Font rendering
 font-synthetic-style = true
