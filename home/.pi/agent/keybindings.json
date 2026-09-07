@@ -3,7 +3,10 @@
     "ctrl+x"
   ],
   "app.editor.external": "ctrl+e",
-  "tui.altScreen.bottom": "ctrl+shift+g",
+  "tui.altScreen.bottom": [
+    "end",
+    "ctrl+shift+g"
+  ],
   "tui.altScreen.pageUp": [
     "ctrl+u"
   ],
