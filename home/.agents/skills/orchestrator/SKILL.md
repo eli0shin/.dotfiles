@@ -16,7 +16,7 @@ Act as an **event-driven control plane**. Coordinate workers and reviewers. One 
 Never implement ticket changes yourself. After spawning a worker:
 
 - Never block the orchestration loop with `gh pr watch`, `gh run watch`, repeated `sleep`/status loops, or manual watching of GitHub, CI, worker sessions, or worker worktrees. One-shot state retrieval is not polling: use `gh pr list`, `gh pr view`, `gh run view`, and equivalent metadata queries whenever needed to reconcile state, respond to the user, or direct a review.
-- Never read a worker diff, changed file, or worker worktree yourself; delegate change inspection to `run_code_review`. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
+- Never read a worker diff, changed-file contents, or worker worktree yourself; delegate code inspection to `run_code_review`. You may read changed-file paths and commit metadata for the merge compatibility gate below, but never patches or file contents. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
 - Never edit, commit, or push a worker branch, and never send manual instructions into a healthy worker's tmux session.
 
 If information is missing, ask for it in a concise PR comment, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.
@@ -56,7 +56,7 @@ Classify the event before delegating review:
 - **All applicable checks completed successfully for the current head:** call `run_code_review`.
 - **Relevant feedback added after a completed review:** fetch current state and delegate a follow-up only if all applicable checks for the current head still pass.
 
-Never review a head while substantive checks are queued or in progress. Review each successful head once unless new relevant feedback requires a follow-up. Before review, confirm the successful checks belong to the current head and current landing-base merge ref, not an obsolete base.
+Never review a head while substantive checks are queued or in progress. Review each successful head once unless new relevant feedback requires a follow-up. Before review, confirm the successful checks belong to the current head. Apply the merge compatibility gate below when the PR is otherwise ready to merge.
 
 In `taskContext`, describe the worker worktree, PR, ticket, triggering CI-finished event, and relevant feedback, with this required return contract:
 
@@ -75,9 +75,27 @@ A review cycle is complete only when delegated evidence covers the current succe
 
 Act as the final authority on review feedback. Assess delegated findings and existing PR feedback against the ticket, ADRs, designs, and repository contracts using the returned evidence and allowed PR context; do not pass through feedback that conflicts with those sources. Derive the next action from the evidence rather than asking the reviewer for a routing label.
 
-- If the worker must change code, resolve conflicts, update onto the current landing branch, regenerate outputs, or initiate missing verification, publish all accepted actionable findings through one ordinary PR comment or a GitHub review. Never request review by tagging a bot. Then yield for the worker's update.
+- If the worker must change code, regenerate outputs, or initiate missing verification, publish all accepted actionable findings through one ordinary PR comment or a GitHub review. Never request review by tagging a bot. Then yield for the worker's update.
 - If no worker action is needed but checks or another external operation are already running, yield for the next event.
-- Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed against the current landing base, generated changes are intentional, actionable findings are resolved, and the PR is mergeable. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
+- Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed for that head, generated changes are intentional, and actionable findings are resolved. Require current mergeability and the merge compatibility gate below before merging. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
+
+## Merge compatibility
+
+Being behind the landing branch alone does not require an update. The orchestrator applies this gate from metadata; it adds no reviewer duty or worker compatibility report.
+
+If GitHub reports a merge conflict, leave the PR unmerged and yield. The worker receives the conflict notification and handles it; no orchestrator comment is needed.
+
+When a PR is otherwise ready to merge:
+
+1. Fetch its current head, landing SHA, and mergeability. Identify the common ancestor of the head and landing branch.
+2. Compare the PR's changed-file paths with all paths changed by landing commits since that ancestor. Use complete path metadata, including old and new paths for renames, without reading diffs or file contents. Check ticket and PR metadata for known dependencies between these changes.
+3. Act on the result:
+   - **No shared paths and no known dependency:** keep the existing review and passing CI results. Merge without requesting an update or another CI run.
+   - **Shared paths or a known dependency, without a GitHub conflict:** post one ordinary PR comment asking the worker to update onto the landing branch, preserve landed behavior, and run the relevant checks. Then yield. The updated head follows the normal CI and review process.
+
+Shared paths trigger an update even when GitHub can merge the changes cleanly. This conservative gate does not prove that changes in separate files are independent. If path metadata is incomplete or mergeability is unknown, retrieve the missing metadata or yield rather than treating the PR as ready.
+
+The gate is complete only for the head and landing SHAs checked. Confirm both are unchanged before merging; if either changed, apply the gate again. Repository-required checks and branch protection still apply.
 
 ## Resolve a merge
 
@@ -90,7 +108,7 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 5. Run `tickets lint`.
 6. Run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
 7. Run `git pull` to pull in the changes from the merged PR
-8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls. A landing merge may make another PR conflicted, behind, or leave its green checks tied to an obsolete merge base without producing a PR Watch event. Immediately comment on each affected PR asking its worker to update onto the current landing branch, preserve already-merged contracts, resolve conflicts, and rerun the relevant checks.
+8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
 9. Find and spawn the newly unblocked frontier immediately.
 
 This step is complete when tracker evidence is recorded, the worker is cleaned up successfully, lint passes, remaining PRs have been reconciled, and every newly executable ticket has a worker. Then yield.
