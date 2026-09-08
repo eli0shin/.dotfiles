@@ -37,13 +37,17 @@ Start all independent frontier tickets without waiting between them. Invoke the 
 
 ```bash
 ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
-~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name> --context "<steering context>"
-printf '%s\n' "<steering context>" | ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
+~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name> --context "Use the accepted A design, not the later draft."
+printf '%s\n' "Use the accepted A design, not the later draft." | ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
 ```
 
-Optionally provide concise steering context that is not already captured in the ticket. Do not summarize or restate existing instructions. `--context` accepts quoted text; when it is omitted, the script reads piped stdin if present.
+**Ticket first; context is steering only.** Default to the ticket-name-only command. The script invokes `/skill:ticket-worker` and supplies the ticket, worker identity, and PR base. The worker already has its prompt, skill, and repository instructions; those sources define how it works.
 
-Do not claim worker tickets; the script supplies the worker identity and handoff. This step is complete when every currently executable frontier ticket has a worker. Then yield.
+Add context only for a task-specific decision or constraint absent from the ticket. Use one or two short sentences. If the ticket is outside the worker checkout, give its exact path as a reference, not a tracker tutorial. Leave context empty when the ticket is sufficient. Do not repeat the ticket, worker duties, or workflow instructions for claiming, worktrees, tests, review, commits, PRs, or waiting for feedback.
+
+`--context` accepts quoted text; when it is omitted, the script reads piped stdin if present. The script keeps the prompt out of terminal input so context length does not cause terminal truncation; this is not a reason to send more instructions.
+
+Do not claim worker tickets; the worker skill owns that step. This step is complete when every currently executable frontier ticket has a worker. Then yield.
 
 ## Dispatch PR events
 

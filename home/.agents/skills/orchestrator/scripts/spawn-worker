@@ -120,12 +120,30 @@ if [[ -n $context ]]; then
   printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
 fi
 
-prompt_base64=$(printf %s "$prompt" | base64 | tr -d '\n') || exit
-printf -v orchestration_id_q %q "$PI_ORCHESTRATION_SESSION_ID"
-command="env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=$orchestration_id_q pi \"\$(printf %s $prompt_base64 | base64 -d)\""
+# A new pane can still have canonical terminal input enabled. Long commands
+# can overflow that input buffer, including the final Enter. Send only a path.
+# mktemp creates a private file; /tmp keeps the command short and shell-neutral.
+launcher=$(mktemp /tmp/pi-worker.XXXXXXXXXX) || exit
+if ! {
+  printf '%s\n' 'rm -- "$0" || exit' 'unset PI_ORCHESTRATION_SESSION_ID'
+  printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$PI_ORCHESTRATION_SESSION_ID"
+  printf 'exec pi %q\n' "$prompt"
+} > "$launcher"; then
+  rm -f -- "$launcher"
+  exit 1
+fi
+
+# The pane owns the file after dispatch. It removes the file before starting Pi.
+command="bash $launcher"
 if [[ $workspace_manager == herdr ]]; then
   herdr pane run "$pane_id" "$command"
+  launch_status=$?
 else
-  tmux send-keys -l -t "$worker_identity:0" -- "$command" || exit
-  tmux send-keys -t "$worker_identity:0" Enter
+  tmux send-keys -l -t "$worker_identity:0" -- "$command" &&
+    tmux send-keys -t "$worker_identity:0" Enter
+  launch_status=$?
 fi
+if [[ $launch_status -ne 0 ]]; then
+  rm -f -- "$launcher"
+fi
+exit "$launch_status"

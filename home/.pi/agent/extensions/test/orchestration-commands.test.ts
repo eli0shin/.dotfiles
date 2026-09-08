@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -23,10 +23,30 @@ async function fixture(): Promise<{ root: string; fakeBin: string }> {
   return { root, fakeBin };
 }
 
-function decodeInitialPrompt(calls: string): string {
-  const match = calls.match(/printf %s ([A-Za-z0-9+/=]+) \| base64 -d/);
-  assert.ok(match, "Pi launch command must contain a base64-encoded initial prompt");
-  return Buffer.from(match[1], "base64").toString("utf8");
+async function readInitialPrompt(calls: string): Promise<string> {
+  const match = calls.match(/<bash (\/tmp\/pi-worker\.[A-Za-z0-9]+)>/);
+  assert.ok(match, "Pi launch command must contain only a short launcher path");
+  const launcher = match[1];
+  const { root, fakeBin } = await fixture();
+  try {
+    assert.equal((await stat(launcher)).mode & 0o777, 0o600);
+    await executable(join(fakeBin, "pi"), `#!/bin/sh
+[ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 3
+[ "$PI_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 4
+[ "$#" = 1 ] || exit 5
+printf '%s' "$1"
+`);
+    const result = spawnSync("fish", ["--no-config", "-c", `bash ${launcher}`], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, PI_ORCHESTRATION_SESSION_ID: "outer-session" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    await assert.rejects(stat(launcher), { code: "ENOENT" });
+    return result.stdout;
+  } finally {
+    await rm(launcher, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async () => {
@@ -161,9 +181,10 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
       "Context:\n" +
       "Keep API stable.\n" +
       "Avoid migrations.";
-    const encodedPrompt = Buffer.from(prompt).toString("base64");
+    const log = await readFile(calls, "utf8");
+    assert.equal(await readInitialPrompt(log), prompt);
     assert.equal(
-      await readFile(calls, "utf8"),
+      log.replace(/<bash \/tmp\/pi-worker\.[A-Za-z0-9]+>/, "<bash LAUNCHER>"),
       "git branch --show-current\n" +
         "git rev-parse --abbrev-ref --symbolic-full-name @{upstream}\n" +
         "git rev-parse HEAD\n" +
@@ -173,7 +194,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "repos stack --no-focus 042-implement-widget\n" +
         "tmux <list-sessions> <-F> <#{session_name}>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
-        `<env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=session-123 pi "$(printf %s ${encodedPrompt} | base64 -d)">\n` +
+        "<bash LAUNCHER>\n" +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n",
     );
 
@@ -193,7 +214,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
       },
     );
     assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
-    assert.doesNotMatch(decodeInitialPrompt(await readFile(calls, "utf8")), /Context:/);
+    assert.doesNotMatch(await readInitialPrompt(await readFile(calls, "utf8")), /Context:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -246,8 +267,8 @@ fi
     assert.match(log, /herdr <workspace> <list>/);
     assert.doesNotMatch(log, /--json/);
     assert.match(log, /herdr <pane> <run> <w3:p1>/);
-    assert.match(log, /<w3:p1> <env -u PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID=session-123 pi /);
-    assert.equal(decodeInitialPrompt(log), "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.");
+    assert.match(log, /<w3:p1> <bash \/tmp\/pi-worker\./);
+    assert.equal(await readInitialPrompt(log), "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.");
     assert.doesNotMatch(log, /tmux/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -287,7 +308,7 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
     assert.match(
-      decodeInitialPrompt(await readFile(calls, "utf8")),
+      await readInitialPrompt(await readFile(calls, "utf8")),
       /\n\nContext:\nPrefer the existing adapter\.\nKeep the constructor\.$/,
     );
 
@@ -307,9 +328,88 @@ test("spawn-worker uses non-empty piped stdin as context", async () => {
       },
     );
     assert.equal(emptyContextResult.status, 0, emptyContextResult.error?.message ?? emptyContextResult.stderr ?? "");
-    assert.doesNotMatch(decodeInitialPrompt(await readFile(calls, "utf8")), /Context:/);
+    assert.doesNotMatch(await readInitialPrompt(await readFile(calls, "utf8")), /Context:/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker delivers long context without sending it through terminal input", async () => {
+  for (const manager of ["tmux", "herdr"]) {
+    const { root, fakeBin } = await fixture();
+    const created = join(root, "created");
+    const commandFile = join(root, "command");
+    const received = join(root, "received");
+    const context = "Steering: keep café labels. 'quoted' \"text\" $HOME $(false) `false` \\path\n".repeat(20);
+    await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+    await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") echo main ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  *) echo abc123 ;;
+esac
+`);
+    await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(created)}\n`);
+    await executable(join(fakeBin, "tmux"), `#!/bin/sh
+if [ "$1" = list-sessions ]; then
+  if [ -f ${JSON.stringify(created)} ]; then echo repo@ticket-one; fi
+elif [ "$2" = -l ]; then
+  printf '%s' "$6" > ${JSON.stringify(commandFile)}
+  exit "\${FAIL_DISPATCH:-0}"
+else
+  exit "\${FAIL_ENTER:-0}"
+fi
+`);
+    await executable(join(fakeBin, "herdr"), `#!/bin/sh
+case "$1 $2" in
+  "workspace list")
+    if [ -f ${JSON.stringify(created)} ]; then
+      echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"repo@ticket-one"}]}}'
+    else echo '{"result":{"workspaces":[]}}'; fi ;;
+  "pane list") echo '{"result":{"panes":[{"workspace_id":"w1","pane_id":"w1:p1"}]}}' ;;
+  "pane run") printf '%s' "$4" > ${JSON.stringify(commandFile)}; exit "\${FAIL_DISPATCH:-0}" ;;
+esac
+`);
+    await executable(join(fakeBin, "pi"), `#!/bin/sh
+[ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 3
+[ "$PI_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 4
+[ "$#" = 1 ] || exit 5
+printf '%s' "$1" > ${JSON.stringify(received)}
+`);
+    const env = {
+      ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, TMPDIR: root,
+      PI_ORCHESTRATION_SESSION_ID: "session-123", HERDR_ENV: manager === "herdr" ? "1" : "0",
+    };
+    try {
+      // Exercise both context input forms. Run the terminal command only after the
+      // spawner exits, as the real pane does during shell startup.
+      const result = spawnSync(spawnWorker, manager === "tmux" ? ["ticket-one", "--context", context] : ["ticket-one"], {
+        encoding: "utf8", env, input: manager === "herdr" ? context : "",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const command = await readFile(commandFile, "utf8");
+      assert.ok(Buffer.byteLength(command) < 1024, `${manager}: terminal command is ${Buffer.byteLength(command)} bytes`);
+      assert.match(command, /^bash \/tmp\/pi-worker\.[A-Za-z0-9]+$/);
+      const launcher = command.slice("bash ".length);
+      assert.equal((await stat(launcher)).mode & 0o777, 0o600);
+      const launched = spawnSync("fish", ["--no-config", "-c", command], { encoding: "utf8", env });
+      assert.equal(launched.status, 0, launched.stderr);
+      await assert.rejects(stat(launcher), { code: "ENOENT" });
+      assert.equal(await readFile(received, "utf8"),
+        "/skill:ticket-worker \n\nTicket: ticket-one\nWorker identity: repo@ticket-one\nPR base: main\n\nContext:\n" + context.trim());
+
+      for (const failure of manager === "tmux" ? ["FAIL_DISPATCH", "FAIL_ENTER"] : ["FAIL_DISPATCH"]) {
+        await rm(created);
+        const failed = spawnSync(spawnWorker, ["ticket-one"], {
+          encoding: "utf8", env: { ...env, [failure]: "7" }, input: "",
+        });
+        assert.equal(failed.status, 7, failed.stderr);
+        const failedCommand = await readFile(commandFile, "utf8");
+        await assert.rejects(stat(failedCommand.slice("bash ".length)), { code: "ENOENT" });
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 
