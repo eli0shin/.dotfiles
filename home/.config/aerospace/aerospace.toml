@@ -34,9 +34,11 @@ persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 # Hidden applications do not fit the workspace model.
 automatically-unhide-macos-hidden-apps = true
 
-# Follow keyboard focus when it crosses displays.
-on-focused-monitor-changed = ["move-mouse monitor-lazy-center"]
-focus-follows-mouse.enabled = false
+# Move the pointer into the focused window.
+on-focus-changed = ["move-mouse window-lazy-center"]
+
+# Focus the window under the pointer.
+focus-follows-mouse.enabled = true
 
 [gaps]
 inner.horizontal = 0
