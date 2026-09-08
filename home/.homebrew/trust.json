@@ -20,7 +20,8 @@
     "datadog/lapdog/lapdog",
     "felixkratz/formulae/sketchybar",
     "hashicorp/tap/terraform",
-    "qmk/qmk/qmk"
+    "qmk/qmk/qmk",
+    "rjyo/moshi/moshi-hook"
   ],
   "trustedcasks": [
     "nikitabobko/tap/aerospace",
