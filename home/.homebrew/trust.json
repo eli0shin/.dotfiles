@@ -21,7 +21,8 @@
     "felixkratz/formulae/sketchybar",
     "hashicorp/tap/terraform",
     "qmk/qmk/qmk",
-    "rjyo/moshi/moshi-hook"
+    "rjyo/moshi/moshi-hook",
+    "shaharia-lab/tap/slackcli"
   ],
   "trustedcasks": [
     "nikitabobko/tap/aerospace",
