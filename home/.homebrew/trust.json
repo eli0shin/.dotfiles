@@ -11,6 +11,7 @@
     "opencode-ai/tap",
     "osx-cross/arm",
     "qmk/qmk",
+    "rjyo/moshi",
     "shaharia-lab/tap",
     "sst/tap",
     "tilt-dev/tap"

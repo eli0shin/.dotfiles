@@ -53,6 +53,15 @@ grep -Fqx 'update-ca-trust' "$COMMAND_LOG" || {
     exit 1
 }
 
+system_ca="$HOMELAB_CA_ROOT/etc/ca-certificates/trust-source/anchors/homelab-local-ca.crt"
+cp "$user_ca" "$system_ca"
+: > "$COMMAND_LOG"
+_trust_homelab_ca_globally "$user_ca"
+[[ ! -s $COMMAND_LOG ]] || {
+    echo "FAIL: an existing matching Linux trust anchor triggered sudo" >&2
+    exit 1
+}
+
 rm -f "$user_ca"
 : > "$COMMAND_LOG"
 MOCK_FINGERPRINT=0000000000000000000000000000000000000000000000000000000000000000

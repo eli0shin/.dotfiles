@@ -3,6 +3,7 @@
 
 tap "qmk/qmk", trusted: true
 tap "osx-cross/arm", trusted: true
+tap "rjyo/moshi", trusted: true
 
 if OS.mac?
 	mas "Developer", id: 640199958
@@ -40,6 +41,7 @@ if OS.mac?
 end
 
 brew "mosh"
+brew "moshi-hook"
 brew "iperf3"
 brew "tailscale"
 cask "google-chrome"

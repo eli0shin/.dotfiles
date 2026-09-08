@@ -41,6 +41,11 @@ _trust_homelab_ca_globally() {
                     return 0
                 fi
 
+                if [[ -r "$system_ca" ]] && cmp -s "$source_ca" "$system_ca"; then
+                    success "Homelab CA already trusted globally"
+                    return 0
+                fi
+
                 if ! sudo install -D -m 0644 "$source_ca" "$system_ca" \
                     || ! sudo update-ca-trust; then
                     warn "Could not add the homelab CA to the system trust store"
@@ -48,6 +53,11 @@ _trust_homelab_ca_globally() {
                 fi
             elif has update-ca-certificates; then
                 system_ca="$system_root/usr/local/share/ca-certificates/homelab-local-ca.crt"
+                if [[ -r "$system_ca" ]] && cmp -s "$source_ca" "$system_ca"; then
+                    success "Homelab CA already trusted globally"
+                    return 0
+                fi
+
                 if ! sudo install -D -m 0644 "$source_ca" "$system_ca" \
                     || ! sudo update-ca-certificates; then
                     warn "Could not add the homelab CA to the system trust store"
