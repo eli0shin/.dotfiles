@@ -37,8 +37,10 @@ automatically-unhide-macos-hidden-apps = true
 # Move the pointer into the focused window.
 on-focus-changed = ["move-mouse window-lazy-center"]
 
-# Focus the window under the pointer.
-focus-follows-mouse.enabled = true
+# Do not focus windows on pointer movement. AeroSpace does not account for
+# macOS window stacking, so this can raise a tiled window above a floating
+# dialog that overlaps it.
+focus-follows-mouse.enabled = false
 
 [gaps]
 inner.horizontal = 0
