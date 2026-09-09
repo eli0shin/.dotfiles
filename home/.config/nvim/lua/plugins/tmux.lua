@@ -3,6 +3,9 @@ return {
   event = 'VeryLazy',
   config = function()
     require('tmux').setup {
+      navigation = {
+        enable_default_keybindings = vim.env.HERDR_ENV ~= '1',
+      },
       copy_sync = {
         enable = false,
       },

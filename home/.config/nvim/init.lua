@@ -25,6 +25,7 @@ require('lazy').setup({
   require 'plugins.diffview',
   require 'plugins.diff_review_comments',
   require 'plugins.tmux',
+  require 'plugins.herdr',
   require 'plugins.logsitter',
   require 'plugins.oil',
   require 'plugins.arrow',

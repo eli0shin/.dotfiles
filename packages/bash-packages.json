@@ -41,6 +41,11 @@
     "update": "repos update"
   },
   {
+    "command": "herdr-navigator-plugin",
+    "check": "herdr plugin list --json | jq -e 'any(.result.plugins[]; .plugin_id == \"herdr-navigator\" and .enabled)' >/dev/null",
+    "install": "herdr plugin install kaar/nvim-herdr-navigator --yes"
+  },
+  {
     "command": "cli-lsp-client",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/cli-lsp-client/main/install.sh | bash",
     "update": "cli-lsp-client update"

@@ -6,8 +6,10 @@ auto_switch = false
 
 # Arctic (VS Code Dark+) colors, matched to Neovim.
 [theme.custom]
-accent = "#D4D4D4"
+accent = "#858585"
 panel_bg = "#252526"
+active_row_bg = "#2D2D2D"
+selection_bg = "#04395E"
 surface0 = "#04395E"
 surface1 = "#2A2D2E"
 surface_dim = "#2D2D2D"
@@ -42,13 +44,14 @@ rename_tab = "prefix+r"
 previous_tab = "prefix+p"
 next_tab = "prefix+n"
 switch_tab = "prefix+1..9"
-close_tab = "prefix+q"
+close_tab = "prefix+shift+q"
 edit_scrollback = "prefix+e"
 copy_mode = "prefix+["
 toggle_sidebar = "prefix+b"
 
 # Tabs are the only navigation level inside a workspace.
 rename_pane = ""
+# Direct ctrl+h/j/k/l navigation is handled by herdr-navigator below.
 focus_pane_left = ""
 focus_pane_down = ""
 focus_pane_up = ""
@@ -60,11 +63,42 @@ swap_pane_right = ""
 cycle_pane_next = ""
 cycle_pane_previous = ""
 last_pane = ""
-split_vertical = ""
-split_horizontal = ""
-close_pane = ""
+split_vertical = "prefix+v"
+split_horizontal = "prefix+h"
+close_pane = "prefix+q"
 zoom = ""
 resize_mode = ""
+
+[[keys.command]]
+key = "ctrl+h"
+type = "plugin_action"
+command = "herdr-navigator.left"
+description = "navigate left (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+j"
+type = "plugin_action"
+command = "herdr-navigator.down"
+description = "navigate down (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+k"
+type = "plugin_action"
+command = "herdr-navigator.up"
+description = "navigate up (nvim/herdr)"
+
+[[keys.command]]
+key = "ctrl+l"
+type = "plugin_action"
+command = "herdr-navigator.right"
+description = "navigate right (nvim/herdr)"
+
+# ctrl+l is reserved for navigation, so prefix+ctrl+l clears the shell.
+[[keys.command]]
+key = "prefix+ctrl+l"
+type = "shell"
+command = "\"$HERDR_BIN_PATH\" pane send-keys \"$HERDR_ACTIVE_PANE_ID\" ctrl+l"
+description = "send ctrl+l (clear screen) to pane"
 
 [ui]
 agent_panel_sort = "priority"
@@ -73,7 +107,9 @@ sidebar_min_width = 24
 sidebar_max_width = 72
 sidebar_start_collapsed = true
 sidebar_collapsed_mode = "hidden"
-pane_borders = false
+pane_borders = true
+pane_outer_borders = false
+pane_gaps = false
 pane_scrollbars = false
 hide_tab_bar_when_single_tab = true
 tab_bar_position = "top"
