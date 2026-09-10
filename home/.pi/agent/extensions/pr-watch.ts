@@ -155,6 +155,8 @@ type ShaSyncResult = {
 };
 
 const CUSTOM_STATE = "pr-watch-state";
+const NOTIFICATION_TYPE = "pr-watch-harness";
+const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 const WORKER_ORCHESTRATION_ENV = "PI_PARENT_ORCHESTRATION_SESSION_ID";
@@ -1079,11 +1081,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`;
   }
 
+  function asHarnessNotification(body: string): string {
+    if (body.startsWith("<pr-watch-harness-notification>")) return body;
+    return `<pr-watch-harness-notification>\nNot a user message.\n\n${body}\n</pr-watch-harness-notification>`;
+  }
+
   function buildBatchMessage(messages: string[]): string {
-    if (messages.length === 1) return messages[0] ?? "";
-    return `PR watch detected multiple updates.\n\n${messages
-      .map((message, index) => `## Update ${index + 1}\n\n${message}`)
-      .join("\n\n---\n\n")}`;
+    const body =
+      messages.length === 1
+        ? messages[0] ?? ""
+        : `PR watch detected multiple updates.\n\n${messages
+            .map((message, index) => `## Update ${index + 1}\n\n${message}`)
+            .join("\n\n---\n\n")}`;
+    return asHarnessNotification(body);
   }
 
   function pendingPr(watched: WatchedPrState): PendingPrUpdate {
@@ -1180,6 +1190,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   function sessionHasDelivery(ctx: ExtensionContext, delivery: PendingDelivery): boolean {
     const marker = deliveryMarker(delivery.id);
     return ctx.sessionManager.getBranch().some((entry) => {
+      if (entry.type === "custom_message" && entry.customType === NOTIFICATION_TYPE) {
+        const content = typeof entry.content === "string" ? entry.content : textContent(entry.content);
+        return content.includes(marker);
+      }
+      // Accept deliveries created by older versions, which used user messages.
       if (entry.type !== "message" || entry.message.role !== "user") return false;
       const content = Array.isArray(entry.message.content) ? entry.message.content : [];
       return textContent(content).includes(marker);
@@ -1239,7 +1254,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     deliveryAttemptedId = state.pendingDelivery.id;
     try {
-      pi.sendUserMessage(state.pendingDelivery.message);
+      pi.sendMessage(
+        {
+          customType: NOTIFICATION_TYPE,
+          content: asHarnessNotification(state.pendingDelivery.message),
+          display: true,
+        },
+        { triggerTurn: true },
+      );
     } catch (error) {
       deliveryAttemptedId = undefined;
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -1471,6 +1493,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   function isRunRerun(command: string): boolean {
     return /(^|[;&|\n]\s*)gh\s+run\s+rerun\b/.test(command);
   }
+
+  pi.on("before_agent_start", (event) => {
+    if (state.mode === "off") return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${HARNESS_GUIDANCE}` };
+  });
 
   pi.on("session_start", async (event, ctx) => {
     state = initialState();

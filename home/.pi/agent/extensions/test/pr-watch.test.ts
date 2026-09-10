@@ -106,12 +106,14 @@ function createHarness() {
     appendEntry(_customType: string, data: unknown): void {
       savedStates.push(structuredClone(data));
     },
-    sendUserMessage(message: string, options?: unknown): void {
-      sentMessages.push(message);
+    sendMessage(message: { customType: string; content: string; display: boolean }, options?: unknown): void {
+      sentMessages.push(message.content);
       sentMessageOptions.push(options);
       branchEntries.push({
-        type: "message",
-        message: { role: "user", content: [{ type: "text", text: message }] },
+        type: "custom_message",
+        customType: message.customType,
+        content: message.content,
+        display: message.display,
       });
       void handlers.get("turn_start")?.({}, ctx);
     },
@@ -484,6 +486,19 @@ test("status identity omits the current repository and all organization prefixes
   assert.equal(prStatusIdentity({ repo: "another/other", number: 42 }, undefined), "other#42");
 });
 
+test("system prompt delegates CI monitoring to the harness", async () => {
+  const harness = createHarness();
+  const result = (await harness.handlers.get("before_agent_start")?.(
+    { systemPrompt: "base prompt" },
+    harness.ctx,
+  )) as any;
+
+  assert.match(result?.systemPrompt ?? "", /^base prompt/);
+  assert.match(result?.systemPrompt ?? "", /PR Watch monitors CI and PR feedback/);
+  assert.match(result?.systemPrompt ?? "", /Return control after these operations/);
+  assert.match(result?.systemPrompt ?? "", /harness notifications, not user messages/);
+});
+
 test("status line prefixes only PRs from other repositories", async () => {
   const harness = createHarness();
   await harness.startSession();
@@ -707,10 +722,12 @@ test("orchestration delivers each latest no-PR settlement once and suppresses wa
     });
     await harness.startSession();
 
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
     assert.match(
       harness.sentMessages[0] ?? "",
-      /^worker 009-worker-recovery stopped without opening a pr and responded with the following message:\n\nA required credential is missing\.\n\n<!-- pr-watch-delivery:/,
+      /worker 009-worker-recovery stopped without opening a pr and responded with the following message:\n\nA required credential is missing\./,
     );
+    assert.match(harness.sentMessages[0] ?? "", /<!-- pr-watch-delivery:/);
 
     await harness.runPoll();
     assert.equal(harness.sentMessages.length, 1);
@@ -1671,7 +1688,9 @@ test("buffers busy updates internally and delivers one batch after the agent set
   await harness.settleAgent();
 
   assert.equal(harness.sentMessages.length, 1);
-  assert.equal(harness.sentMessageOptions[0], undefined);
+  assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true });
+  assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+  assert.match(harness.sentMessages[0] ?? "", /Not a user message/);
   assert.match(harness.sentMessages[0] ?? "", /CI finished/);
   assert.match(harness.sentMessages[0] ?? "", /review:4689083037/);
   assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates.length, 0);
@@ -1852,7 +1871,8 @@ test("orchestration discovery notifies when checks are already passing", async (
     await harness.startSession();
 
     assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /^CI finished for worker PR #104\./);
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for worker PR #104\./);
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
@@ -1890,9 +1910,10 @@ test("orchestration sessions receive a concise CI notification", async () => {
     await harness.runPoll();
 
     assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
     assert.match(
       harness.sentMessages[0] ?? "",
-      /^CI finished for worker PR #104\.\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
+      /CI finished for worker PR #104\.\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
     );
     assert.doesNotMatch(
       harness.sentMessages[0] ?? "",
@@ -1920,9 +1941,10 @@ test("orchestration sessions receive a concise activity notification", async () 
     await harness.runPoll();
 
     assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
     assert.match(
       harness.sentMessages[0] ?? "",
-      /^New activity on worker PR #104:\n- review:77 by reviewer\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
+      /New activity on worker PR #104:\n- review:77 by reviewer\n\nhttps:\/\/github\.com\/eli0shin\/repos\/pull\/104/,
     );
     assert.doesNotMatch(harness.sentMessages[0] ?? "", /chatgpt-codex-connector|review:78/);
   } finally {
@@ -2385,6 +2407,45 @@ test("restart discards buffered CI when the same head no longer has terminal che
   await harness.startSession();
 
   assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+});
+
+test("restart labels an undelivered legacy notification as a harness event", async () => {
+  const harness = createHarness();
+  const id = "legacy-delivery-123";
+  const message = `Legacy buffered PR update\n\n<!-- pr-watch-delivery:${id} -->`;
+  const pr = harness.prs.get(104)!;
+  const pending = {
+    pr: {
+      repo: "eli0shin/repos",
+      number: pr.number,
+      url: pr.url,
+      branch: pr.branch,
+      headSha: pr.headSha,
+      authorLogin: pr.authorLogin,
+    },
+    feedbackActivities: [{ id: "review:77", authorLogin: "reviewer" }],
+  };
+  harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [{ pr: pending.pr, seenActivityIds: [] }],
+        pendingPrUpdates: [pending],
+        pendingDelivery: { id, message, pendingPrUpdates: [pending] },
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  await harness.startSession();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+  assert.match(harness.sentMessages[0] ?? "", /Legacy buffered PR update/);
 });
 
 test("persisted delivery marker prevents duplicate delivery after restart", async () => {
