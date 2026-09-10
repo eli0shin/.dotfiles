@@ -93,6 +93,20 @@ type = "plugin_action"
 command = "herdr-navigator.right"
 description = "navigate right (nvim/herdr)"
 
+# Lumen has fixed ctrl+j/k file-navigation keys. These aliases preserve direct
+# ctrl+j/k for vertical pane navigation and pass alt+j/k through elsewhere.
+[[keys.command]]
+key = "alt+j"
+type = "shell"
+command = "\"$HOME/.local/bin/herdr-lumen-file-nav\" next"
+description = "next Lumen file (otherwise send alt+j)"
+
+[[keys.command]]
+key = "alt+k"
+type = "shell"
+command = "\"$HOME/.local/bin/herdr-lumen-file-nav\" previous"
+description = "previous Lumen file (otherwise send alt+k)"
+
 # ctrl+l is reserved for navigation, so prefix+ctrl+l clears the shell.
 [[keys.command]]
 key = "prefix+ctrl+l"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+direction=${1:-}
+case "$direction" in
+    next)
+        lumen_key=ctrl+j
+        original_key=alt+j
+        ;;
+    previous)
+        lumen_key=ctrl+k
+        original_key=alt+k
+        ;;
+    *)
+        printf 'usage: %s next|previous\n' "${0##*/}" >&2
+        exit 2
+        ;;
+esac
+
+herdr=${HERDR_BIN_PATH:-herdr}
+pane=${HERDR_ACTIVE_PANE_ID:?must run from a Herdr keybinding}
+
+# Lumen has fixed Ctrl+J/K file-navigation keys. Preserve the original Alt key
+# for all other pane applications.
+if process_info=$("$herdr" pane process-info --pane "$pane" 2>/dev/null) &&
+    grep -qE '"name"[[:space:]]*:[[:space:]]*"lumen"' <<<"$process_info"; then
+    exec "$herdr" pane send-keys "$pane" "$lumen_key"
+fi
+
+exec "$herdr" pane send-keys "$pane" "$original_key"
