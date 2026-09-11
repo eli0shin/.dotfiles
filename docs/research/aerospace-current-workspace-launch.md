@@ -18,6 +18,18 @@ The custom launcher hid itself before opening an application. Hiding removed its
 
 The later polling code moved the window back after detection. That produced the visible sequence of wrong workspace, initial tiling, move, and second tiling.
 
+Commit `75c10cb` removed this hide-then-repair sequence. Commit `9e7eb35` restored it while making the visible launcher close immediately after selection. A controlled GitHub Desktop launch on empty workspace 4 confirmed the regression:
+
+```text
+focused workspace  app window workspace
+4                  -
+3                  -
+3                  3
+4                  4
+```
+
+After the focus-sink fix in `1464585`, the same launch stayed on workspace 4 until the window appeared there. The visible launcher still closed immediately.
+
 This conflicts with AeroSpace's normal launch model. The official command documentation shows application launch as a plain `exec-and-forget open ...`; it does not prescribe post-detection movement for opening an app on the current workspace.
 
 Source: [AeroSpace `exec-and-forget` command](https://nikitabobko.github.io/AeroSpace/commands#exec-and-forget)
@@ -26,15 +38,38 @@ Source: [AeroSpace `exec-and-forget` command](https://nikitabobko.github.io/Aero
 
 For an application with no existing AeroSpace window:
 
-1. Keep the launcher panel key and keep AeroSpace's focused workspace unchanged.
-2. Request application activation/opening.
-3. Do not hide the launcher first.
-4. Let application activation deactivate the launcher panel naturally.
-5. Let AeroSpace detect the first window and attach it directly to `focus.workspace`.
+1. Make the invisible launcher focus-sink panel key.
+2. Remove the visible launcher panel, but do not hide the launcher application.
+3. Request application activation/opening.
+4. Keep the focus sink until AeroSpace detects the target window.
+5. Let AeroSpace attach the new window directly to the unchanged `focus.workspace`.
+6. Focus the target window, remove the focus sink, and hide the launcher application.
+
+The visible panel can close immediately. The required invariant is that a launcher panel remains the native focus target until the application window exists.
 
 For an application with an existing window, normal activation is correct: macOS focuses the application's existing window and AeroSpace follows that window's workspace.
 
 For an explicit new-window action, the launcher can send the application's new-window command without first activating an existing window. The new window is then attached directly to the still-focused workspace.
+
+## Closing and quitting windows
+
+The same native focus fallback occurs when the last window on a workspace closes. A controlled `cmd-w` test on workspace 4 reproduced this sequence:
+
+```text
+focused workspace  focused app window
+4                  Calculator
+3                  -
+```
+
+A direct `cmd-w = "close"` binding cannot preserve the workspace because the focused window disappears before AeroSpace has another native focus target. The `aerospace-close` script now uses this protocol:
+
+1. Capture the focused workspace and window ID.
+2. Activate the launcher focus sink.
+3. Close the captured window by ID.
+4. Wait until AeroSpace removes the window.
+5. Focus a remaining window on the captured workspace, or keep the focus sink if the workspace is empty.
+
+`aerospace-quit` uses the same protocol around application termination. The focus-sink command must not return immediately after it sends `SIGUSR2`; signal delivery and AppKit activation are asynchronous. The launcher command now checks `NSWorkspace.frontmostApplication` and returns only after the launcher executable is frontmost. This removes the fixed-delay race for both close and quit.
 
 ## Relevant AeroSpace behavior
 
@@ -51,4 +86,4 @@ Sources:
 
 ## Conclusion
 
-Opening on the current AeroSpace workspace is supported by AeroSpace's core window-registration path. The launcher must stop fighting that path. Preserve `focus.workspace` until detection and remove post-detection workspace movement for normal launches.
+Opening on the current AeroSpace workspace is supported by AeroSpace's core window-registration path. The launcher must preserve native focus, and thus `focus.workspace`, until the target window exists. Closing or quitting the last window requires the same focus-sink handoff. Post-detection movement can remain as a safety check, but it must not be the normal mechanism that repairs a visible workspace change.
