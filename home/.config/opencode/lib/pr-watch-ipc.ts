@@ -8,6 +8,7 @@ export type Registration = {
   sessionID: string;
   directory: string;
   orchestrationID?: string;
+  workerOrchestrationID?: string;
   updatedAt: number;
 };
 
@@ -33,6 +34,7 @@ export type StatusSnapshot = {
   sessionID: string;
   text?: string;
   warning: boolean;
+  pending: number;
   updatedAt: number;
 };
 

@@ -125,9 +125,16 @@ fi
 # mktemp creates a private file; /tmp keeps the command short and shell-neutral.
 launcher=$(mktemp /tmp/pi-worker.XXXXXXXXXX) || exit
 if ! {
-  printf '%s\n' 'rm -- "$0" || exit' 'unset PI_ORCHESTRATION_SESSION_ID'
-  printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$PI_ORCHESTRATION_SESSION_ID"
-  printf 'exec pi %q\n' "$prompt"
+  printf '%s\n' 'rm -- "$0" || exit'
+  if [[ -n ${OPENCODE_ORCHESTRATION_SESSION_ID:-} ]]; then
+    printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
+    printf 'export OPENCODE_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$OPENCODE_ORCHESTRATION_SESSION_ID"
+    printf 'exec opencode2 mini --prompt %q\n' "$prompt"
+  else
+    printf '%s\n' 'unset PI_ORCHESTRATION_SESSION_ID'
+    printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$PI_ORCHESTRATION_SESSION_ID"
+    printf 'exec pi %q\n' "$prompt"
+  fi
 } > "$launcher"; then
   rm -f -- "$launcher"
   exit 1

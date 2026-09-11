@@ -3,7 +3,7 @@
   "share": "disabled",
   "autoupdate": true,
   "default_agent": "build",
-  "plugins": ["./plugins/pr-watch.ts"],
+  "plugins": ["./plugins/pr-watch"],
   "permissions": [
     {
       "action": "external_directory",

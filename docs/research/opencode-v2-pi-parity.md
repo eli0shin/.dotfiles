@@ -54,7 +54,7 @@ Sources:
 
 The selected system prompt is the adapted Pi prompt: OpenCode identity, Pi's short coding-assistant description, and Pi's two unconditional guidelines. The implementation will use both the documented server plugin API and the current beta TUI plugin API so commands, footer status, and toasts can match Pi.
 
-The OpenCode port must also retain the orchestration contract. For the first version, OpenCode is the parent orchestrator and existing Pi sessions remain the workers. OpenCode workers are out of scope. `orchestrate-opencode` will create one UUID and export it as both the OpenCode parent ID and `PI_ORCHESTRATION_SESSION_ID`, so the existing orchestrator skill and `spawn-worker` script can continue to launch Pi workers unchanged. The OpenCode parent will consume the existing Pi worker snapshot protocol and directory.
+The OpenCode port retains the full orchestration contract. `orchestrate-opencode` creates the parent ID. When `spawn-worker` runs from that session, it starts an OpenCode Mini worker with `OPENCODE_PARENT_ORCHESTRATION_SESSION_ID`. OpenCode workers publish PR membership, branch identity, and terminal settlements through the shared worker snapshot directory. Pi orchestration continues to launch Pi workers.
 
 ## PR-watch behavior to port
 

@@ -1,8 +1,8 @@
 import { readdir, rm } from "node:fs/promises";
 
-import { Plugin } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 
-import { createPrWatchController } from "../lib/pr-watch-core.ts";
+import { createPrWatchController } from "../../lib/pr-watch-core.ts";
 import {
   commandDirectory,
   commandResponsePath,
@@ -13,9 +13,10 @@ import {
   type CommandRequest,
   type CommandResponse,
   type Registration,
-} from "../lib/pr-watch-ipc.ts";
+} from "../../lib/pr-watch-ipc.ts";
 
 const COMMAND_POLL_MS = 500;
+const HARNESS_GUIDANCE = "PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.";
 
 type Controller = Awaited<ReturnType<typeof createPrWatchController>>;
 type ShellCall = { command: string; output?: string };
@@ -45,6 +46,7 @@ export default Plugin.define({
     const locations = new Map<string, string>();
     const shellCalls = new Map<string, ShellCall>();
     const commandRequests = new Map<string, string>();
+    const idle = new Map<string, boolean>();
     const disposals: Array<() => Promise<void> | void> = [];
 
     async function controller(sessionID: string, directory?: string): Promise<Controller> {
@@ -55,6 +57,9 @@ export default Plugin.define({
         sessionID,
         directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? process.cwd(),
         root,
+        orchestrationID: registered?.orchestrationID,
+        workerOrchestrationID: registered?.workerOrchestrationID,
+        isIdle: () => idle.get(sessionID) !== false,
         wake: async (message) => {
           await ctx.session.synthetic({
             sessionID,
@@ -71,6 +76,12 @@ export default Plugin.define({
     }
 
     disposals.push(
+      (await ctx.session.hook("context", async (event) => {
+        if ((await controller(event.sessionID)).getState().mode !== "off") event.system.push({ type: "text", text: HARNESS_GUIDANCE });
+      })).dispose,
+    );
+
+    disposals.push(
       (await ctx.tool.hook("execute.before", async (input) => {
         if (input.tool !== "shell" && input.tool !== "bash") return;
         const value = input.input as { command?: unknown };
@@ -78,7 +89,7 @@ export default Plugin.define({
         shellCalls.set(input.id, { command: value.command });
         const registration = await readJson<Registration>(registrationPath(root, input.sessionID));
         if (registration?.orchestrationID) {
-          value.command = `export PI_ORCHESTRATION_SESSION_ID=${shellQuote(registration.orchestrationID)}; ${value.command}`;
+          value.command = `export PI_ORCHESTRATION_SESSION_ID=${shellQuote(registration.orchestrationID)} OPENCODE_ORCHESTRATION_SESSION_ID=${shellQuote(registration.orchestrationID)}; ${value.command}`;
         }
       })).dispose,
     );
@@ -112,6 +123,35 @@ export default Plugin.define({
           controllers.delete(sessionID);
         }
         if (event.type === "session.created" || event.type === "session.moved") await controller(sessionID, directory);
+        if (event.type === "session.execution.started") idle.set(sessionID, false);
+        if (
+          event.type === "session.execution.succeeded" ||
+          event.type === "session.execution.failed" ||
+          event.type === "session.execution.interrupted" ||
+          event.type === "session.idle"
+        ) {
+          idle.set(sessionID, true);
+          const current = await controller(sessionID, directory);
+          const registered = await readJson<Registration>(registrationPath(root, sessionID));
+          if (registered?.workerOrchestrationID && event.type !== "session.idle") {
+            await current.adoptRegistration(registered);
+            const messages = await ctx.session.context({ sessionID });
+            const assistant = [...messages].reverse().find((message) => message.type === "assistant");
+            if (assistant?.type === "assistant") {
+              const response = assistant.content
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("\n")
+                .trim() || assistant.error?.message || `Assistant stopped with reason: ${assistant.finish ?? "unknown"}.`;
+              await current.settle(assistant.id, response);
+            } else if (event.type === "session.execution.failed") {
+              await current.settle(event.id, String((data.error as { message?: unknown } | undefined)?.message ?? "Assistant execution failed."));
+            } else if (event.type === "session.execution.interrupted") {
+              await current.settle(event.id, "Assistant execution was interrupted.");
+            }
+          }
+          await current.flushPending();
+        }
         if (event.type === "session.synthetic") {
           const synthetic = data as { sessionID: string; text: string; metadata?: Record<string, unknown> };
           if (synthetic.metadata?.kind !== "pr-watch-command" || typeof synthetic.metadata.requestID !== "string") continue;

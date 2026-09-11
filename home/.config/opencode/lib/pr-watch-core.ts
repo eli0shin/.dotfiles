@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -23,6 +22,7 @@ export type WatchedPr = {
   url: string;
   branch: string;
   headSha: string;
+  headRepo?: string;
   authorLogin?: string;
 };
 
@@ -45,12 +45,16 @@ type PendingPrUpdate = {
   feedbackActivities: TrackedActivity[];
 };
 type PendingShaUpdate = { repo: string; sha: string; runsKey: string };
+type WorkerSettlement = { assistantEntryId: string; response: string; hadWatchedPr: boolean };
+type PendingWorkerSettlement = { workerSessionId: string; assistantEntryId: string; branch: string; response: string };
 type WorkerWatchSnapshot = {
-  version: 1;
+  version: 2;
   orchestrationId: string;
   workerSessionId: string;
   revision: number;
+  branch: string;
   watchedPrs: Array<Pick<WatchedPr, "repo" | "number" | "url">>;
+  latestSettlement?: WorkerSettlement;
 };
 
 export type WatchState = {
@@ -60,8 +64,13 @@ export type WatchState = {
   watchedSha?: WatchedSha;
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
+  pendingWorkerSettlements: PendingWorkerSettlement[];
   recentGhOutputs: string[];
   orchestrationSessionId?: string;
+  workerOrchestrationSessionId?: string;
+  workerBranch?: string;
+  latestWorkerSettlement?: WorkerSettlement;
+  resolvedWorkerSettlementIds?: string[];
   workerSnapshots?: Record<string, WorkerWatchSnapshot>;
   resolvedOrchestrationPrUrls?: string[];
   selfLogin?: string;
@@ -104,14 +113,20 @@ type ControllerOptions = {
   root?: string;
   notify?: Notify;
   wake: Wake;
+  exec?: (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+  isIdle?: () => boolean;
+  coordinationRoot?: string;
+  workerOrchestrationID?: string;
+  orchestrationID?: string;
 };
 
 const execFileAsync = promisify(execFile);
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
+const ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
 
 function initialState(): WatchState {
-  return { version: 1, mode: "active", watchedPrs: [], pendingPrUpdates: [], recentGhOutputs: [] };
+  return { version: 1, mode: "active", watchedPrs: [], pendingPrUpdates: [], pendingWorkerSettlements: [], recentGhOutputs: [] };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -132,10 +147,12 @@ function isWatchState(value: unknown): value is WatchState {
 function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
   return (
     isObject(value) &&
-    value.version === 1 &&
+    value.version === 2 &&
     typeof value.orchestrationId === "string" &&
     typeof value.workerSessionId === "string" &&
     typeof value.revision === "number" &&
+    typeof value.branch === "string" &&
+    Boolean(value.branch) &&
     Array.isArray(value.watchedPrs) &&
     value.watchedPrs.every(
       (pr) =>
@@ -143,12 +160,22 @@ function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
         typeof pr.repo === "string" &&
         typeof pr.number === "number" &&
         typeof pr.url === "string",
-    )
+    ) &&
+    (value.latestSettlement === undefined ||
+      (isObject(value.latestSettlement) &&
+        typeof value.latestSettlement.assistantEntryId === "string" &&
+        typeof value.latestSettlement.response === "string" &&
+        typeof value.latestSettlement.hadWatchedPr === "boolean"))
   );
 }
 
 export function prIdentityKey(pr: Pick<WatchedPr, "repo" | "number">): string {
   return `${pr.repo.toLowerCase()}#${pr.number}`;
+}
+
+export function prStatusIdentity(pr: Pick<WatchedPr, "repo" | "number">, currentRepo: string | undefined): string {
+  if (currentRepo?.toLowerCase() === pr.repo.toLowerCase()) return `#${pr.number}`;
+  return `${pr.repo.split("/").at(-1) ?? pr.repo}#${pr.number}`;
 }
 
 export function pullRequestUrlFromText(text: string): string | undefined {
@@ -161,8 +188,10 @@ function isBotActivity(activity: Activity): boolean {
   return author?.is_bot === true || author?.type === "Bot" || login.endsWith("[bot]");
 }
 
-export function shouldTrackActivity(kind: ActivityKind, activity: Activity): boolean {
+export function shouldTrackActivity(kind: ActivityKind, activity: Activity, orchestration = false): boolean {
   if (activity.id === undefined || activity.id === null) return false;
+  const login = (activity.author ?? activity.user)?.login?.toLowerCase();
+  if (orchestration && login && ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS.includes(login)) return false;
   return kind !== "issue-comment" || !isBotActivity(activity);
 }
 
@@ -184,6 +213,14 @@ function isActivationCommand(command: string): boolean {
 
 function isGitPush(command: string): boolean {
   return /(^|[;&|\n]\s*)git\s+push\b/.test(command);
+}
+
+function isPrMerge(command: string): boolean {
+  return /(^|[;&|\n]\s*)gh\s+pr\s+merge\b/.test(command);
+}
+
+function isRunRerun(command: string): boolean {
+  return /(^|[;&|\n]\s*)gh\s+run\s+rerun\b/.test(command);
 }
 
 function prCoordinatesFromUrl(url: string): { repo: string; number: number } | undefined {
@@ -224,6 +261,7 @@ function isApprovalWaitingCheck(check: Check): boolean {
   const completedAt = check.completedAt ?? "";
   return (
     (check.state ?? "").toLowerCase() === "waiting" &&
+    (check.bucket ?? "").toLowerCase() === "pending" &&
     completedAt.startsWith("0001-01-01") &&
     (check.link ?? "").includes("/actions/runs/") &&
     Boolean(check.workflow)
@@ -267,32 +305,21 @@ function pendingCount(state: WatchState): number {
   return state.pendingPrUpdates.reduce(
     (count, pending) =>
       count + (pending.checksKey ? 1 : 0) + (pending.conflictsKey ? 1 : 0) + pending.feedbackActivities.length,
-    state.pendingShaUpdate ? 1 : 0,
+    (state.pendingShaUpdate ? 1 : 0) + (state.pendingWorkerSettlements?.length ?? 0),
   );
 }
 
-function statusText(state: WatchState): string | undefined {
+function statusText(state: WatchState, currentRepo?: string): string | undefined {
   const pending = pendingCount(state);
   const suffix = pending > 0 ? ` • ${pending} pending` : "";
   if (state.mode === "off") return undefined;
   if (state.mode === "paused") return `PR watch: paused${suffix}`;
   if (state.watchedPrs.length > 0) {
-    return `PR watch: ${state.watchedPrs.map(({ pr }) => `${pr.repo.split("/").at(-1)}#${pr.number}`).join(", ")}${suffix}`;
+    return `PR watch: ${state.watchedPrs.map(({ pr }) => prStatusIdentity(pr, currentRepo)).join(", ")}${suffix}`;
   }
   if (state.watchedSha) return `SHA ${state.watchedSha.sha.slice(0, 7)} watch${suffix}`;
   if (state.orchestrationSessionId) return `PR watch:${suffix}`;
   return pending > 0 ? `PR watch:${suffix}` : undefined;
-}
-
-function orchestrationRoot(): string {
-  return (
-    process.env.PI_PR_WATCH_STATE_DIR ??
-    join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "pr-watch", "orchestrations")
-  );
-}
-
-function orchestrationDirectory(orchestrationID: string): string {
-  return join(orchestrationRoot(), encodeURIComponent(orchestrationID));
 }
 
 function reviewerSafetyNotice(pr: WatchedPr, selfLogin: string | undefined): string | undefined {
@@ -351,6 +378,9 @@ function statusSummary(state: WatchState): string {
     `watched PRs:\n${prs}`,
     `watched SHA: ${state.watchedSha ? `${state.watchedSha.repo}@${state.watchedSha.sha}` : "none"}`,
     `orchestration: ${state.orchestrationSessionId ?? "none"}`,
+    `worker orchestration: ${state.workerOrchestrationSessionId ?? "none"}`,
+    `recent gh outputs: ${state.recentGhOutputs.length}`,
+    `self login: ${state.selfLogin ?? "unknown"}`,
     `last poll: ${state.lastPollAt ? new Date(state.lastPollAt).toLocaleString() : "never"}`,
     `last notify: ${state.lastNotifyAt ? new Date(state.lastNotifyAt).toLocaleString() : "never"}`,
   ];
@@ -365,6 +395,52 @@ export async function createPrWatchController(options: ControllerOptions) {
   let polling = false;
   let interval: ReturnType<typeof setInterval> | undefined;
   let currentRepo: string | undefined;
+  let lastPublishedMembership: string | undefined;
+
+  function coordinationRoot(): string {
+    return options.coordinationRoot ?? join(root, "orchestrations");
+  }
+
+  async function refreshWorkerBranch(): Promise<void> {
+    if (!state.workerOrchestrationSessionId) return;
+    const result = options.exec
+      ? await options.exec("git", ["branch", "--show-current"])
+      : await execFileAsync("git", ["branch", "--show-current"], { cwd: options.directory, timeout: 30_000 })
+          .then((value) => ({ ...value, code: 0 }))
+          .catch(() => undefined);
+    const branch = result?.code === 0 ? result.stdout.trim() : "";
+    if (branch) state.workerBranch = branch;
+    else state.lastError = "Could not publish worker PR watch membership without a Git branch";
+  }
+
+  async function publishWorkerSnapshot(force = false): Promise<void> {
+    const orchestrationId = state.workerOrchestrationSessionId;
+    if (!orchestrationId) return;
+    if (!state.workerBranch) await refreshWorkerBranch();
+    if (!state.workerBranch) return;
+    const fingerprint = JSON.stringify([
+      state.workerBranch,
+      state.latestWorkerSettlement,
+      ...state.watchedPrs.map(({ pr }) => [prIdentityKey(pr), pr.url]).sort(),
+    ]);
+    if (!force && fingerprint === lastPublishedMembership) return;
+    const directory = join(coordinationRoot(), encodeURIComponent(orchestrationId));
+    const path = join(directory, `${encodeURIComponent(options.sessionID)}.json`);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    const snapshot: WorkerWatchSnapshot = {
+      version: 2,
+      orchestrationId,
+      workerSessionId: options.sessionID,
+      revision: Date.now(),
+      branch: state.workerBranch,
+      watchedPrs: state.watchedPrs.map(({ pr }) => ({ repo: pr.repo, number: pr.number, url: pr.url })),
+      latestSettlement: state.latestWorkerSettlement,
+    };
+    await writeFile(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+    await rename(temporaryPath, path);
+    lastPublishedMembership = fingerprint;
+  }
 
   async function run<T>(
     command: string,
@@ -372,7 +448,13 @@ export async function createPrWatchController(options: ControllerOptions) {
     acceptErrorOutput: false | "json" | "empty-array" = false,
   ): Promise<T | undefined> {
     try {
-      const result = await execFileAsync(command, args, { cwd: options.directory, timeout: 30_000 });
+      const result = options.exec
+        ? await options.exec(command, args)
+        : await execFileAsync(command, args, { cwd: options.directory, timeout: 30_000 }).then((value) => ({ ...value, code: 0 }));
+      if (result.code !== 0) {
+        state.lastError = result.stderr.trim() || `${command} exited with code ${result.code}`;
+        return undefined;
+      }
       if (!result.stdout.trim()) return undefined;
       return JSON.parse(result.stdout) as T;
     } catch (error) {
@@ -401,8 +483,9 @@ export async function createPrWatchController(options: ControllerOptions) {
     const status: StatusSnapshot = {
       version: 1,
       sessionID: options.sessionID,
-      text: statusText(state),
+      text: statusText(state, currentRepo),
       warning: state.mode === "paused" || pendingCount(state) > 0 || Boolean(state.lastError),
+      pending: pendingCount(state),
       updatedAt: Date.now(),
     };
     await atomicWriteJson(statusPath(root, options.sessionID), status);
@@ -462,7 +545,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       ["review-comment", reviewComments],
     ] as Array<[ActivityKind, Activity[]]>) {
       for (const activity of activities) {
-        if (!shouldTrackActivity(kind, activity)) continue;
+        if (!shouldTrackActivity(kind, activity, Boolean(state.orchestrationSessionId))) continue;
         result.push({ id: `${kind}:${activity.id}`, authorLogin: activityAuthor(activity) });
       }
     }
@@ -475,7 +558,7 @@ export async function createPrWatchController(options: ControllerOptions) {
     if (!repo) return false;
     const args = ["pr", "view"];
     if (target) args.push(target);
-    args.push("--json", "number,url,headRefName,headRefOid,state,author,mergeable");
+    args.push("--json", "number,url,headRefName,headRefOid,headRepository,state,author,mergeable");
     const value = await run<any>("gh", args);
     if (!value) return false;
     if (value.state !== "OPEN") {
@@ -488,6 +571,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       url: value.url,
       branch: value.headRefName,
       headSha: value.headRefOid,
+      headRepo: value.headRepository?.nameWithOwner,
       authorLogin: value.author?.login,
     };
     const existing = state.watchedPrs.find((item) => prIdentityKey(item.pr) === prIdentityKey(pr));
@@ -511,15 +595,18 @@ export async function createPrWatchController(options: ControllerOptions) {
       const watched: WatchedPrState = {
         pr,
         seenActivityIds: [],
-        mergeable: value.mergeable,
+        mergeable: value.mergeable === "MERGEABLE" || value.mergeable === "CONFLICTING" ? value.mergeable : undefined,
         baselinePending: true,
       };
       state.watchedPrs.push(watched);
       const baselined = await baselinePr(watched);
       if (baselined && state.orchestrationSessionId) watched.notifiedChecksKey = undefined;
+      if (!state.orchestrationSessionId && value.mergeable === "CONFLICTING") {
+        pendingFor(state, pr).conflictsKey = `${pr.headSha}:conflicting`;
+      }
       if (showNotification) notify(`PR watch added #${pr.number} (${reason}).`, "info");
     }
-    if (!state.orchestrationSessionId) state.watchedSha = undefined;
+    if (!state.orchestrationSessionId) await syncWatchedSha();
     await save();
     startPolling();
     return true;
@@ -533,12 +620,21 @@ export async function createPrWatchController(options: ControllerOptions) {
   async function syncWatchedSha(): Promise<void> {
     const repo = await ensureCurrentRepo();
     if (!repo) return;
-    const branchResult = await execFileAsync("git", ["branch", "--show-current"], {
-      cwd: options.directory,
-      timeout: 30_000,
-    }).catch(() => undefined);
-    const branch = branchResult?.stdout.trim();
+    const branchResult = options.exec
+      ? await options.exec("git", ["branch", "--show-current"])
+      : await execFileAsync("git", ["branch", "--show-current"], { cwd: options.directory, timeout: 30_000 })
+          .then((value) => ({ ...value, code: 0 }))
+          .catch(() => undefined);
+    const branch = branchResult?.code === 0 ? branchResult.stdout.trim() : undefined;
     if (!branch) return;
+    if (
+      !state.orchestrationSessionId &&
+      state.watchedPrs.some(({ pr }) => (pr.headRepo ?? pr.repo).toLowerCase() === repo.toLowerCase() && pr.branch === branch)
+    ) {
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+      return;
+    }
     const commit = await run<{ sha?: string }>("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`]);
     const sha = commit?.sha;
     if (!sha || state.watchedSha?.sha === sha) return;
@@ -573,23 +669,65 @@ export async function createPrWatchController(options: ControllerOptions) {
   async function reconcileOrchestrationMembership(): Promise<void> {
     const orchestrationID = state.orchestrationSessionId;
     if (!orchestrationID) return;
-    const directory = orchestrationDirectory(orchestrationID);
+    const directory = join(coordinationRoot(), encodeURIComponent(orchestrationID));
     const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
       if (isObject(error) && error.code === "ENOENT") return [];
       throw error;
     });
-    const snapshots: Record<string, WorkerWatchSnapshot> = {};
+    const snapshots: Record<string, WorkerWatchSnapshot> = { ...(state.workerSnapshots ?? {}) };
+    const presentWorkerIDs = new Set<string>();
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-      const value: unknown = JSON.parse(await readFile(join(directory, entry.name), "utf8"));
-      if (!isWorkerWatchSnapshot(value) || value.orchestrationId !== orchestrationID) continue;
-      snapshots[value.workerSessionId] = value;
+      let workerSessionID: string;
+      try {
+        workerSessionID = decodeURIComponent(entry.name.slice(0, -5));
+      } catch {
+        continue;
+      }
+      presentWorkerIDs.add(workerSessionID);
+      try {
+        const value: unknown = JSON.parse(await readFile(join(directory, entry.name), "utf8"));
+        if (
+          !isWorkerWatchSnapshot(value) ||
+          value.orchestrationId !== orchestrationID ||
+          value.workerSessionId !== workerSessionID ||
+          value.watchedPrs.some((pr) => {
+            const coordinates = prCoordinatesFromUrl(pr.url);
+            return !coordinates || coordinates.number !== pr.number || coordinates.repo.toLowerCase() !== pr.repo.toLowerCase();
+          })
+        ) continue;
+        snapshots[value.workerSessionId] = value;
+      } catch (error) {
+        state.lastError = `Could not read worker snapshot ${workerSessionID}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    for (const workerSessionID of Object.keys(snapshots)) {
+      if (!presentWorkerIDs.has(workerSessionID)) delete snapshots[workerSessionID];
     }
     state.workerSnapshots = snapshots;
+    state.pendingWorkerSettlements ??= [];
+    const resolvedSettlements = new Set(state.resolvedWorkerSettlementIds ?? []);
+    for (const [workerSessionId, snapshot] of Object.entries(snapshots)) {
+      const latest = snapshot.latestSettlement;
+      const latestID = latest ? `${workerSessionId}:${latest.assistantEntryId}` : undefined;
+      state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
+        (pending) => pending.workerSessionId !== workerSessionId || `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID,
+      );
+      if (!latest || latest.hadWatchedPr || !latestID || resolvedSettlements.has(latestID)) continue;
+      if (state.pendingWorkerSettlements.some((pending) => `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID)) continue;
+      state.pendingWorkerSettlements.push({
+        workerSessionId,
+        assistantEntryId: latest.assistantEntryId,
+        branch: snapshot.branch,
+        response: latest.response,
+      });
+    }
     const desired = new Map<string, Pick<WatchedPr, "repo" | "number" | "url">>();
     for (const snapshot of Object.values(snapshots)) {
       for (const pr of snapshot.watchedPrs) desired.set(prIdentityKey(pr), pr);
     }
+    const desiredURLs = new Set([...desired.values()].map((pr) => pr.url));
+    state.resolvedOrchestrationPrUrls = (state.resolvedOrchestrationPrUrls ?? []).filter((url) => desiredURLs.has(url));
     for (const watched of [...state.watchedPrs]) {
       if (!desired.has(prIdentityKey(watched.pr))) removePr(watched.pr);
     }
@@ -643,6 +781,17 @@ export async function createPrWatchController(options: ControllerOptions) {
     }
     const activities = await fetchActivities(watched.pr);
     if (activities) {
+      const currentIDs = new Set(activities.map((activity) => activity.id));
+      pending.feedbackActivities = pending.feedbackActivities.filter(
+        (activity) =>
+          currentIDs.has(activity.id) &&
+          !(
+            !state.orchestrationSessionId &&
+            state.selfLogin &&
+            watched.pr.authorLogin !== state.selfLogin &&
+            activity.authorLogin === state.selfLogin
+          ),
+      );
       const seen = new Set(watched.seenActivityIds);
       const fresh = activities.filter((activity) => !seen.has(activity.id));
       watched.seenActivityIds = activities.map((activity) => activity.id);
@@ -650,6 +799,7 @@ export async function createPrWatchController(options: ControllerOptions) {
         const pendingIDs = new Set(pending.feedbackActivities.map((activity) => activity.id));
         const external = fresh.filter((activity) => {
           if (!state.selfLogin || activity.authorLogin !== state.selfLogin) return true;
+          if (!state.orchestrationSessionId && watched.pr.authorLogin !== state.selfLogin) return false;
           const id = bareActivityId(activity.id);
           return !state.recentGhOutputs.some((output) => output.includes(id));
         });
@@ -662,7 +812,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       added += 1;
     }
     if (latest.mergeable === "MERGEABLE" && pending.conflictsKey) pending.conflictsKey = undefined;
-    watched.mergeable = latest.mergeable;
+    if (latest.mergeable === "MERGEABLE" || latest.mergeable === "CONFLICTING") watched.mergeable = latest.mergeable;
     removeEmptyPendingPr(state, watched.pr);
     return added;
   }
@@ -680,7 +830,7 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function flushPending(): Promise<void> {
-    if (state.mode !== "active" || pendingCount(state) === 0) return;
+    if (state.mode !== "active" || options.isIdle?.() === false || pendingCount(state) === 0) return;
     const messages: string[] = [];
     for (const pending of state.pendingPrUpdates) {
       const orchestration = Boolean(state.orchestrationSessionId);
@@ -689,11 +839,21 @@ export async function createPrWatchController(options: ControllerOptions) {
       if (pending.feedbackActivities.length) messages.push(buildFeedbackMessage(pending.pr, pending.feedbackActivities, orchestration, state.selfLogin));
     }
     if (state.pendingShaUpdate) messages.push(buildShaMessage(state.pendingShaUpdate));
+    for (const settlement of state.pendingWorkerSettlements ?? []) {
+      messages.push(`worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`);
+    }
     if (!messages.length) return;
     const marker = randomUUID();
-    await options.wake(`${messages.join("\n\n---\n\n")}\n\n<!-- pr-watch-delivery:${marker} -->`);
+    await options.wake(`<pr-watch-harness-notification>\nNot a user message.\n\n${messages.join("\n\n---\n\n")}\n\n<!-- pr-watch-delivery:${marker} -->\n</pr-watch-harness-notification>`);
     state.pendingPrUpdates = [];
     state.pendingShaUpdate = undefined;
+    state.resolvedWorkerSettlementIds = [
+      ...new Set([
+        ...(state.resolvedWorkerSettlementIds ?? []),
+        ...(state.pendingWorkerSettlements ?? []).map((settlement) => `${settlement.workerSessionId}:${settlement.assistantEntryId}`),
+      ]),
+    ];
+    state.pendingWorkerSettlements = [];
     state.lastNotifyAt = Date.now();
     await save();
   }
@@ -706,8 +866,10 @@ export async function createPrWatchController(options: ControllerOptions) {
       if (state.orchestrationSessionId || state.watchedSha) await syncWatchedSha();
       let added = await pollSha();
       for (const watched of [...state.watchedPrs]) added += await pollPr(watched);
+      if (!state.orchestrationSessionId) await syncWatchedSha();
       state.lastPollAt = Date.now();
       await save();
+      await publishWorkerSnapshot();
       if (added > 0 && state.mode === "paused") notify(`PR Watch buffered ${added} update${added === 1 ? "" : "s"} (${pendingCount(state)} pending).`, "info");
       await flushPending();
     } catch (error) {
@@ -719,19 +881,36 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function adoptRegistration(registration: Registration): Promise<void> {
-    if (state.orchestrationSessionId || !registration.orchestrationID) return;
-    state = initialState();
-    state.orchestrationSessionId = registration.orchestrationID;
-    await refreshSelfLogin();
-    await reconcileOrchestrationMembership();
-    await syncWatchedSha();
-    await save();
-    startPolling();
+    if (!state.orchestrationSessionId && registration.orchestrationID) {
+      state = initialState();
+      state.orchestrationSessionId = registration.orchestrationID;
+      await refreshSelfLogin();
+      await reconcileOrchestrationMembership();
+      await syncWatchedSha();
+      await save();
+      startPolling();
+      return;
+    }
+    if (!state.orchestrationSessionId && !state.workerOrchestrationSessionId && registration.workerOrchestrationID) {
+      state.workerOrchestrationSessionId = registration.workerOrchestrationID;
+      await refreshWorkerBranch();
+      await save();
+      await publishWorkerSnapshot(true);
+      startPolling();
+    }
   }
 
   async function initialize(): Promise<void> {
     const saved = await import("./pr-watch-ipc.ts").then(({ readJson }) => readJson<WatchState>(sessionStatePath(root, options.sessionID)));
     if (isWatchState(saved)) state = structuredClone(saved);
+    state.pendingWorkerSettlements ??= [];
+    if (!state.orchestrationSessionId && options.orchestrationID) {
+      state = initialState();
+      state.orchestrationSessionId = options.orchestrationID;
+    }
+    if (!state.orchestrationSessionId && !state.workerOrchestrationSessionId && options.workerOrchestrationID) {
+      state.workerOrchestrationSessionId = options.workerOrchestrationID;
+    }
     const registration = await import("./pr-watch-ipc.ts").then(({ readJson }) => readJson<Registration>(registrationPath(root, options.sessionID)));
     if (!state.orchestrationSessionId && registration?.orchestrationID) {
       state = initialState();
@@ -748,6 +927,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       }
     }
     await save();
+    await publishWorkerSnapshot(true);
     startPolling();
     await flushPending();
   }
@@ -758,14 +938,30 @@ export async function createPrWatchController(options: ControllerOptions) {
       state.recentGhOutputs = [...state.recentGhOutputs, output].slice(-MAX_RECENT_GH_OUTPUTS);
       await save();
     }
-    if (isActivationCommand(command)) await discover("gh pr command", pullRequestUrlFromText(output));
-    else if (isGitPush(command)) {
+    if (isActivationCommand(command)) {
+      const target = pullRequestUrlFromText(output);
+      if (!(await discover("gh pr command", target)) && !target) {
+        await syncWatchedSha();
+        await save();
+        startPolling();
+      }
+    } else if (isGitPush(command)) {
       if (!(await discover("git push", undefined, false))) {
         await syncWatchedSha();
         await save();
         startPolling();
       }
+    } else if (isPrMerge(command)) {
+      if (!(await discover("gh pr merge", undefined, false))) await syncWatchedSha();
+      await save();
+      startPolling();
+    } else if (isRunRerun(command) && !hasTargets()) {
+      if (!(await discover("gh run rerun", undefined, false))) await syncWatchedSha();
+      await save();
+      startPolling();
     }
+    await flushPending();
+    await publishWorkerSnapshot();
   }
 
   async function command(input: string, id: string = randomUUID()): Promise<CommandResponse> {
@@ -778,7 +974,10 @@ export async function createPrWatchController(options: ControllerOptions) {
       state.mode = "active";
       startPolling();
       if (hasTargets()) await poll();
-      else await discover(`manual ${action}`);
+      else if (!(await discover(`manual ${action}`))) {
+        await syncWatchedSha();
+        startPolling();
+      }
       message = `PR watch ${action === "on" ? "enabled" : "resumed"}.`;
     } else if (action === "pause") {
       state.mode = "paused";
@@ -805,17 +1004,20 @@ export async function createPrWatchController(options: ControllerOptions) {
         variant = "warning";
       } else {
         if (watched) removePr(watched.pr);
+        if (state.mode !== "off" && !state.orchestrationSessionId) await syncWatchedSha();
         message = watched ? `Removed PR #${number} from PR watch.` : `PR #${number} was not being watched.`;
       }
     } else if (action === "reset") {
       stopPolling();
       const orchestrationSessionId = state.orchestrationSessionId;
+      const workerOrchestrationSessionId = state.workerOrchestrationSessionId;
       state = initialState();
       state.orchestrationSessionId = orchestrationSessionId;
+      state.workerOrchestrationSessionId = workerOrchestrationSessionId;
       if (orchestrationSessionId) {
         await reconcileOrchestrationMembership();
         await syncWatchedSha();
-      } else await discover("manual reset", undefined, false);
+      } else if (!(await discover("manual reset", undefined, false))) await syncWatchedSha();
       startPolling();
       message = "PR watch reset.";
     } else if (action === "status") {
@@ -826,6 +1028,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       variant = "warning";
     }
     await save();
+    await publishWorkerSnapshot();
     const response: CommandResponse = { version: 1, id, sessionID: options.sessionID, message, variant, createdAt: Date.now() };
     await atomicWriteJson(commandResponsePath(root, options.sessionID, id), response);
     return response;
@@ -837,6 +1040,14 @@ export async function createPrWatchController(options: ControllerOptions) {
     observeShell,
     poll,
     command,
+    settle: async (assistantEntryId: string, response: string) => {
+      if (!state.workerOrchestrationSessionId) return;
+      await refreshWorkerBranch();
+      state.latestWorkerSettlement = { assistantEntryId, response, hadWatchedPr: state.watchedPrs.length > 0 };
+      await save();
+      await publishWorkerSnapshot(true);
+    },
+    flushPending,
     dispose: () => stopPolling(),
     getState: () => structuredClone(state),
   };

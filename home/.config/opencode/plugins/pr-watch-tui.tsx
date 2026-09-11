@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Plugin } from "@opencode-ai/plugin/tui";
+import { Plugin } from "@opencode/plugin/tui";
 
 import {
   atomicWriteJson,
@@ -28,6 +28,7 @@ export default Plugin.define({
   setup: async (ctx) => {
     const root = stateRoot();
     const orchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const workerOrchestrationID = process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
     const [view, updateView] = ctx.storage.memory<{ status?: StatusSnapshot }>("pr-watch-view", {
       initial: {},
     });
@@ -43,6 +44,7 @@ export default Plugin.define({
         sessionID,
         directory: directory ?? existing?.directory ?? ctx.location?.directory ?? process.cwd(),
         orchestrationID: existing?.orchestrationID ?? orchestrationID,
+        workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
         updatedAt: Date.now(),
       };
       await atomicWriteJson(path, registration);
@@ -134,6 +136,13 @@ export default Plugin.define({
         else {
           await atomicWriteJson(registrationPath(root, selectedSessionID), { ...existing, updatedAt: Date.now() });
           const next = await readJson<StatusSnapshot>(statusPath(root, selectedSessionID));
+          if (next && next.pending > (view.status?.pending ?? 0)) {
+            ctx.ui.toast.show({
+              title: "PR watch",
+              message: `Buffered ${next.pending} update${next.pending === 1 ? "" : "s"}.`,
+              variant: "info",
+            });
+          }
           updateView((draft) => {
             draft.status = next;
           });
