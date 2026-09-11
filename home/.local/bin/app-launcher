@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+source_dir="$HOME/.local/share/app-launcher"
+binary_dir="$HOME/.local/libexec"
+binary="$binary_dir/app-launcher"
+
 case "${1:-}" in
     --toggle)
         launchctl kill SIGUSR1 "gui/$(id -u)/com.elioshinsky.app-launcher"
@@ -9,13 +13,25 @@ case "${1:-}" in
         ;;
     --focus-sink)
         launchctl kill SIGUSR2 "gui/$(id -u)/com.elioshinsky.app-launcher"
+        /usr/bin/osascript -l JavaScript - "$binary" <<'JXA'
+ObjC.import('AppKit')
+
+function run(argv) {
+    const expectedExecutable = argv[0]
+    for (let attempt = 0; attempt < 50; attempt++) {
+        const application = $.NSWorkspace.sharedWorkspace.frontmostApplication
+        const executableURL = application && application.executableURL
+        if (executableURL && ObjC.unwrap(executableURL.path) === expectedExecutable) {
+            return
+        }
+        $.NSThread.sleepForTimeInterval(0.02)
+    }
+    throw new Error('app launcher did not become the frontmost application')
+}
+JXA
         exit 0
         ;;
 esac
-
-source_dir="$HOME/.local/share/app-launcher"
-binary_dir="$HOME/.local/libexec"
-binary="$binary_dir/app-launcher"
 needs_build=false
 
 if [[ ! -x "$binary" ]]; then

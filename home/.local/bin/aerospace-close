@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+# Close the focused window without leaving AeroSpace's visible workspace and
+# internal focused workspace out of sync.
+set -uo pipefail
+
+AEROSPACE_BIN=${AEROSPACE_BIN:-/opt/homebrew/bin/aerospace}
+APP_LAUNCHER_BIN=${APP_LAUNCHER_BIN:-$HOME/.local/bin/app-launcher}
+poll_interval=${AEROSPACE_CLOSE_POLL_INTERVAL:-0.05}
+max_poll_count=${AEROSPACE_CLOSE_MAX_POLLS:-100}
+focus_delay=${AEROSPACE_CLOSE_FOCUS_DELAY:-0.1}
+
+workspace=$("$AEROSPACE_BIN" list-workspaces --focused 2>/dev/null) || exit 1
+window_id=$("$AEROSPACE_BIN" list-windows --focused --format '%{window-id}' 2>/dev/null) || exit 1
+[[ -n "$workspace" && "$window_id" =~ ^[0-9]+$ ]] || exit 1
+
+# Keep an unmanaged launcher panel focused while macOS removes the window.
+# Otherwise macOS can raise an application from another AeroSpace workspace.
+"$APP_LAUNCHER_BIN" --focus-sink || exit 1
+sleep "$focus_delay"
+"$AEROSPACE_BIN" close --window-id "$window_id" >/dev/null || exit 1
+
+close_completed=false
+for ((poll_count = 0; poll_count < max_poll_count; poll_count++)); do
+    window_ids=$("$AEROSPACE_BIN" list-windows --all --format '%{window-id}' 2>/dev/null) || exit 1
+    if ! grep -Fxq "$window_id" <<<"$window_ids"; then
+        close_completed=true
+        break
+    fi
+    sleep "$poll_interval"
+done
+[[ "$close_completed" == true ]] || exit 1
+
+# Focus a window that remains in the same workspace. If the workspace is now
+# empty, leave the invisible launcher as the native focus sink.
+remaining_window=$(
+    "$AEROSPACE_BIN" list-windows --workspace "$workspace" --format '%{window-id}' 2>/dev/null |
+        head -n 1
+) || exit 1
+if [[ -n "$remaining_window" ]]; then
+    "$AEROSPACE_BIN" focus --window-id "$remaining_window" >/dev/null || exit 1
+fi

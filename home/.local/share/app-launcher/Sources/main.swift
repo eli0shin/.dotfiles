@@ -654,7 +654,7 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
     }
 
     func toggle() {
-        if panel.isVisible || activeShowRequestID != nil {
+        if panel.isVisible || activeShowRequestID != nil || activeLaunchRequestID != nil {
             hide()
         } else {
             prepareToShow()
@@ -954,11 +954,12 @@ private final class LauncherController: NSObject, NSTextFieldDelegate, NSTableVi
         let requestID = UUID()
         activeLaunchRequestID = requestID
 
-        // The workspace was captured before the launcher appeared, so the
-        // launcher can release activation as soon as the user selects an app.
+        // Remove the visible launcher immediately, but keep its invisible
+        // panel focused until AeroSpace detects or focuses the target window.
+        // Hiding the application here lets macOS raise an off-workspace app.
+        focusSinkPanel.makeKeyAndOrderFront(nil)
         panel.orderOut(nil)
-        focusSinkPanel.orderOut(nil)
-        NSApp.hide(nil)
+        focusSinkPanel.makeKey()
 
         guard let bundleIdentifier,
               let targetWorkspace = presentedWorkspace
