@@ -43,6 +43,9 @@ scrollback-limit = 1000
 
 # Terminal compatibility
 term = xterm-256color
+# Use only the normal clipboard. Never paste the primary selection.
+keybind = ctrl+v=paste_from_clipboard
+keybind = shift+insert=ignore
 # Allow remote applications such as Neovim to read the clipboard with OSC 52.
 clipboard-read = allow
 
