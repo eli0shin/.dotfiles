@@ -3,6 +3,7 @@ set -euo pipefail
 
 label="homebrew.mxcl.tailscale"
 platform=$(uname -s)
+tailscale_lan_script="${TAILSCALE_LAN_SCRIPT:-$(dirname "$0")/tailscale-lan.sh}"
 
 if [[ "$platform" == "Darwin" ]]; then
     resolver_dir="/etc/resolver"
@@ -31,7 +32,9 @@ if [[ "$platform" == "Linux" ]]; then
         echo "Starting Tailscale service..."
         sudo --preserve-env=HOME,XDG_CACHE_HOME "$(command -v brew)" services start tailscale
     fi
-    sudo /bin/bash "$(dirname "$0")/tailscale-lan.sh" install
+    if ! /bin/bash "$tailscale_lan_script" check-install; then
+        sudo /bin/bash "$tailscale_lan_script" install
+    fi
     exit 0
 fi
 
