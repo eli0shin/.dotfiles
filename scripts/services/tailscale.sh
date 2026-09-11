@@ -31,6 +31,7 @@ if [[ "$platform" == "Linux" ]]; then
         echo "Starting Tailscale service..."
         sudo --preserve-env=HOME,XDG_CACHE_HOME "$(command -v brew)" services start tailscale
     fi
+    sudo /bin/bash "$(dirname "$0")/tailscale-lan.sh" install
     exit 0
 fi
 
