@@ -26,12 +26,16 @@
     "thinking": "show",
     "markdown": "rendered",
     "grouping": "auto",
-    "image_preview": false,
-    "new_location": "launch"
+    "image_preview": true,
+    "new_location": "launch",
+    "tps": false
   },
-  "animations": false,
+  "animations": true,
   "tabs": {
-    "layout": "horizontal"
+    "layout": "horizontal",
+    "enabled": false,
+    "scope": "global",
+    "indicators": "status"
   },
   "mouse": true,
   "prompt": {
@@ -39,10 +43,12 @@
     "image_preview": true
   },
   "attention": {
-    "sound": false
+    "sound": false,
+    "notifications": false
   },
   "terminal": {
-    "title": true
+    "title": true,
+    "copy": "select"
   },
   "debug": {
     "devtools": false,

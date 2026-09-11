@@ -4,3 +4,4 @@ local_functions/
 .aider.*
 .aider*
 python-3.13.fish
+conf.d/uv.env.fish
