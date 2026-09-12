@@ -20,6 +20,11 @@ const HARNESS_GUIDANCE = "PR Watch monitors CI and PR feedback after supported P
 
 type Controller = Awaited<ReturnType<typeof createPrWatchController>>;
 type ShellCall = { command: string; output?: string };
+type Location = { directory: string; workspaceID?: string };
+
+function sameLocation(left: Location, right: Location): boolean {
+  return left.directory === right.directory && left.workspaceID === right.workspaceID;
+}
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -42,7 +47,7 @@ export default Plugin.define({
   id: "dotfiles.pr-watch",
   setup: async (ctx) => {
     const root = stateRoot();
-    const controllers = new Map<string, Controller>();
+    const controllers = new Map<string, Promise<Controller>>();
     const locations = new Map<string, string>();
     const shellCalls = new Map<string, ShellCall>();
     const commandRequests = new Map<string, string>();
@@ -52,27 +57,55 @@ export default Plugin.define({
     async function controller(sessionID: string, directory?: string): Promise<Controller> {
       const existing = controllers.get(sessionID);
       if (existing) return existing;
-      const registered = await readJson<Registration>(registrationPath(root, sessionID));
-      const next = await createPrWatchController({
-        sessionID,
-        directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? process.cwd(),
-        root,
-        orchestrationID: registered?.orchestrationID,
-        workerOrchestrationID: registered?.workerOrchestrationID,
-        isIdle: () => idle.get(sessionID) !== false,
-        wake: async (message) => {
-          await ctx.session.synthetic({
-            sessionID,
-            text: message,
-            description: "PR watch update",
-            delivery: "queue",
-            resume: true,
-          });
-        },
-      });
-      controllers.set(sessionID, next);
-      await next.initialize();
-      return next;
+      const pending = (async () => {
+        const registered = await readJson<Registration>(registrationPath(root, sessionID));
+        const next = await createPrWatchController({
+          sessionID,
+          directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? ctx.location.directory,
+          root,
+          orchestrationID: registered?.orchestrationID,
+          workerOrchestrationID: registered?.workerOrchestrationID,
+          isIdle: () => idle.get(sessionID) !== false,
+          wake: async (message) => {
+            await ctx.session.synthetic({
+              sessionID,
+              text: message,
+              description: "PR watch update",
+              delivery: "queue",
+              resume: true,
+            });
+          },
+        });
+        await next.initialize();
+        return next;
+      })();
+      controllers.set(sessionID, pending);
+      try {
+        return await pending;
+      } catch (error) {
+        if (controllers.get(sessionID) === pending) controllers.delete(sessionID);
+        throw error;
+      }
+    }
+
+    async function disposeController(sessionID: string): Promise<void> {
+      const pending = controllers.get(sessionID);
+      controllers.delete(sessionID);
+      (await pending)?.dispose();
+    }
+
+    function registrationLocation(registration: Registration): Location {
+      return { directory: registration.directory, workspaceID: registration.workspaceID };
+    }
+
+    function parseLocation(value: unknown): Location | undefined {
+      if (typeof value !== "object" || !value || !("directory" in value)) return undefined;
+      const location = value as { directory: unknown; workspaceID?: unknown };
+      if (typeof location.directory !== "string") return undefined;
+      return {
+        directory: location.directory,
+        workspaceID: typeof location.workspaceID === "string" ? location.workspaceID : undefined,
+      };
     }
 
     disposals.push(
@@ -113,16 +146,22 @@ export default Plugin.define({
         const data = event.data as Record<string, unknown>;
         const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined;
         if (!sessionID) continue;
-        const directory =
-          typeof event.location === "object" && event.location && "directory" in event.location
-            ? String(event.location.directory)
-            : undefined;
-        if (directory) locations.set(sessionID, directory);
-        if (event.type === "session.moved" && controllers.has(sessionID)) {
-          controllers.get(sessionID)?.dispose();
-          controllers.delete(sessionID);
+        if (event.type === "session.moved") {
+          const destination = parseLocation(data.location);
+          if (!destination || !sameLocation(destination, ctx.location)) {
+            await disposeController(sessionID);
+            continue;
+          }
+          locations.set(sessionID, destination.directory);
+          await disposeController(sessionID);
+          await controller(sessionID, destination.directory);
+          continue;
         }
-        if (event.type === "session.created" || event.type === "session.moved") await controller(sessionID, directory);
+        const sourceLocation = parseLocation(event.location);
+        if (!sourceLocation || !sameLocation(sourceLocation, ctx.location)) continue;
+        const directory = sourceLocation.directory;
+        if (directory) locations.set(sessionID, directory);
+        if (event.type === "session.created") await controller(sessionID, directory);
         if (event.type === "session.execution.started") idle.set(sessionID, false);
         if (
           event.type === "session.execution.succeeded" ||
@@ -167,22 +206,20 @@ export default Plugin.define({
       scanInFlight = true;
       void (async () => {
         const entries = await readdir(`${root}/registrations`, { withFileTypes: true }).catch(() => []);
+        const registrations = new Map<string, Registration>();
         for (const entry of entries) {
           if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
           const registered = await readJson<Registration>(`${root}/registrations/${entry.name}`);
           if (!registered) continue;
-          if (!isFreshRegistration(registered)) {
-            const stale = controllers.get(registered.sessionID);
-            stale?.dispose();
-            controllers.delete(registered.sessionID);
+          if (!sameLocation(registrationLocation(registered), ctx.location) || !isFreshRegistration(registered)) {
+            await disposeController(registered.sessionID);
             continue;
           }
+          registrations.set(registered.sessionID, registered);
           const current = await controller(registered.sessionID, registered.directory);
           await current.adoptRegistration(registered);
         }
-        for (const registered of entries) {
-          if (!registered.isFile() || !registered.name.endsWith(".json")) continue;
-          const sessionID = decodeURIComponent(registered.name.slice(0, -5));
+        for (const [sessionID] of registrations) {
           const requests = await readdir(commandDirectory(root, sessionID), { withFileTypes: true }).catch(() => []);
           for (const entry of requests) {
             if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -208,7 +245,10 @@ export default Plugin.define({
       eventAbort.abort();
       clearInterval(registrationTimer);
       await Promise.allSettled([eventLoop]);
-      for (const value of controllers.values()) value.dispose();
+      const activeControllers = await Promise.allSettled(controllers.values());
+      for (const value of activeControllers) {
+        if (value.status === "fulfilled") value.value.dispose();
+      }
       await Promise.all(disposals.map((dispose) => dispose()));
     };
   },

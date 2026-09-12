@@ -5,7 +5,6 @@ import {
   atomicWriteJson,
   commandRequestPath,
   commandResponsePath,
-  isFreshRegistration,
   readJson,
   registrationPath,
   stateRoot,
@@ -18,6 +17,7 @@ import {
 
 const HEARTBEAT_MS = 5_000;
 const RESPONSE_TIMEOUT_MS = 30_000;
+type Location = { directory: string; workspaceID?: string };
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -34,24 +34,37 @@ export default Plugin.define({
     });
     let selectedSessionID: string | undefined;
     let disposed = false;
+    let registrationQueue = Promise.resolve();
+    const movedLocations = new Map<string, Location>();
 
-    async function register(sessionID: string, directory?: string): Promise<void> {
-      selectedSessionID = sessionID;
-      const path = registrationPath(root, sessionID);
-      const existing = await readJson<Registration>(path);
-      const registration: Registration = {
-        version: 1,
-        sessionID,
-        directory: directory ?? existing?.directory ?? ctx.location?.directory ?? process.cwd(),
-        orchestrationID: existing?.orchestrationID ?? orchestrationID,
-        workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
-        updatedAt: Date.now(),
-      };
-      await atomicWriteJson(path, registration);
-      const next = await readJson<StatusSnapshot>(statusPath(root, sessionID));
-      updateView((draft) => {
-        draft.status = next;
+    function register(sessionID: string, movedLocation?: Location): Promise<StatusSnapshot | undefined> {
+      if (movedLocation) movedLocations.set(sessionID, movedLocation);
+      const pending = registrationQueue.then(async () => {
+        selectedSessionID = sessionID;
+        const path = registrationPath(root, sessionID);
+        const existing = await readJson<Registration>(path);
+        const existingLocation = existing
+          ? { directory: existing.directory, workspaceID: existing.workspaceID }
+          : undefined;
+        const location = movedLocations.get(sessionID) ?? ctx.data.session.get(sessionID)?.location ?? existingLocation ?? ctx.location;
+        const registration: Registration = {
+          version: 1,
+          sessionID,
+          directory: location?.directory ?? process.cwd(),
+          workspaceID: location?.workspaceID,
+          orchestrationID: existing?.orchestrationID ?? orchestrationID,
+          workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
+          updatedAt: Date.now(),
+        };
+        await atomicWriteJson(path, registration);
+        const next = await readJson<StatusSnapshot>(statusPath(root, sessionID));
+        updateView((draft) => {
+          draft.status = next;
+        });
+        return next;
       });
+      registrationQueue = pending.then(() => undefined, () => undefined);
+      return pending;
     }
 
     async function registerCurrent(): Promise<void> {
@@ -123,7 +136,7 @@ export default Plugin.define({
         if (route.type === "session" && route.sessionID === event.data.sessionID) void register(route.sessionID);
       }),
       ctx.data.on("session.moved", (event) => {
-        if (event.data.sessionID === selectedSessionID) void register(event.data.sessionID, event.data.location.directory);
+        if (event.data.sessionID === selectedSessionID) void register(event.data.sessionID, event.data.location);
       }),
     ];
 
@@ -131,20 +144,13 @@ export default Plugin.define({
     const timer = setInterval(() => {
       void (async () => {
         if (!selectedSessionID || disposed) return;
-        const existing = await readJson<Registration>(registrationPath(root, selectedSessionID));
-        if (!existing || !isFreshRegistration(existing)) await register(selectedSessionID);
-        else {
-          await atomicWriteJson(registrationPath(root, selectedSessionID), { ...existing, updatedAt: Date.now() });
-          const next = await readJson<StatusSnapshot>(statusPath(root, selectedSessionID));
-          if (next && next.pending > (view.status?.pending ?? 0)) {
-            ctx.ui.toast.show({
-              title: "PR watch",
-              message: `Buffered ${next.pending} update${next.pending === 1 ? "" : "s"}.`,
-              variant: "info",
-            });
-          }
-          updateView((draft) => {
-            draft.status = next;
+        const previousPending = view.status?.pending ?? 0;
+        const next = await register(selectedSessionID);
+        if (next && next.pending > previousPending) {
+          ctx.ui.toast.show({
+            title: "PR watch",
+            message: `Buffered ${next.pending} update${next.pending === 1 ? "" : "s"}.`,
+            variant: "info",
           });
         }
       })();

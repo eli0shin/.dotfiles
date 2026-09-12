@@ -7,6 +7,7 @@ export type Registration = {
   version: 1;
   sessionID: string;
   directory: string;
+  workspaceID?: string;
   orchestrationID?: string;
   workerOrchestrationID?: string;
   updatedAt: number;
