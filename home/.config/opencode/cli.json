@@ -1,5 +1,5 @@
 {
-  "plugins": ["./plugins/pr-watch-tui.tsx"],
+  "plugins": ["./plugins/pr-watch-tui.tsx", "./plugins/code-review-tui.tsx"],
   "theme": {
     "name": "system",
     "mode": "system"

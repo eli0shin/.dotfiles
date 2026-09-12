@@ -11,5 +11,5 @@
     "target": "es2022",
     "types": ["node"]
   },
-  "include": ["lib/pr-watch*.ts", "plugins/pr-watch*.ts", "plugins/pr-watch*.tsx", "test/pr-watch*.ts"]
+  "include": ["lib/*.ts", "plugins/**/*.ts", "plugins/**/*.tsx", "test/*.ts"]
 }

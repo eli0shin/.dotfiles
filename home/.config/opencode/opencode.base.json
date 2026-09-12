@@ -3,7 +3,7 @@
   "share": "disabled",
   "autoupdate": true,
   "default_agent": "build",
-  "plugins": ["./plugins/pr-watch"],
+  "plugins": ["./plugins/pr-watch", "./plugins/code-review"],
   "permissions": [
     {
       "action": "external_directory",

@@ -11,6 +11,9 @@ ALWAYS follow TDD when writing new features.
 ALWAYS seek to reproduce a bug before assuming what the fix is or researching why it may be happening.
 When refactoring functionality, REPLACE the existing behavior with the new behavior. DO NOT add feature flags, optional parameters, or conditionals to maintain old behavior unless explicitly requested.
 
+After completing non-trivial code changes, call the `run_code_review` tool before your final response. Skip it only for documentation-only, trivial, or explicitly excluded changes.
+Treat `run_code_review` findings as advisory: verify each against the code and address only valid, in-scope issues; note anything you judge a false positive.
+
 ALWAYS use a subagent task any time you need to search or learn about something in the codebase.
 DO NOT include the current year in web search queries - it limits results and excludes relevant timeless information.
 
