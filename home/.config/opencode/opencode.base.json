@@ -3,7 +3,12 @@
   "share": "disabled",
   "autoupdate": true,
   "default_agent": "build",
-  "plugins": ["./plugins/pr-watch", "./plugins/code-review", "./plugins/tree"],
+  "plugins": [
+    "./plugins/pr-watch",
+    "./plugins/code-review",
+    "./plugins/tree",
+    "@plannotator/opencode@latest"
+  ],
   "permissions": [
     {
       "action": "external_directory",
