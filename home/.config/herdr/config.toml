@@ -125,8 +125,9 @@ pane_borders = true
 pane_outer_borders = false
 pane_gaps = false
 pane_scrollbars = false
-hide_tab_bar_when_single_tab = true
+hide_tab_bar_when_single_tab = false
 tab_bar_position = "top"
+tab_bar_right = [{ type = "hostname" }]
 prompt_new_tab_name = false
 
 [ui.sound]

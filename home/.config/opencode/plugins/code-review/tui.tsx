@@ -6,8 +6,8 @@ import { Plugin } from "@opencode/plugin/tui";
 import type { Context } from "@opencode/plugin/tui/context";
 import { generateSyntax } from "@opencode/theme/tui";
 
-import { buildAdvisoryMessage } from "../lib/code-review.ts";
-import { CodeReviewRpc } from "./code-review/rpc.ts";
+import { buildAdvisoryMessage } from "../../lib/code-review.ts";
+import { CodeReviewRpc } from "./rpc.ts";
 
 type ReviewAction = "send" | "save" | "ignore";
 type ReviewResult = { findings: string; reviewSessionID: string };

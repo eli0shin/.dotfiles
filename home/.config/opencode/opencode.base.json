@@ -3,7 +3,7 @@
   "share": "disabled",
   "autoupdate": true,
   "default_agent": "build",
-  "plugins": ["./plugins/pr-watch", "./plugins/code-review"],
+  "plugins": ["./plugins/pr-watch", "./plugins/code-review", "./plugins/tree"],
   "permissions": [
     {
       "action": "external_directory",
@@ -35,12 +35,16 @@
           "action": "subagent",
           "resource": "*",
           "effect": "deny"
+        },
+        {
+          "action": "subagent",
+          "resource": "explore",
+          "effect": "allow"
         }
       ]
     },
     "plan": { "disabled": true },
-    "general": { "disabled": true },
-    "explore": { "disabled": true }
+    "general": { "disabled": true }
   },
   "mcp": {
     "chrome": {
