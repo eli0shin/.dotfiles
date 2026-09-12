@@ -1,5 +1,4 @@
 {
-  "plugins": ["./plugins/pr-watch-tui.tsx"],
   "theme": {
     "name": "system",
     "mode": "system"

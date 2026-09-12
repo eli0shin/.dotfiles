@@ -14,7 +14,7 @@ import {
   type CommandResponse,
   type Registration,
   type StatusSnapshot,
-} from "../lib/pr-watch-ipc.ts";
+} from "../../lib/pr-watch-ipc.ts";
 
 const HEARTBEAT_MS = 5_000;
 const RESPONSE_TIMEOUT_MS = 30_000;
@@ -93,7 +93,7 @@ export default Plugin.define({
     }
 
     const removeSlot = ctx.ui.slot({
-      append: "prompt.footer.status",
+      append: "prompt.footer",
       render: ({ sessionID }) => {
         ctx.keymap.layer(() => ({
           mode: "global",
