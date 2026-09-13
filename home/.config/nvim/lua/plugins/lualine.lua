@@ -17,7 +17,18 @@ return {
       lualine_a = { 'mode' },
       lualine_b = { 'branch' },
       lualine_c = { { 'filename', path = 1 } },
-      lualine_x = { 'filetype' },
+      lualine_x = {
+        {
+          function()
+            return require('pr_diff').status()
+          end,
+          cond = function()
+            return require('pr_diff').status() ~= ''
+          end,
+          color = { fg = '#1f2328', bg = '#d29922', gui = 'bold' },
+        },
+        'filetype',
+      },
       lualine_y = { 'diff' },
       lualine_z = { 'location' },
     },

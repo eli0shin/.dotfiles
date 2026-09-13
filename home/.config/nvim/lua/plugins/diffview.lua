@@ -8,6 +8,7 @@ return {
     { '<leader>dvc', '<cmd>DiffviewClose<cr>', desc = '[C]lose' },
     { '<leader>dvo', '<cmd>DiffviewOpen<cr>', desc = '[O]pen' },
     { '<leader>dvi', ':DiffviewOpen ', desc = '[I]nsert Target Git Object' },
+    { '<leader>dvr', function() require('pr_diff').reload() end, desc = '[R]eload PR' },
   },
   opts = {
     keymaps = {
