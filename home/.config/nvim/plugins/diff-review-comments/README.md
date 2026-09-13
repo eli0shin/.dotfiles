@@ -11,7 +11,11 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 3. Repeat across files — comments are stored per-repo as JSON
 4. Press `<leader>dcy` to copy all comments, or `<leader>dcx` to copy and delete them
 
-Run `dcl` from Fish to start Neovim directly in the comment list for the current repository.
+Fish commands provide the same repository-scoped actions outside Neovim:
+
+- `dcl` — open the comment list in Neovim
+- `dcy` — yank all comments and keep them
+- `dcx` — yank all comments and delete them
 
 ## Keymaps
 
