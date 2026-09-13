@@ -4,6 +4,7 @@ tap "hashicorp/tap", trusted: true
 tap "sst/tap", trusted: true
 tap "jnsahaj/lumen", trusted: true
 tap "FelixKratz/formulae", trusted: true
+tap "plannotator/tap", trusted: true
 
 brew "ast-grep"
 brew "bash"
@@ -58,6 +59,7 @@ brew "aws-sam-cli"
 brew "aws-sso-util"
 brew "go"
 brew "pnpm"
+brew "plannotator/tap/plannotator-tui"
 brew "agent-browser"
 brew "arp-scan"
 brew "jnsahaj/lumen/lumen"

@@ -1,6 +1,8 @@
 ---
 name: plannotator-compound
 disable-model-invocation: true
+metadata:
+  opencode/autoinvoke: false
 description: >
   Analyze a user's Plannotator plan archive to extract denial patterns, feedback
   taxonomy, evolution over time, and actionable prompt improvements — then produce
