@@ -1,7 +1,7 @@
 return {
   'sindrets/diffview.nvim',
   lazy = true,
-  cmd = 'DiffviewOpen',
+  cmd = { 'DiffviewOpen', 'DiffviewFileHistory' },
   keys = {
     { '<leader>b', '<cmd>DiffviewToggleFiles<cr>', desc = 'Toggle Diffview file panel' },
     { '<leader>d', group = '[D]iff' },
