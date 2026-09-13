@@ -1,1 +1,6 @@
-export { default } from "/Users/elioshinsky/code/opencode-tree/dist/tui.js";
+import { Plugin } from "@opencode/plugin/tui";
+
+export default Plugin.define({
+  id: "dotfiles.tree-tui",
+  setup() {},
+});
