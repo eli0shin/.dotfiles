@@ -2,12 +2,6 @@ local M = {}
 
 local utils = require 'diff_review_comments.utils'
 
-local function code_block(ft, lines)
-  local safe_ft = ft and ft ~= '' and ft or 'text'
-  local body = table.concat(lines or {}, '\n')
-  return string.format('```%s\n%s\n```', safe_ft, body)
-end
-
 local function line_sign_for(selected_side, line_no, changed)
   if selected_side == 'to' and changed.to[line_no] then
     return '+'
@@ -28,7 +22,7 @@ local function format_selected_lines(comment, changed)
   for i, code_line in ipairs(selected.code or {}) do
     local line_no = selected.line_start + i - 1
     local sign = line_sign_for(comment.diff.selected_side, line_no, changed)
-    table.insert(out, string.format('%6d %s | %s', line_no, sign, code_line))
+    table.insert(out, string.format('%d %s | %s', line_no, sign, code_line))
   end
 
   return out
@@ -54,18 +48,10 @@ local function file_reference(comment)
   return '[unknown]'
 end
 
-local function compare_value(compare, key)
-  local value = compare and compare[key] or nil
-  if not value or value == '' then
-    return 'unknown'
-  end
-  return value
-end
-
 function M.build(repo_root, comments)
   local changed_cache = {}
   local out = {
-    '# Review Requests',
+    '# Review Feedback',
     '',
     'Total comments: ' .. #comments,
     '',
@@ -74,28 +60,18 @@ function M.build(repo_root, comments)
   for i, c in ipairs(comments) do
     local selected_side = utils.side_info(c.diff.selected_side)
     local changed = utils.get_changed_for_comment(repo_root, c, changed_cache)
-    local compare = c.diff and c.diff.compare or nil
     table.insert(out, '## Comment ' .. i)
     table.insert(out, 'File: ' .. file_reference(c))
-    table.insert(out, 'From commit: ' .. compare_value(compare, 'base'))
-    table.insert(out, 'To commit: ' .. compare_value(compare, 'head'))
-    table.insert(out, 'From branch: ' .. compare_value(compare, 'base_branch'))
-    table.insert(out, 'To branch: ' .. compare_value(compare, 'head_branch'))
-    table.insert(
-      out,
-      string.format('Selection: L%d:C%d-L%d:C%d', c.selection.start.line, c.selection.start.col, c.selection['end'].line, c.selection['end'].col)
-    )
-    table.insert(out, 'Diff side: ' .. (c.diff.side or 'unknown'))
     table.insert(out, 'Selected side: ' .. selected_side.label)
     table.insert(out, '')
 
     if c.diff.selected then
       table.insert(out, '### Selected code')
-      table.insert(out, code_block(c.file.filetype, format_selected_lines(c, changed)))
+      vim.list_extend(out, format_selected_lines(c, changed))
       table.insert(out, '')
     end
 
-    table.insert(out, '### Reviewer comment')
+    table.insert(out, '### Comment')
     table.insert(out, c.comment_text)
     table.insert(out, '')
   end

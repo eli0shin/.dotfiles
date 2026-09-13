@@ -1,6 +1,7 @@
 local M = {}
 
 local config_mod = require 'diff_review_comments.config'
+local clipboard = require 'diff_review_comments.clipboard'
 local context = require 'diff_review_comments.context'
 local store = require 'diff_review_comments.store'
 local utils = require 'diff_review_comments.utils'
@@ -125,6 +126,33 @@ function M.clear_comments()
   notify('Cleared all comments for repo')
 end
 
+local function copy_all_comments(delete_after)
+  local repo_root = context.current_repo_root()
+  local comments = store.get_open_comments(state.config.storage_path, repo_root)
+  if #comments == 0 then
+    notify('No open comments to yank', vim.log.levels.WARN)
+    return
+  end
+
+  clipboard.copy(prompt.build(repo_root, comments))
+  if delete_after then
+    for _, comment in ipairs(comments) do
+      store.delete_comment(state.config.storage_path, repo_root, comment.id)
+    end
+    notify(string.format('Yanked and deleted %d diff review comment(s)', #comments))
+  else
+    notify(string.format('Yanked %d diff review comment(s)', #comments))
+  end
+end
+
+function M.yank_comments()
+  copy_all_comments(false)
+end
+
+function M.cut_comments()
+  copy_all_comments(true)
+end
+
 function M.run_comments(comments)
   local repo_root = context.current_repo_root()
   comments = comments or store.get_open_comments(state.config.storage_path, repo_root)
@@ -179,9 +207,8 @@ local function set_keymaps()
   vim.keymap.set('n', keymaps.run, function()
     M.run_comments()
   end, { desc = 'Diff comments: run prompt' })
-  vim.keymap.set('n', keymaps.clear, function()
-    M.clear_comments()
-  end, { desc = 'Diff comments: clear' })
+  vim.keymap.set('n', keymaps.yank, M.yank_comments, { desc = 'Diff comments: yank all' })
+  vim.keymap.set('n', keymaps.cut, M.cut_comments, { desc = 'Diff comments: yank and delete all' })
 end
 
 local function set_commands()
@@ -196,6 +223,12 @@ local function set_commands()
   end, { force = true })
   vim.api.nvim_create_user_command('DiffReviewCommentClear', function()
     M.clear_comments()
+  end, { force = true })
+  vim.api.nvim_create_user_command('DiffReviewCommentYank', function()
+    M.yank_comments()
+  end, { force = true })
+  vim.api.nvim_create_user_command('DiffReviewCommentCut', function()
+    M.cut_comments()
   end, { force = true })
 end
 

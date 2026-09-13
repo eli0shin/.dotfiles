@@ -8,7 +8,8 @@ return {
       { '<leader>dca', desc = '[A]dd Diff Comment' },
       { '<leader>dcl', desc = '[L]ist Diff Comments' },
       { '<leader>dcr', desc = '[R]un Diff Comments Prompt' },
-      { '<leader>dcx', desc = 'Clear Diff Comments' },
+      { '<leader>dcy', desc = '[Y]ank All Diff Comments' },
+      { '<leader>dcx', desc = 'Cut All Diff Comments' },
     },
     config = function()
       require('diff_review_comments').setup()

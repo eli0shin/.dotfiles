@@ -9,7 +9,9 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 1. Open a diff view (diffview, octo PR review, or `:diffsplit`)
 2. Visually select code and press `<leader>dca` to add a comment
 3. Repeat across files — comments are stored per-repo as JSON
-4. Press `<leader>dcr` to build a markdown prompt from all comments and run it through a configured provider (`opencode`, `claude`, `pi`, or `custom`)
+4. Press `<leader>dcy` to copy all comments, or `<leader>dcx` to copy and delete them
+
+Run `dcl` from Fish to start Neovim directly in the comment list for the current repository.
 
 ## Keymaps
 
@@ -19,7 +21,8 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 | `<leader>dca` | normal | Add comment from motion     |
 | `<leader>dcl` | normal | List/edit/delete comments   |
 | `<leader>dcr` | normal | Run review prompt           |
-| `<leader>dcx` | normal | Clear all comments for repo |
+| `<leader>dcy` | normal | Yank all comments           |
+| `<leader>dcx` | normal | Yank and delete all comments |
 
 ## Commands
 
@@ -27,6 +30,8 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 - `:DiffReviewCommentList` — list comments
 - `:DiffReviewCommentRun` — run review prompt
 - `:DiffReviewCommentClear` — clear comments
+- `:DiffReviewCommentYank` — yank all comments
+- `:DiffReviewCommentCut` — yank and delete all comments
 
 ## Installation
 
@@ -55,7 +60,8 @@ require('diff_review_comments').setup {
     add = '<leader>dca',
     list = '<leader>dcl',
     run = '<leader>dcr',
-    clear = '<leader>dcx',
+    yank = '<leader>dcy',
+    cut = '<leader>dcx',
   },
   max_selection_lines = 200,
   storage_path = vim.fn.stdpath('data') .. '/diff-review-comments/comments.json',
