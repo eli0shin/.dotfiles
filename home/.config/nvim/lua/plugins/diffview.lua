@@ -3,6 +3,7 @@ return {
   lazy = true,
   cmd = 'DiffviewOpen',
   keys = {
+    { '<leader>b', '<cmd>DiffviewToggleFiles<cr>', desc = 'Toggle Diffview file panel' },
     { '<leader>d', group = '[D]iff' },
     { '<leader>dv', group = '[V]iew' },
     { '<leader>dvc', '<cmd>DiffviewClose<cr>', desc = '[C]lose' },
