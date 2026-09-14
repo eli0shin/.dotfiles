@@ -7,12 +7,36 @@ import test from "node:test";
 import {
   atomicWriteJson,
   atomicWriteJsonSync,
+  createLaunchRoleClaim,
   commandRequestPath,
   isFreshRegistration,
   readJson,
   readJsonSync,
   sessionStatePath,
 } from "../lib/pr-watch-ipc.ts";
+
+test("a launch orchestration identity can bind to only one session", () => {
+  const claim = createLaunchRoleClaim({ orchestrationID: "parent-id" });
+  assert.deepEqual(claim("parent"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+  assert.deepEqual(claim("ordinary"), { orchestrationID: undefined, workerOrchestrationID: undefined });
+  assert.deepEqual(claim("parent"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+});
+
+test("a saved session role takes precedence over a new launch claim", () => {
+  const claim = createLaunchRoleClaim({ workerOrchestrationID: "new-parent" });
+  const existing = {
+    version: 1 as const,
+    sessionID: "parent",
+    directory: "/repo",
+    orchestrationID: "saved-parent",
+    updatedAt: Date.now(),
+  };
+  assert.deepEqual(claim("parent", existing), {
+    orchestrationID: "saved-parent",
+    workerOrchestrationID: undefined,
+  });
+  assert.deepEqual(claim("ordinary"), { orchestrationID: undefined, workerOrchestrationID: undefined });
+});
 
 test("IPC paths encode OpenCode session IDs", () => {
   const root = "/state/opencode/pr-watch";

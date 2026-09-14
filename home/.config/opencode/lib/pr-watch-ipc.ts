@@ -14,6 +14,25 @@ export type Registration = {
   updatedAt: number;
 };
 
+type OrchestrationRole = Pick<Registration, "orchestrationID" | "workerOrchestrationID">;
+
+export function createLaunchRoleClaim(
+  launch: OrchestrationRole,
+): (sessionID: string, existing?: Registration) => OrchestrationRole {
+  let launchSessionID: string | undefined;
+  return (sessionID, existing) => {
+    if (!launchSessionID && (launch.orchestrationID || launch.workerOrchestrationID)) launchSessionID = sessionID;
+    const requested = launchSessionID === sessionID ? launch : {};
+    const orchestrationID = existing?.orchestrationID ?? requested.orchestrationID;
+    return {
+      orchestrationID,
+      workerOrchestrationID: orchestrationID
+        ? undefined
+        : existing?.workerOrchestrationID ?? requested.workerOrchestrationID,
+    };
+  };
+}
+
 export type CommandRequest = {
   version: 1;
   id: string;

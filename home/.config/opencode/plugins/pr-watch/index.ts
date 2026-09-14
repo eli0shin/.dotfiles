@@ -1,16 +1,15 @@
-import { readdir, rm } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 
 import { Plugin } from "@opencode/plugin";
 
 import { createPrWatchController } from "../../lib/pr-watch-core.ts";
 import {
-  commandDirectory,
   commandResponsePath,
+  createLaunchRoleClaim,
   isFreshRegistration,
   readJson,
   registrationPath,
   stateRoot,
-  type CommandRequest,
   type CommandResponse,
   type Registration,
 } from "../../lib/pr-watch-ipc.ts";
@@ -52,9 +51,10 @@ export default Plugin.define({
   id: "dotfiles.pr-watch",
   setup: async (ctx) => {
     const root = stateRoot();
-    const requestedOrchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
-    const requestedWorkerOrchestrationID =
-      process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const claimLaunchWorkerRole = createLaunchRoleClaim({
+      workerOrchestrationID: process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined,
+    });
+    delete process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
     const controllers = new Map<string, Promise<Controller>>();
     const locations = new Map<string, string>();
     const shellCalls = new Map<string, ShellCall>();
@@ -68,12 +68,13 @@ export default Plugin.define({
       if (existing) return existing;
       const pending = (async () => {
         const registered = await readJson<Registration>(registrationPath(root, sessionID));
+        const role = claimLaunchWorkerRole(sessionID, registered);
         const next = await createPrWatchController({
           sessionID,
           directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? ctx.location.directory,
           root,
-          orchestrationID: registered?.orchestrationID ?? requestedOrchestrationID,
-          workerOrchestrationID: registered?.workerOrchestrationID ?? requestedWorkerOrchestrationID,
+          orchestrationID: registered?.orchestrationID,
+          workerOrchestrationID: role.workerOrchestrationID,
           isIdle: () => idle.get(sessionID) !== false,
           hasDelivery: async (id) => {
             const marker = `<!-- pr-watch-delivery:${id} -->`;
@@ -127,6 +128,17 @@ export default Plugin.define({
 
     disposals.push(
       (
+        await ctx.shell.hook("create.before", (input) => {
+          delete input.env.OPENCODE_ORCHESTRATION_SESSION_ID;
+          delete input.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
+          delete input.env.PI_ORCHESTRATION_SESSION_ID;
+          delete input.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+        })
+      ).dispose,
+    );
+
+    disposals.push(
+      (
         await ctx.session.hook("context", async (event) => {
           if ((await controller(event.sessionID)).getState().mode !== "off")
             event.system.push({ type: "text", text: HARNESS_GUIDANCE });
@@ -141,7 +153,8 @@ export default Plugin.define({
           const value = input.input as { command?: unknown };
           if (typeof value.command !== "string") return;
           shellCalls.set(input.id, { command: value.command });
-          const orchestrationID = (await controller(input.sessionID)).getState().orchestrationSessionId;
+          const registration = await readJson<Registration>(registrationPath(root, input.sessionID));
+          const orchestrationID = registration?.orchestrationID;
           if (orchestrationID) {
             value.command = withOrchestrationEnvironment(value.command, orchestrationID);
           }
@@ -253,7 +266,6 @@ export default Plugin.define({
         const entries = await readdir(`${root}/registrations`, {
           withFileTypes: true,
         }).catch(() => []);
-        const registrations = new Map<string, Registration>();
         for (const entry of entries) {
           if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
           const registered = await readJson<Registration>(`${root}/registrations/${entry.name}`);
@@ -262,23 +274,9 @@ export default Plugin.define({
             await disposeController(registered.sessionID);
             continue;
           }
-          registrations.set(registered.sessionID, registered);
+          if (!controllers.has(registered.sessionID)) continue;
           const current = await controller(registered.sessionID, registered.directory);
           await current.adoptRegistration(registered);
-        }
-        for (const [sessionID] of registrations) {
-          const requests = await readdir(commandDirectory(root, sessionID), {
-            withFileTypes: true,
-          }).catch(() => []);
-          for (const entry of requests) {
-            if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-            const path = `${commandDirectory(root, sessionID)}/${entry.name}`;
-            const request = await readJson<CommandRequest>(path);
-            if (!request) continue;
-            const current = await controller(sessionID);
-            await current.command(request.input, request.id);
-            await rm(path, { force: true });
-          }
         }
         for (const [requestID, sessionID] of commandRequests) {
           const response = await readJson<CommandResponse>(commandResponsePath(root, sessionID, requestID));

@@ -4,14 +4,13 @@ import { Plugin } from "@opencode/plugin/tui";
 import {
   atomicWriteJson,
   atomicWriteJsonSync,
-  commandRequestPath,
   commandResponsePath,
+  createLaunchRoleClaim,
   readJson,
   readJsonSync,
   registrationPath,
   stateRoot,
   statusPath,
-  type CommandRequest,
   type CommandResponse,
   type Registration,
   type StatusSnapshot,
@@ -28,8 +27,14 @@ export default Plugin.define({
   id: "dotfiles.pr-watch-tui",
   setup: async (ctx) => {
     const root = stateRoot();
-    const orchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
-    const workerOrchestrationID = process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const launchOrchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const launchWorkerOrchestrationID = process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const claimLaunchRole = createLaunchRoleClaim({
+      orchestrationID: launchOrchestrationID,
+      workerOrchestrationID: launchWorkerOrchestrationID,
+    });
+    delete process.env.OPENCODE_ORCHESTRATION_SESSION_ID;
+    delete process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
     const [view, updateView] = ctx.storage.memory<{ status?: StatusSnapshot }>("pr-watch-view", {
       initial: {},
     });
@@ -48,13 +53,13 @@ export default Plugin.define({
         : undefined;
       const location =
         movedLocations.get(sessionID) ?? ctx.data.session.get(sessionID)?.location ?? existingLocation ?? ctx.location;
+      const role = claimLaunchRole(sessionID, existing);
       return {
         version: 1,
         sessionID,
         directory: location?.directory ?? process.cwd(),
         workspaceID: location?.workspaceID,
-        orchestrationID: existing?.orchestrationID ?? orchestrationID,
-        workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
+        ...role,
         updatedAt: Date.now(),
       };
     }
@@ -109,14 +114,13 @@ export default Plugin.define({
       }
       await register(route.sessionID);
       const requestID = randomUUID();
-      const request: CommandRequest = {
-        version: 1,
-        id: requestID,
+      await ctx.client.session.synthetic({
         sessionID: route.sessionID,
-        input: input.trim() || "status",
-        createdAt: Date.now(),
-      };
-      await atomicWriteJson(commandRequestPath(root, route.sessionID, requestID), request);
+        text: input.trim() || "status",
+        description: "PR watch command",
+        metadata: { kind: "pr-watch-command", requestID },
+        resume: false,
+      });
       let response: CommandResponse | undefined;
       while (!response && !disposed) {
         response = await readJson<CommandResponse>(commandResponsePath(root, route.sessionID, requestID));

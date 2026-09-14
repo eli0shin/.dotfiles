@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 import {
   atomicWriteJson,
   commandResponsePath,
-  registrationPath,
   sessionStatePath,
   stateRoot,
   statusPath,
@@ -1236,9 +1235,20 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function adoptRegistration(registration: Registration): Promise<void> {
-    if (!state.orchestrationSessionId && registration.orchestrationID) {
-      state = initialState();
-      state.orchestrationSessionId = registration.orchestrationID;
+    const orchestrationID = registration.orchestrationID?.trim() || undefined;
+    const workerOrchestrationID = !orchestrationID
+      ? registration.workerOrchestrationID?.trim() || undefined
+      : undefined;
+    if (
+      state.orchestrationSessionId === orchestrationID &&
+      state.workerOrchestrationSessionId === workerOrchestrationID
+    )
+      return;
+
+    state = initialState();
+    state.orchestrationSessionId = orchestrationID;
+    state.workerOrchestrationSessionId = workerOrchestrationID;
+    if (orchestrationID) {
       await refreshSelfLogin();
       const errors = await reconcileOrchestrationMembership();
       await syncWatchedSha();
@@ -1248,13 +1258,12 @@ export async function createPrWatchController(options: ControllerOptions) {
       startPolling();
       return;
     }
-    if (!state.orchestrationSessionId && !state.workerOrchestrationSessionId && registration.workerOrchestrationID) {
-      state.workerOrchestrationSessionId = registration.workerOrchestrationID;
+    if (workerOrchestrationID) {
       await refreshWorkerBranch();
-      await save();
-      await publishWorkerSnapshot(true);
-      startPolling();
     }
+    await save();
+    await publishWorkerSnapshot(true);
+    startPolling();
   }
 
   async function initialize(): Promise<void> {
@@ -1263,19 +1272,15 @@ export async function createPrWatchController(options: ControllerOptions) {
     );
     if (isWatchState(saved)) state = structuredClone(saved);
     state.pendingWorkerSettlements ??= [];
-    if (!state.orchestrationSessionId && options.orchestrationID) {
+    const orchestrationID = options.orchestrationID?.trim() || undefined;
+    const workerOrchestrationID = !orchestrationID ? options.workerOrchestrationID?.trim() || undefined : undefined;
+    if (
+      state.orchestrationSessionId !== orchestrationID ||
+      state.workerOrchestrationSessionId !== workerOrchestrationID
+    ) {
       state = initialState();
-      state.orchestrationSessionId = options.orchestrationID;
-    }
-    if (!state.orchestrationSessionId && !state.workerOrchestrationSessionId && options.workerOrchestrationID) {
-      state.workerOrchestrationSessionId = options.workerOrchestrationID;
-    }
-    const registration = await import("./pr-watch-ipc.ts").then(({ readJson }) =>
-      readJson<Registration>(registrationPath(root, options.sessionID)),
-    );
-    if (!state.orchestrationSessionId && registration?.orchestrationID) {
-      state = initialState();
-      state.orchestrationSessionId = registration.orchestrationID;
+      state.orchestrationSessionId = orchestrationID;
+      state.workerOrchestrationSessionId = workerOrchestrationID;
     }
     if (state.mode !== "off") {
       state.lastError = undefined;

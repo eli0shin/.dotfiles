@@ -21,9 +21,11 @@ test("OpenCode appends the canonical orchestrator role only to parent sessions",
   );
 
   let contextHook: ((event: { sessionID: string; system: Array<{ text: string }> }) => Promise<void>) | undefined;
+  const hookNames: string[] = [];
   const context = {
     session: {
-      hook: async (_name: string, callback: typeof contextHook) => {
+      hook: async (name: string, callback: typeof contextHook) => {
+        hookNames.push(name);
         contextHook = callback;
         return { dispose: async () => undefined };
       },
@@ -33,10 +35,18 @@ test("OpenCode appends the canonical orchestrator role only to parent sessions",
   try {
     const cleanup = await (plugin.setup as any)(context);
     assert.ok(contextHook);
+    assert.deepEqual(hookNames, ["context"]);
 
     const ordinary = { sessionID: "ordinary", system: [{ text: "base" }] };
     await contextHook(ordinary);
     assert.deepEqual(ordinary.system, [{ text: "base" }]);
+
+    await atomicWriteJson(sessionStatePath(stateRoot(), "contaminated"), {
+      orchestrationSessionId: "foreign-parent",
+    });
+    const contaminated = { sessionID: "contaminated", system: [{ text: "base" }] };
+    await contextHook(contaminated);
+    assert.deepEqual(contaminated.system, [{ text: "base" }]);
 
     await atomicWriteJson(registrationPath(stateRoot(), "worker"), {
       version: 1,
@@ -66,8 +76,12 @@ test("OpenCode appends the canonical orchestrator role only to parent sessions",
     await contextHook(updated);
     assert.equal(updated.system[1]?.text, "Updated role");
 
-    await atomicWriteJson(sessionStatePath(stateRoot(), "resumed"), {
-      orchestrationSessionId: "persisted-id",
+    await atomicWriteJson(registrationPath(stateRoot(), "resumed"), {
+      version: 1,
+      sessionID: "resumed",
+      directory: home,
+      orchestrationID: "persisted-id",
+      updatedAt: Date.now(),
     });
     const resumed = { sessionID: "resumed", system: [{ text: "base" }] };
     await contextHook(resumed);
@@ -82,7 +96,7 @@ test("OpenCode appends the canonical orchestrator role only to parent sessions",
   }
 });
 
-test("a standalone OpenCode parent appends the orchestrator role before session registration", async () => {
+test("the server process environment cannot promote an unregistered session", async () => {
   const home = await mkdtemp(join(tmpdir(), "opencode-orchestrator-"));
   const oldHome = process.env.HOME;
   const oldStateHome = process.env.XDG_STATE_HOME;
@@ -105,9 +119,9 @@ test("a standalone OpenCode parent appends the orchestrator role before session 
       },
     });
     assert.ok(contextHook);
-    const firstTurn = { sessionID: "new-parent", system: [{ text: "base" }] };
+    const firstTurn = { sessionID: "ordinary", system: [{ text: "base" }] };
     await contextHook(firstTurn);
-    assert.deepEqual(firstTurn.system, [{ text: "base" }, { type: "text", text: "# Orchestrator" }]);
+    assert.deepEqual(firstTurn.system, [{ text: "base" }]);
     await cleanup();
   } finally {
     if (oldHome === undefined) delete process.env.HOME;

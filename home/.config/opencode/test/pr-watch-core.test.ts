@@ -78,6 +78,34 @@ function createExecutor(
   };
 }
 
+test("an ordinary controller removes a stale persisted orchestration identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-core-"));
+  await atomicWriteJson(sessionStatePath(root, "ordinary"), {
+    version: 1,
+    mode: "active",
+    watchedPrs: [],
+    pendingPrUpdates: [],
+    pendingWorkerSettlements: [],
+    recentGhOutputs: [],
+    orchestrationSessionId: "foreign-parent",
+  });
+  const controller = await createPrWatchController({
+    sessionID: "ordinary",
+    directory: "/repo",
+    root,
+    wake: async () => undefined,
+    exec: createExecutor(),
+    isIdle: () => true,
+  } as any);
+  try {
+    await controller.initialize();
+    assert.equal(controller.getState().orchestrationSessionId, undefined);
+  } finally {
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("watches the session branch SHA with a PR from another worktree", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-core-"));
   const controller = await createPrWatchController({
