@@ -24,11 +24,6 @@ SYMLINKS=(
     "$HOME/.claude"
 )
 
-# Managed files that applications can replace with regular files.
-STOW_OVERWRITE_FILES=(
-    "$HOME/.docker/config.json"
-)
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'

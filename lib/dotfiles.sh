@@ -55,13 +55,6 @@ cmd_stow() {
         done
     fi
 
-    for path in "${STOW_OVERWRITE_FILES[@]}"; do
-        if [[ -e "$path" && ! -L "$path" ]]; then
-            rm -f "$path"
-            info "Replaced managed file: $path"
-        fi
-    done
-
     # Create directory symlinks from $HOME to dotfiles
     stow -v --ignore='(^|/)\.DS_Store$' --target="$HOME" --dir="$DOTFILES_DIR" home
 
