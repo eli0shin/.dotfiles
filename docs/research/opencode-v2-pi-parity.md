@@ -54,7 +54,7 @@ Sources:
 
 The selected system prompt is the adapted Pi prompt: OpenCode identity, Pi's short coding-assistant description, and Pi's two unconditional guidelines. The implementation will use both the documented server plugin API and the current beta TUI plugin API so commands, footer status, and toasts can match Pi.
 
-The OpenCode port retains the full orchestration contract. `orchestrate-opencode` creates the parent ID. When `spawn-worker` runs from that session, it starts an OpenCode Mini worker with `OPENCODE_PARENT_ORCHESTRATION_SESSION_ID`. OpenCode workers publish PR membership, branch identity, and terminal settlements through the shared worker snapshot directory. Pi orchestration continues to launch Pi workers.
+The OpenCode port retains the full orchestration contract. `orchestrate-opencode` creates the parent ID, and the OpenCode orchestrator plugin appends the canonical orchestrator role to each parent model request. When `spawn-worker` runs from that session, it starts an OpenCode Mini worker with `OPENCODE_PARENT_ORCHESTRATION_SESSION_ID`. OpenCode workers publish PR membership, branch identity, and terminal settlements through their OpenCode worker snapshot directory. Pi orchestration continues to launch Pi workers through its independent Pi markers and snapshot directory.
 
 ## PR-watch behavior to port
 
@@ -114,19 +114,21 @@ The probe established these facts:
 4. The TUI plugin wrote a registration file keyed by that session ID.
 5. When the TUI started with `--session <existing-id>`, its current route immediately exposed that session ID, and the plugin registered the resumed session with the client-only marker.
 
-Therefore the normal shared service can support orchestration reliably. The boundary is explicit:
+Therefore the normal shared service can support full-TUI orchestration through session registration. Headless `run` and Mini clients do not load TUI plugins, so the current orchestration launchers use `--standalone`. This gives the private server the orchestration marker before its first context request. The boundary is explicit:
 
-- `orchestrate-opencode` exports the orchestration ID to the TUI process;
+- `orchestrate-opencode` exports the orchestration ID and starts a standalone OpenCode server;
+- the standalone server plugin reads that ID directly for full-TUI and headless sessions;
 - the TUI plugin associates that ID with the selected OpenCode session and writes an atomic registration file;
 - the server plugin reads the registration and owns polling, persistence, and synthetic wake-ups;
+- standalone Mini workers pass only the parent orchestration ID to their private server;
 - resumed sessions keep their persisted orchestration identity instead of accepting a fresh accidental replacement;
-- no `--standalone` mode is required.
+- ordinary OpenCode sessions can continue to use the shared service without an orchestration role.
 
 The probe was throwaway code under `/tmp/opencode2-shared-service-probe`; it did not modify the repository or the user's active OpenCode service.
 
 ## Configuration boundary
 
-OpenCode V2 reads the global service configuration from `~/.config/opencode/opencode.json(c)`. Native V2 uses `agents`, `permissions`, and `plugins`. The global TUI uses `~/.config/opencode/cli.json`. V2 is a beta and its plugin contracts can change, so the implementation must pin compatible `@opencode-ai/*` package versions and verify both server and TUI plugin loading with the installed `opencode2` version.
+OpenCode V2 reads the global service configuration from `~/.config/opencode/opencode.json(c)`. Native V2 uses `agents`, `permissions`, and `plugins`. The global TUI uses `~/.config/opencode/cli.json`. The implementation pins compatible `@opencode/*` package versions and verifies both server and TUI plugin loading with the installed `opencode` version.
 
 Sources:
 

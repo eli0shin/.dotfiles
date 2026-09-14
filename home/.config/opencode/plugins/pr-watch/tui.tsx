@@ -3,9 +3,11 @@ import { Plugin } from "@opencode/plugin/tui";
 
 import {
   atomicWriteJson,
+  atomicWriteJsonSync,
   commandRequestPath,
   commandResponsePath,
   readJson,
+  readJsonSync,
   registrationPath,
   stateRoot,
   statusPath,
@@ -16,7 +18,6 @@ import {
 } from "../../lib/pr-watch-ipc.ts";
 
 const HEARTBEAT_MS = 5_000;
-const RESPONSE_TIMEOUT_MS = 30_000;
 type Location = { directory: string; workspaceID?: string };
 
 function sleep(milliseconds: number): Promise<void> {
@@ -36,46 +37,74 @@ export default Plugin.define({
     let disposed = false;
     let registrationQueue = Promise.resolve();
     const movedLocations = new Map<string, Location>();
+    const seenNotificationIDs = new Map<string, Set<string>>();
+
+    function registrationFor(sessionID: string, movedLocation?: Location): Registration {
+      if (movedLocation) movedLocations.set(sessionID, movedLocation);
+      const path = registrationPath(root, sessionID);
+      const existing = readJsonSync<Registration>(path);
+      const existingLocation = existing
+        ? { directory: existing.directory, workspaceID: existing.workspaceID }
+        : undefined;
+      const location =
+        movedLocations.get(sessionID) ?? ctx.data.session.get(sessionID)?.location ?? existingLocation ?? ctx.location;
+      return {
+        version: 1,
+        sessionID,
+        directory: location?.directory ?? process.cwd(),
+        workspaceID: location?.workspaceID,
+        orchestrationID: existing?.orchestrationID ?? orchestrationID,
+        workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
+        updatedAt: Date.now(),
+      };
+    }
+
+    function registerImmediately(sessionID: string, movedLocation?: Location): void {
+      selectedSessionID = sessionID;
+      atomicWriteJsonSync(registrationPath(root, sessionID), registrationFor(sessionID, movedLocation));
+      const status = readJsonSync<StatusSnapshot>(statusPath(root, sessionID));
+      seenNotificationIDs.set(sessionID, new Set((status?.notifications ?? []).map((notification) => notification.id)));
+      updateView((draft) => {
+        draft.status = status;
+      });
+    }
 
     function register(sessionID: string, movedLocation?: Location): Promise<StatusSnapshot | undefined> {
-      if (movedLocation) movedLocations.set(sessionID, movedLocation);
       const pending = registrationQueue.then(async () => {
         selectedSessionID = sessionID;
         const path = registrationPath(root, sessionID);
-        const existing = await readJson<Registration>(path);
-        const existingLocation = existing
-          ? { directory: existing.directory, workspaceID: existing.workspaceID }
-          : undefined;
-        const location = movedLocations.get(sessionID) ?? ctx.data.session.get(sessionID)?.location ?? existingLocation ?? ctx.location;
-        const registration: Registration = {
-          version: 1,
-          sessionID,
-          directory: location?.directory ?? process.cwd(),
-          workspaceID: location?.workspaceID,
-          orchestrationID: existing?.orchestrationID ?? orchestrationID,
-          workerOrchestrationID: existing?.workerOrchestrationID ?? workerOrchestrationID,
-          updatedAt: Date.now(),
-        };
-        await atomicWriteJson(path, registration);
+        await atomicWriteJson(path, registrationFor(sessionID, movedLocation));
         const next = await readJson<StatusSnapshot>(statusPath(root, sessionID));
         updateView((draft) => {
           draft.status = next;
         });
         return next;
       });
-      registrationQueue = pending.then(() => undefined, () => undefined);
+      registrationQueue = pending.then(
+        () => undefined,
+        () => undefined,
+      );
       return pending;
     }
 
     async function registerCurrent(): Promise<void> {
       const route = ctx.ui.router.current();
-      if (route.type === "session") await register(route.sessionID);
+      if (route.type === "session") {
+        const status = await register(route.sessionID);
+        seenNotificationIDs.set(
+          route.sessionID,
+          new Set((status?.notifications ?? []).map((notification) => notification.id)),
+        );
+      }
     }
 
     async function runCommand(input = ""): Promise<void> {
       const route = ctx.ui.router.current();
       if (route.type !== "session") {
-        ctx.ui.toast.show({ message: "Open a session before you use /pr-watch.", variant: "warning" });
+        ctx.ui.toast.show({
+          message: "Open a session before you use /pr-watch.",
+          variant: "warning",
+        });
         return;
       }
       await register(route.sessionID);
@@ -88,17 +117,18 @@ export default Plugin.define({
         createdAt: Date.now(),
       };
       await atomicWriteJson(commandRequestPath(root, route.sessionID, requestID), request);
-      const deadline = Date.now() + RESPONSE_TIMEOUT_MS;
       let response: CommandResponse | undefined;
-      while (!response && Date.now() < deadline) {
+      while (!response && !disposed) {
         response = await readJson<CommandResponse>(commandResponsePath(root, route.sessionID, requestID));
         if (!response) await sleep(100);
       }
-      ctx.ui.toast.show(
-        response
-          ? { title: "PR watch", message: response.message, variant: response.variant, duration: 10_000 }
-          : { title: "PR watch", message: "The command timed out.", variant: "error" },
-      );
+      if (disposed) return;
+      ctx.ui.toast.show({
+        title: "PR watch",
+        message: response!.message,
+        variant: response!.variant,
+        duration: 10_000,
+      });
       const next = await readJson<StatusSnapshot>(statusPath(root, route.sessionID));
       updateView((draft) => {
         draft.status = next;
@@ -122,7 +152,7 @@ export default Plugin.define({
           ],
         }));
         if (!sessionID) return null;
-        if (sessionID !== selectedSessionID) void register(sessionID);
+        if (sessionID !== selectedSessionID) registerImmediately(sessionID);
         const value = view.status;
         if (!value?.text || value.sessionID !== sessionID) return null;
         const color = value.warning ? ctx.theme.text.feedback.warning.default : ctx.theme.text.subdued;
@@ -133,10 +163,10 @@ export default Plugin.define({
     const eventDisposals = [
       ctx.data.on("session.created", (event) => {
         const route = ctx.ui.router.current();
-        if (route.type === "session" && route.sessionID === event.data.sessionID) void register(route.sessionID);
+        if (route.type === "session" && route.sessionID === event.data.sessionID) registerImmediately(route.sessionID);
       }),
       ctx.data.on("session.moved", (event) => {
-        if (event.data.sessionID === selectedSessionID) void register(event.data.sessionID, event.data.location);
+        if (event.data.sessionID === selectedSessionID) registerImmediately(event.data.sessionID, event.data.location);
       }),
     ];
 
@@ -144,15 +174,19 @@ export default Plugin.define({
     const timer = setInterval(() => {
       void (async () => {
         if (!selectedSessionID || disposed) return;
-        const previousPending = view.status?.pending ?? 0;
+        const sessionID = selectedSessionID;
+        const previousNotificationIDs = seenNotificationIDs.get(sessionID) ?? new Set<string>();
         const next = await register(selectedSessionID);
-        if (next && next.pending > previousPending) {
+        for (const notification of next?.notifications ?? []) {
+          if (previousNotificationIDs.has(notification.id)) continue;
           ctx.ui.toast.show({
             title: "PR watch",
-            message: `Buffered ${next.pending} update${next.pending === 1 ? "" : "s"}.`,
-            variant: "info",
+            message: notification.message,
+            variant: notification.variant,
           });
+          previousNotificationIDs.add(notification.id);
         }
+        seenNotificationIDs.set(sessionID, previousNotificationIDs);
       })();
     }, HEARTBEAT_MS);
 

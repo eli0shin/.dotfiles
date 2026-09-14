@@ -32,13 +32,19 @@ async function readInitialPrompt(calls: string): Promise<string> {
     assert.equal((await stat(launcher)).mode & 0o777, 0o600);
     await executable(join(fakeBin, "pi"), `#!/bin/sh
 [ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 3
+[ -z "\${OPENCODE_ORCHESTRATION_SESSION_ID+x}" ] || exit 6
 [ "$PI_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 4
 [ "$#" = 1 ] || exit 5
 printf '%s' "$1"
 `);
     const result = spawnSync("fish", ["--no-config", "-c", `bash ${launcher}`], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, PI_ORCHESTRATION_SESSION_ID: "outer-session" },
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        PI_ORCHESTRATION_SESSION_ID: "outer-session",
+        OPENCODE_ORCHESTRATION_SESSION_ID: "outer-opencode-session",
+      },
     });
     assert.equal(result.status, 0, result.stderr);
     await assert.rejects(stat(launcher), { code: "ENOENT" });
@@ -55,7 +61,7 @@ test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async
   await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nprintf '123e4567-e89b-12d3-a456-426614174000\\n'\n");
   await executable(
     join(fakeBin, "pi"),
-    `#!/bin/sh\nprintf '%s\\n' "$PI_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$PI_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\n[ -z "\${OPENCODE_ORCHESTRATION_SESSION_ID+x}" ] || exit 3\n[ -z "\${OPENCODE_PARENT_ORCHESTRATION_SESSION_ID+x}" ] || exit 4\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
   );
 
   try {
@@ -70,7 +76,15 @@ test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async
         "test-model",
         "hello world",
       ],
-      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          OPENCODE_ORCHESTRATION_SESSION_ID: "outer-opencode",
+          OPENCODE_PARENT_ORCHESTRATION_SESSION_ID: "outer-opencode-parent",
+        },
+      },
     );
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
@@ -83,13 +97,13 @@ test("orchestrate-pi exports a fresh UUID and forwards every Pi argument", async
   }
 });
 
-test("orchestrate-opencode exports one UUID for OpenCode and Pi workers and forwards arguments", async () => {
+test("orchestrate-opencode exports a fresh UUID and forwards every OpenCode argument", async () => {
   const { root, fakeBin } = await fixture();
   const output = join(root, "opencode-output");
   await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nprintf '123e4567-e89b-12d3-a456-426614174000\\n'\n");
   await executable(
-    join(fakeBin, "opencode2"),
-    `#!/bin/sh\nprintf '%s\\n' "$OPENCODE_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\nprintf '%s\\n' "$PI_ORCHESTRATION_SESSION_ID" >> ${JSON.stringify(output)}\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
+    join(fakeBin, "opencode"),
+    `#!/bin/sh\nprintf '%s\\n' "$OPENCODE_ORCHESTRATION_SESSION_ID" > ${JSON.stringify(output)}\n[ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 3\n[ -z "\${PI_PARENT_ORCHESTRATION_SESSION_ID+x}" ] || exit 4\nprintf '%s\\n' "$@" >> ${JSON.stringify(output)}\n`,
   );
 
   try {
@@ -104,13 +118,72 @@ test("orchestrate-opencode exports one UUID for OpenCode and Pi workers and forw
         "test-model",
         "hello world",
       ],
-      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          PI_ORCHESTRATION_SESSION_ID: "outer-pi",
+          PI_PARENT_ORCHESTRATION_SESSION_ID: "outer-pi-parent",
+        },
+      },
     );
 
     assert.equal(result.status, 0, result.error?.message ?? result.stderr ?? "");
     assert.equal(
       await readFile(output, "utf8"),
-      "123e4567-e89b-12d3-a456-426614174000\n123e4567-e89b-12d3-a456-426614174000\n--model\ntest-model\nhello world\n",
+      "123e4567-e89b-12d3-a456-426614174000\n--standalone\n--model\ntest-model\nhello world\n",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker launches an OpenCode Mini worker with only the OpenCode parent marker", async () => {
+  const { root, fakeBin } = await fixture();
+  const created = join(root, "created");
+  const commandFile = join(root, "command");
+  const received = join(root, "received");
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") echo main ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  *) echo abc123 ;;
+esac
+`);
+  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(created)}\n`);
+  await executable(join(fakeBin, "tmux"), `#!/bin/sh
+if [ "$1" = list-sessions ]; then
+  if [ -f ${JSON.stringify(created)} ]; then echo repo@ticket-one; fi
+elif [ "$2" = -l ]; then
+  printf '%s' "$6" > ${JSON.stringify(commandFile)}
+fi
+`);
+  await executable(join(fakeBin, "opencode"), `#!/bin/sh
+[ -z "\${OPENCODE_ORCHESTRATION_SESSION_ID+x}" ] || exit 3
+[ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 4
+[ -z "\${PI_PARENT_ORCHESTRATION_SESSION_ID+x}" ] || exit 5
+[ "$OPENCODE_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 6
+[ "$1" = mini ] && [ "$2" = --standalone ] && [ "$3" = --prompt ] && [ "$#" = 4 ] || exit 7
+printf '%s' "$4" > ${JSON.stringify(received)}
+`);
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    TMPDIR: root,
+    OPENCODE_ORCHESTRATION_SESSION_ID: "session-123",
+  };
+
+  try {
+    const result = spawnSync(spawnWorker, ["ticket-one"], { encoding: "utf8", env });
+    assert.equal(result.status, 0, result.stderr);
+    const command = await readFile(commandFile, "utf8");
+    const launched = spawnSync("fish", ["--no-config", "-c", command], { encoding: "utf8", env });
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.equal(
+      await readFile(received, "utf8"),
+      "/skill:ticket-worker \n\nTicket: ticket-one\nWorker identity: repo@ticket-one\nPR base: main",
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -132,6 +205,25 @@ test("orchestrate-pi does not start Pi when UUID generation fails", async () => 
 
     assert.notEqual(result.status, 0);
     await assert.rejects(readFile(piRan));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("orchestrate-opencode does not start OpenCode when UUID generation fails", async () => {
+  const { root, fakeBin } = await fixture();
+  const opencodeRan = join(root, "opencode-ran");
+  await executable(join(fakeBin, "uuidgen"), "#!/bin/sh\nexit 1\n");
+  await executable(join(fakeBin, "opencode"), `#!/bin/sh\ntouch ${JSON.stringify(opencodeRan)}\n`);
+
+  try {
+    const result = spawnSync(
+      "fish",
+      ["--no-config", "-c", "source $argv[1]; orchestrate-opencode", join(functionsDir, "orchestrate-opencode.fish")],
+      { encoding: "utf8", env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` } },
+    );
+    assert.notEqual(result.status, 0);
+    await assert.rejects(readFile(opencodeRan));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import type { Dirent } from "node:fs";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -34,7 +35,12 @@ type WatchedPrState = {
   baselinePending?: boolean;
 };
 
-type WatchedSha = { repo: string; sha: string; notifiedChecksKey?: string; baselinePending?: boolean };
+type WatchedSha = {
+  repo: string;
+  sha: string;
+  notifiedChecksKey?: string;
+  baselinePending?: boolean;
+};
 type WatchMode = "active" | "paused" | "off";
 type TrackedActivity = { id: string; authorLogin?: string };
 type PendingPrUpdate = {
@@ -45,8 +51,29 @@ type PendingPrUpdate = {
   feedbackActivities: TrackedActivity[];
 };
 type PendingShaUpdate = { repo: string; sha: string; runsKey: string };
-type WorkerSettlement = { assistantEntryId: string; response: string; hadWatchedPr: boolean };
-type PendingWorkerSettlement = { workerSessionId: string; assistantEntryId: string; branch: string; response: string };
+type WorkerSettlement = {
+  assistantEntryId: string;
+  response: string;
+  hadWatchedPr: boolean;
+};
+type PendingWorkerSettlement = {
+  workerSessionId: string;
+  assistantEntryId: string;
+  branch: string;
+  response: string;
+};
+type PendingDelivery = {
+  id: string;
+  message: string;
+  pendingPrUpdates: PendingPrUpdate[];
+  pendingShaUpdate?: PendingShaUpdate;
+  pendingWorkerSettlements: PendingWorkerSettlement[];
+};
+type WatchNotification = {
+  id: string;
+  message: string;
+  variant: "info" | "warning" | "error";
+};
 type WorkerWatchSnapshot = {
   version: 2;
   orchestrationId: string;
@@ -77,6 +104,8 @@ export type WatchState = {
   lastPollAt?: number;
   lastNotifyAt?: number;
   lastError?: string;
+  pendingDelivery?: PendingDelivery;
+  notifications?: WatchNotification[];
 };
 
 type Check = {
@@ -115,6 +144,7 @@ type ControllerOptions = {
   wake: Wake;
   exec?: (command: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
   isIdle?: () => boolean;
+  hasDelivery?: (id: string) => Promise<boolean>;
   coordinationRoot?: string;
   workerOrchestrationID?: string;
   orchestrationID?: string;
@@ -123,10 +153,18 @@ type ControllerOptions = {
 const execFileAsync = promisify(execFile);
 const POLL_INTERVAL_MS = 60_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
+const MAX_NOTIFICATIONS = 100;
 const ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
 
 function initialState(): WatchState {
-  return { version: 1, mode: "active", watchedPrs: [], pendingPrUpdates: [], pendingWorkerSettlements: [], recentGhOutputs: [] };
+  return {
+    version: 1,
+    mode: "active",
+    watchedPrs: [],
+    pendingPrUpdates: [],
+    pendingWorkerSettlements: [],
+    recentGhOutputs: [],
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -156,10 +194,7 @@ function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
     Array.isArray(value.watchedPrs) &&
     value.watchedPrs.every(
       (pr) =>
-        isObject(pr) &&
-        typeof pr.repo === "string" &&
-        typeof pr.number === "number" &&
-        typeof pr.url === "string",
+        isObject(pr) && typeof pr.repo === "string" && typeof pr.number === "number" && typeof pr.url === "string",
     ) &&
     (value.latestSettlement === undefined ||
       (isObject(value.latestSettlement) &&
@@ -249,11 +284,13 @@ function checksCompletionKey(headSha: string, checks: Check[]): string {
 }
 
 function runsCompletionKey(sha: string, runs: WorkflowRun[]): string {
+  const signatures = runs.map((run) => {
+    const signature = [run.databaseId, run.workflowName, run.name, run.status, run.conclusion, run.url];
+    return (run.attempt ?? 1) > 1 ? [...signature, `attempt:${run.attempt}`] : signature;
+  });
   return JSON.stringify([
     sha,
-    ...runs
-      .map((run) => [run.databaseId, run.attempt, run.status, run.conclusion, run.updatedAt, run.url])
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    ...signatures.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   ]);
 }
 
@@ -271,13 +308,20 @@ function isApprovalWaitingCheck(check: Check): boolean {
 function isTerminalCheck(check: Check): boolean {
   if (isApprovalWaitingCheck(check)) return true;
   const values = [check.state, check.bucket].filter(Boolean).map((value) => String(value).toLowerCase());
-  return values.length > 0 && !values.some((value) => ["pending", "queued", "in_progress", "requested", "waiting"].includes(value));
+  return (
+    values.length > 0 &&
+    !values.some((value) => ["pending", "queued", "in_progress", "requested", "waiting"].includes(value))
+  );
 }
 
 function isFailingCheck(check: Check): boolean {
   return [check.state, check.bucket]
     .filter(Boolean)
-    .some((value) => ["fail", "failure", "cancel", "cancelled", "timed_out", "action_required", "startup_failure"].includes(String(value).toLowerCase()));
+    .some((value) =>
+      ["fail", "failure", "cancel", "cancelled", "timed_out", "action_required", "startup_failure"].includes(
+        String(value).toLowerCase(),
+      ),
+    );
 }
 
 function isTerminalRun(run: WorkflowRun): boolean {
@@ -325,56 +369,84 @@ function statusText(state: WatchState, currentRepo?: string): string | undefined
 function reviewerSafetyNotice(pr: WatchedPr, selfLogin: string | undefined): string | undefined {
   if (selfLogin && pr.authorLogin === selfLogin) return undefined;
   if (pr.authorLogin) {
-    return `This PR is authored by ${pr.authorLogin}, not you. Do not edit files, commit, push, comment, review, approve, merge, close, or otherwise mutate the PR unless the user explicitly asks for that specific action.`;
+    return `This PR is authored by ${pr.authorLogin}, not you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.`;
   }
-  return "I could not determine whether this PR is authored by you. Do not edit files, commit, push, comment, review, or otherwise mutate the PR unless the user explicitly asks for that specific action.";
+  return "I could not determine whether this PR is authored by you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.";
 }
 
 function buildChecksMessage(pr: WatchedPr, orchestration: boolean, selfLogin: string | undefined): string {
-  const identity = `${pr.repo}#${pr.number}`;
+  const identity = `branch ${pr.branch} (PR #${pr.number})`;
+  const details = `Branch: ${pr.branch}\nPR: ${pr.url}\nHead SHA: ${pr.headSha}`;
   if (orchestration) {
-    return `CI finished for worker PR ${identity}. Inspect the PR checks and coordinate the worker if action is required.\n\n${pr.url}`;
+    return `CI finished for worker PR #${pr.number}.\n\n${pr.url}`;
   }
   const safety = reviewerSafetyNotice(pr, selfLogin);
-  if (safety) return `CI finished for ${identity}, which you are reviewing.\n\n${safety}\n\nInspect the CI result as reviewer context and summarize any recommended follow-up.\n\n${pr.url}`;
-  return `CI finished for ${identity}.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them. Verify generated diffs before you treat green checks as complete.\n\n${pr.url}`;
+  if (safety)
+    return `CI finished for ${identity}, which you are reviewing.\n\n${safety}\n\nPlease inspect the CI result as reviewer context. Summarize whether CI passed or failed, whether the result affects your review, and whether you recommend any follow-up comment.\n\n${details}\nAuthor: ${pr.authorLogin ?? "unknown"}`;
+  return `CI finished for ${identity}.\n\nPlease inspect the PR checks/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing check is not sufficient on its own. If any check involves a generated diff, read the actual output and verify that the generated changes are intentional before you close the loop.\n\n${details}`;
 }
 
-function buildFeedbackMessage(pr: WatchedPr, activities: TrackedActivity[], orchestration: boolean, selfLogin: string | undefined): string {
-  const identity = `${pr.repo}#${pr.number}`;
-  const authors = [...new Set(activities.map((activity) => activity.authorLogin).filter(Boolean))].join(", ");
+function buildFeedbackMessage(
+  pr: WatchedPr,
+  activities: TrackedActivity[],
+  orchestration: boolean,
+  selfLogin: string | undefined,
+): string {
+  const identity = `branch ${pr.branch} (PR #${pr.number})`;
+  const activityList = activities
+    .map((activity) => `- ${activity.id} by ${activity.authorLogin ?? "unknown"}`)
+    .join("\n");
+  const details = `Branch: ${pr.branch}\nPR: ${pr.url}`;
   if (orchestration) {
-    return `New review feedback arrived for worker PR ${identity}${authors ? ` from ${authors}` : ""}. Inspect it and coordinate the worker if action is required.\n\n${pr.url}`;
+    return `New activity on worker PR #${pr.number}:\n${activityList}\n\n${pr.url}`;
   }
   const safety = reviewerSafetyNotice(pr, selfLogin);
-  if (safety) return `New review feedback arrived for ${identity}${authors ? ` from ${authors}` : ""}.\n\n${safety}\n\nInspect it as reviewer context and summarize whether it changes your review.\n\n${pr.url}`;
-  return `New review feedback arrived for ${identity}${authors ? ` from ${authors}` : ""}. Inspect the review, decide what is valid, and take appropriate action.\n\n${pr.url}`;
+  if (safety)
+    return `New activity was added for ${identity}, which you are reviewing.\n\n${safety}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${pr.authorLogin ?? "unknown"}`;
+  return `New PR feedback was added for ${identity}.\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific new feedback items first, then check related unresolved review threads if needed. Summarize the actionable feedback and address it. Stop for user input if the feedback invalidates the accepted design or causes broad rework.\n\n${details}`;
 }
 
 function buildConflictMessage(pr: WatchedPr, orchestration: boolean, selfLogin: string | undefined): string {
-  const identity = `${pr.repo}#${pr.number}`;
-  if (orchestration) return `Worker PR ${identity} now has merge conflicts. Coordinate the worker to resolve them.\n\n${pr.url}`;
+  if (orchestration) return `Worker PR #${pr.number} now has merge conflicts.\n\n${pr.url}`;
   const safety = reviewerSafetyNotice(pr, selfLogin);
   return safety
-    ? `PR ${identity} now has merge conflicts.\n\n${safety}\n\nInspect the conflict status as reviewer context and summarize the follow-up needed.\n\n${pr.url}`
-    : `PR ${identity} now has merge conflicts. Inspect and resolve them.\n\n${pr.url}`;
+    ? `PR #${pr.number} now has merge conflicts.\n\n${safety}\n\nInspect the conflict status as reviewer context and summarize the follow-up needed; do not resolve or push the conflicts yourself.\n\nBranch: ${pr.branch}\nPR: ${pr.url}`
+    : `PR #${pr.number} now has merge conflicts that need to be resolved.\n\nUse repos to resolve the conflicts, then push the resolved branch.\n\nBranch: ${pr.branch}\nPR: ${pr.url}`;
 }
 
 function buildShaMessage(update: PendingShaUpdate): string {
-  return `CI finished for SHA ${update.sha.slice(0, 7)}. Inspect the workflow runs/results with gh and take appropriate action. Verify generated diffs before you treat green runs as complete.\n\nRepo: ${update.repo}\nSHA: ${update.sha}`;
+  return `CI finished for SHA ${update.sha.slice(0, 7)}.\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff, read the actual output and verify that the generated changes are intentional before you close the loop.\n\nRepo: ${update.repo}\nSHA: ${update.sha}`;
 }
 
 function statusSummary(state: WatchState): string {
   const prs = state.watchedPrs.length
     ? state.watchedPrs
-        .map(({ pr, seenActivityIds }) =>
-          `PR ${pr.repo}#${pr.number} ${pr.url}\n  branch: ${pr.branch}\n  head: ${pr.headSha}\n  author: ${pr.authorLogin ?? "unknown"}\n  seen activity: ${seenActivityIds.length}`,
+        .map(
+          ({ pr, seenActivityIds }) =>
+            `PR ${pr.repo}#${pr.number} ${pr.url}\n  branch: ${pr.branch}\n  head: ${pr.headSha}\n  author: ${pr.authorLogin ?? "unknown"}\n  seen activity: ${seenActivityIds.length}`,
         )
         .join("\n")
     : "none";
+  const pendingSummary = [
+    ...state.pendingPrUpdates.map((pending) => {
+      const updates = [
+        pending.checksKey ? "CI complete" : undefined,
+        pending.conflictsKey ? "merge conflicts" : undefined,
+        pending.feedbackActivities.length > 0
+          ? `${pending.feedbackActivities.length} feedback item${pending.feedbackActivities.length === 1 ? "" : "s"}`
+          : undefined,
+      ].filter(Boolean);
+      return `  PR ${pending.pr.repo}#${pending.pr.number}: ${updates.join(", ")}`;
+    }),
+    ...(state.pendingShaUpdate ? [`  SHA ${state.pendingShaUpdate.sha.slice(0, 7)}: CI complete`] : []),
+    ...(state.pendingWorkerSettlements ?? []).map(
+      (settlement) => `  worker ${settlement.branch}: stopped without a watched PR`,
+    ),
+  ];
   const lines = [
     `PR watch mode: ${state.mode}`,
     `pending updates: ${pendingCount(state)}`,
+    ...pendingSummary,
     `watched PRs:\n${prs}`,
     `watched SHA: ${state.watchedSha ? `${state.watchedSha.repo}@${state.watchedSha.sha}` : "none"}`,
     `orchestration: ${state.orchestrationSessionId ?? "none"}`,
@@ -390,12 +462,21 @@ function statusSummary(state: WatchState): string {
 
 export async function createPrWatchController(options: ControllerOptions) {
   const root = options.root ?? stateRoot();
-  const notify = options.notify ?? (() => undefined);
+  const externalNotify = options.notify ?? (() => undefined);
   let state = initialState();
   let polling = false;
   let interval: ReturnType<typeof setInterval> | undefined;
   let currentRepo: string | undefined;
   let lastPublishedMembership: string | undefined;
+  let deliveryInFlight = false;
+  let snapshotPublishQueue = Promise.resolve();
+
+  function notify(message: string, variant: "info" | "warning" | "error" = "info"): void {
+    state.notifications = [...(state.notifications ?? []), { id: randomUUID(), message, variant }].slice(
+      -MAX_NOTIFICATIONS,
+    );
+    externalNotify(message, variant);
+  }
 
   function coordinationRoot(): string {
     return options.coordinationRoot ?? join(root, "orchestrations");
@@ -405,7 +486,10 @@ export async function createPrWatchController(options: ControllerOptions) {
     if (!state.workerOrchestrationSessionId) return;
     const result = options.exec
       ? await options.exec("git", ["branch", "--show-current"])
-      : await execFileAsync("git", ["branch", "--show-current"], { cwd: options.directory, timeout: 30_000 })
+      : await execFileAsync("git", ["branch", "--show-current"], {
+          cwd: options.directory,
+          timeout: 30_000,
+        })
           .then((value) => ({ ...value, code: 0 }))
           .catch(() => undefined);
     const branch = result?.code === 0 ? result.stdout.trim() : "";
@@ -414,44 +498,60 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function publishWorkerSnapshot(force = false): Promise<void> {
-    const orchestrationId = state.workerOrchestrationSessionId;
-    if (!orchestrationId) return;
-    if (!state.workerBranch) await refreshWorkerBranch();
-    if (!state.workerBranch) return;
-    const fingerprint = JSON.stringify([
-      state.workerBranch,
-      state.latestWorkerSettlement,
-      ...state.watchedPrs.map(({ pr }) => [prIdentityKey(pr), pr.url]).sort(),
-    ]);
-    if (!force && fingerprint === lastPublishedMembership) return;
-    const directory = join(coordinationRoot(), encodeURIComponent(orchestrationId));
-    const path = join(directory, `${encodeURIComponent(options.sessionID)}.json`);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    const snapshot: WorkerWatchSnapshot = {
-      version: 2,
-      orchestrationId,
-      workerSessionId: options.sessionID,
-      revision: Date.now(),
-      branch: state.workerBranch,
-      watchedPrs: state.watchedPrs.map(({ pr }) => ({ repo: pr.repo, number: pr.number, url: pr.url })),
-      latestSettlement: state.latestWorkerSettlement,
-    };
-    await writeFile(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporaryPath, path);
-    lastPublishedMembership = fingerprint;
+    snapshotPublishQueue = snapshotPublishQueue.then(async () => {
+      const orchestrationId = state.workerOrchestrationSessionId;
+      if (!orchestrationId) return;
+      if (!state.workerBranch) await refreshWorkerBranch();
+      if (!state.workerBranch) return;
+      const fingerprint = JSON.stringify([
+        state.workerBranch,
+        state.latestWorkerSettlement,
+        ...state.watchedPrs.map(({ pr }) => [prIdentityKey(pr), pr.url]).sort(),
+      ]);
+      if (!force && fingerprint === lastPublishedMembership) return;
+      const directory = join(coordinationRoot(), encodeURIComponent(orchestrationId));
+      const path = join(directory, `${encodeURIComponent(options.sessionID)}.json`);
+      try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+        const snapshot: WorkerWatchSnapshot = {
+          version: 2,
+          orchestrationId,
+          workerSessionId: options.sessionID,
+          revision: Date.now(),
+          branch: state.workerBranch,
+          watchedPrs: state.watchedPrs.map(({ pr }) => ({
+            repo: pr.repo,
+            number: pr.number,
+            url: pr.url,
+          })),
+          latestSettlement: state.latestWorkerSettlement,
+        };
+        await writeFile(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+        await rename(temporaryPath, path);
+        lastPublishedMembership = fingerprint;
+      } catch (error) {
+        state.lastError = `Could not publish worker PR watch membership: ${error instanceof Error ? error.message : String(error)}`;
+        await save();
+      }
+    });
+    await snapshotPublishQueue;
   }
 
   async function run<T>(
     command: string,
     args: string[],
-    acceptErrorOutput: false | "json" | "empty-array" = false,
+    acceptErrorOutput: false | "json" | "empty-array" | "none" = false,
   ): Promise<T | undefined> {
     try {
       const result = options.exec
         ? await options.exec(command, args)
-        : await execFileAsync(command, args, { cwd: options.directory, timeout: 30_000 }).then((value) => ({ ...value, code: 0 }));
+        : await execFileAsync(command, args, {
+            cwd: options.directory,
+            timeout: 30_000,
+          }).then((value) => ({ ...value, code: 0 }));
       if (result.code !== 0) {
+        if (acceptErrorOutput === "none" && !result.stdout.trim()) return undefined;
         state.lastError = result.stderr.trim() || `${command} exited with code ${result.code}`;
         return undefined;
       }
@@ -467,6 +567,8 @@ export async function createPrWatchController(options: ControllerOptions) {
           }
         } else if (acceptErrorOutput === "empty-array") {
           return [] as T;
+        } else if (acceptErrorOutput === "none") {
+          return undefined;
         }
       }
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -486,6 +588,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       text: statusText(state, currentRepo),
       warning: state.mode === "paused" || pendingCount(state) > 0 || Boolean(state.lastError),
       pending: pendingCount(state),
+      notifications: state.notifications,
       updatedAt: Date.now(),
     };
     await atomicWriteJson(statusPath(root, options.sessionID), status);
@@ -507,25 +610,54 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function ensureCurrentRepo(): Promise<string | undefined> {
     if (currentRepo) return currentRepo;
-    currentRepo = (await run<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"]))?.nameWithOwner;
+    currentRepo = (await run<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"]))
+      ?.nameWithOwner;
     return currentRepo;
   }
 
   async function baselinePr(watched: WatchedPrState): Promise<boolean> {
     const [activities, checks] = await Promise.all([
       fetchActivities(watched.pr),
-      run<Check[]>("gh", [
-        "pr",
-        "checks",
-        watched.pr.url,
-        "--json",
-        "name,state,bucket,workflow,link,completedAt",
-      ], "empty-array"),
+      run<Check[]>(
+        "gh",
+        ["pr", "checks", watched.pr.url, "--json", "name,state,bucket,workflow,link,completedAt"],
+        "empty-array",
+      ),
     ]);
     if (!activities || checks === undefined) return false;
+    const checksKey = checksCompletionKey(watched.pr.headSha, checks);
+    const checksNotifiable =
+      checks.length > 0 &&
+      checks.every(isTerminalCheck) &&
+      (!state.orchestrationSessionId || !checks.some(isFailingCheck));
+    const pending = state.pendingPrUpdates.find((item) => prIdentityKey(item.pr) === prIdentityKey(watched.pr));
+    if (pending?.checksKey && (!checksNotifiable || pending.checksKey !== checksKey)) {
+      pending.checksHeadSha = undefined;
+      pending.checksKey = undefined;
+    }
+    if (state.orchestrationSessionId && checksNotifiable && watched.notifiedChecksKey !== checksKey) {
+      watched.notifiedChecksKey = checksKey;
+      const pendingUpdate = pendingFor(state, watched.pr);
+      pendingUpdate.checksHeadSha = watched.pr.headSha;
+      pendingUpdate.checksKey = checksKey;
+    } else {
+      watched.notifiedChecksKey = checksNotifiable ? checksKey : undefined;
+    }
     watched.seenActivityIds = activities.map((activity) => activity.id);
-    if (checks.length > 0 && checks.every(isTerminalCheck)) {
-      watched.notifiedChecksKey = checksCompletionKey(watched.pr.headSha, checks);
+    if (pending) {
+      const currentIDs = new Set(activities.map((activity) => activity.id));
+      pending.pr = structuredClone(watched.pr);
+      pending.feedbackActivities = pending.feedbackActivities.filter(
+        (activity) =>
+          currentIDs.has(activity.id) &&
+          !(
+            !state.orchestrationSessionId &&
+            state.selfLogin &&
+            watched.pr.authorLogin !== state.selfLogin &&
+            activity.authorLogin === state.selfLogin
+          ),
+      );
+      removeEmptyPendingPr(state, watched.pr);
     }
     watched.baselinePending = undefined;
     return true;
@@ -546,23 +678,40 @@ export async function createPrWatchController(options: ControllerOptions) {
     ] as Array<[ActivityKind, Activity[]]>) {
       for (const activity of activities) {
         if (!shouldTrackActivity(kind, activity, Boolean(state.orchestrationSessionId))) continue;
-        result.push({ id: `${kind}:${activity.id}`, authorLogin: activityAuthor(activity) });
+        result.push({
+          id: `${kind}:${activity.id}`,
+          authorLogin: activityAuthor(activity),
+        });
       }
     }
     return result;
   }
 
-  async function discover(reason: string, target?: string, showNotification = true): Promise<boolean> {
+  async function discover(
+    reason: string,
+    target?: string,
+    showNotification = true,
+    alreadyEnrolled = false,
+  ): Promise<boolean> {
     if (state.mode === "off") return false;
     const repo = (target ? repositoryFromPrUrl(target) : undefined) ?? (await ensureCurrentRepo());
     if (!repo) return false;
     const args = ["pr", "view"];
     if (target) args.push(target);
     args.push("--json", "number,url,headRefName,headRefOid,headRepository,state,author,mergeable");
-    const value = await run<any>("gh", args);
+    const value = await run<any>("gh", args, target ? false : "none");
     if (!value) return false;
     if (value.state !== "OPEN") {
-      if (showNotification) notify(`PR #${value.number} is not open; it was not added to PR watch.`, "info");
+      if (target) {
+        const coordinates = prCoordinatesFromUrl(target);
+        if (coordinates) removePr({ ...coordinates, url: target, branch: "", headSha: "" });
+        if (state.orchestrationSessionId && typeof value.url === "string") {
+          state.resolvedOrchestrationPrUrls = [...new Set([...(state.resolvedOrchestrationPrUrls ?? []), value.url])];
+        }
+        if (showNotification) notify(`PR #${value.number} is not open; it was not added to PR watch.`, "info");
+        await save();
+        await publishWorkerSnapshot();
+      }
       return false;
     }
     const pr: WatchedPr = {
@@ -590,7 +739,7 @@ export async function createPrWatchController(options: ControllerOptions) {
         existing.baselinePending = !state.orchestrationSessionId || undefined;
       }
       existing.pr = pr;
-      if (existing.baselinePending) await baselinePr(existing);
+      if (alreadyEnrolled || existing.baselinePending) await baselinePr(existing);
     } else {
       const watched: WatchedPrState = {
         pr,
@@ -599,8 +748,7 @@ export async function createPrWatchController(options: ControllerOptions) {
         baselinePending: true,
       };
       state.watchedPrs.push(watched);
-      const baselined = await baselinePr(watched);
-      if (baselined && state.orchestrationSessionId) watched.notifiedChecksKey = undefined;
+      await baselinePr(watched);
       if (!state.orchestrationSessionId && value.mergeable === "CONFLICTING") {
         pendingFor(state, pr).conflictsKey = `${pr.headSha}:conflicting`;
       }
@@ -619,17 +767,28 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function syncWatchedSha(): Promise<void> {
     const repo = await ensureCurrentRepo();
-    if (!repo) return;
+    if (!repo) {
+      state.lastError = "Could not resolve the current GitHub repository";
+      return;
+    }
     const branchResult = options.exec
       ? await options.exec("git", ["branch", "--show-current"])
-      : await execFileAsync("git", ["branch", "--show-current"], { cwd: options.directory, timeout: 30_000 })
+      : await execFileAsync("git", ["branch", "--show-current"], {
+          cwd: options.directory,
+          timeout: 30_000,
+        })
           .then((value) => ({ ...value, code: 0 }))
           .catch(() => undefined);
     const branch = branchResult?.code === 0 ? branchResult.stdout.trim() : undefined;
-    if (!branch) return;
+    if (!branch) {
+      state.lastError = `Could not resolve the current branch: ${branchResult?.stderr.trim() || "the current checkout has no branch"}`;
+      return;
+    }
     if (
       !state.orchestrationSessionId &&
-      state.watchedPrs.some(({ pr }) => (pr.headRepo ?? pr.repo).toLowerCase() === repo.toLowerCase() && pr.branch === branch)
+      state.watchedPrs.some(
+        ({ pr }) => (pr.headRepo ?? pr.repo).toLowerCase() === repo.toLowerCase() && pr.branch === branch,
+      )
     ) {
       state.watchedSha = undefined;
       state.pendingShaUpdate = undefined;
@@ -637,18 +796,26 @@ export async function createPrWatchController(options: ControllerOptions) {
     }
     const commit = await run<{ sha?: string }>("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`]);
     const sha = commit?.sha;
-    if (!sha || state.watchedSha?.sha === sha) return;
+    if (!sha) {
+      state.lastError ||= `Could not resolve the GitHub tip of branch ${branch}`;
+      return;
+    }
+    if (state.watchedSha?.sha === sha) return;
 
     const firstObservation = !state.watchedSha;
-    state.watchedSha = { repo, sha, baselinePending: firstObservation || undefined };
+    state.watchedSha = {
+      repo,
+      sha,
+      baselinePending: firstObservation || undefined,
+    };
     state.pendingShaUpdate = undefined;
     if (!firstObservation) return;
 
     await baselineWatchedSha();
   }
 
-  async function baselineWatchedSha(): Promise<boolean> {
-    if (!state.watchedSha?.baselinePending) return true;
+  async function baselineWatchedSha(force = false): Promise<boolean> {
+    if (!state.watchedSha || (!force && !state.watchedSha.baselinePending)) return true;
     const { sha } = state.watchedSha;
     const runs = await run<WorkflowRun[]>("gh", [
       "run",
@@ -659,22 +826,34 @@ export async function createPrWatchController(options: ControllerOptions) {
       "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
     ]);
     if (!runs) return false;
-    if (runs.length > 0 && runs.every(isTerminalRun)) {
-      state.watchedSha.notifiedChecksKey = runsCompletionKey(sha, runs);
+    const allTerminal = runs.length > 0 && runs.every(isTerminalRun);
+    const runsKey = runsCompletionKey(sha, runs);
+    state.watchedSha.notifiedChecksKey = allTerminal ? runsKey : undefined;
+    if (state.pendingShaUpdate && (!allTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
+      state.pendingShaUpdate = undefined;
     }
     state.watchedSha.baselinePending = undefined;
     return true;
   }
 
-  async function reconcileOrchestrationMembership(): Promise<void> {
+  async function reconcileOrchestrationMembership(): Promise<string[]> {
     const orchestrationID = state.orchestrationSessionId;
-    if (!orchestrationID) return;
+    if (!orchestrationID) return [];
+    const errors: string[] = [];
     const directory = join(coordinationRoot(), encodeURIComponent(orchestrationID));
-    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
-      if (isObject(error) && error.code === "ENOENT") return [];
-      throw error;
-    });
-    const snapshots: Record<string, WorkerWatchSnapshot> = { ...(state.workerSnapshots ?? {}) };
+    let entries: Dirent[] = [];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (isObject(error) && error.code === "ENOENT") return errors;
+      errors.push(
+        `Could not read orchestration worker snapshots: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return errors;
+    }
+    const snapshots: Record<string, WorkerWatchSnapshot> = {
+      ...(state.workerSnapshots ?? {}),
+    };
     const presentWorkerIDs = new Set<string>();
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -682,6 +861,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       try {
         workerSessionID = decodeURIComponent(entry.name.slice(0, -5));
       } catch {
+        errors.push(`Invalid worker snapshot filename: ${entry.name}`);
         continue;
       }
       presentWorkerIDs.add(workerSessionID);
@@ -693,12 +873,19 @@ export async function createPrWatchController(options: ControllerOptions) {
           value.workerSessionId !== workerSessionID ||
           value.watchedPrs.some((pr) => {
             const coordinates = prCoordinatesFromUrl(pr.url);
-            return !coordinates || coordinates.number !== pr.number || coordinates.repo.toLowerCase() !== pr.repo.toLowerCase();
+            return (
+              !coordinates ||
+              coordinates.number !== pr.number ||
+              coordinates.repo.toLowerCase() !== pr.repo.toLowerCase()
+            );
           })
-        ) continue;
+        )
+          throw new Error("snapshot identity, schema, or PR coordinates do not match");
         snapshots[value.workerSessionId] = value;
       } catch (error) {
-        state.lastError = `Could not read worker snapshot ${workerSessionID}: ${error instanceof Error ? error.message : String(error)}`;
+        errors.push(
+          `Could not read worker snapshot ${workerSessionID}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     for (const workerSessionID of Object.keys(snapshots)) {
@@ -711,10 +898,17 @@ export async function createPrWatchController(options: ControllerOptions) {
       const latest = snapshot.latestSettlement;
       const latestID = latest ? `${workerSessionId}:${latest.assistantEntryId}` : undefined;
       state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
-        (pending) => pending.workerSessionId !== workerSessionId || `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID,
+        (pending) =>
+          pending.workerSessionId !== workerSessionId ||
+          `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID,
       );
       if (!latest || latest.hadWatchedPr || !latestID || resolvedSettlements.has(latestID)) continue;
-      if (state.pendingWorkerSettlements.some((pending) => `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID)) continue;
+      if (
+        state.pendingWorkerSettlements.some(
+          (pending) => `${pending.workerSessionId}:${pending.assistantEntryId}` === latestID,
+        )
+      )
+        continue;
       state.pendingWorkerSettlements.push({
         workerSessionId,
         assistantEntryId: latest.assistantEntryId,
@@ -733,24 +927,46 @@ export async function createPrWatchController(options: ControllerOptions) {
     }
     const resolved = new Set(state.resolvedOrchestrationPrUrls ?? []);
     for (const pr of desired.values()) {
-      if (resolved.has(pr.url) || state.watchedPrs.some((item) => prIdentityKey(item.pr) === prIdentityKey(pr))) continue;
-      await discover("worker snapshot", pr.url, false);
+      if (resolved.has(pr.url) || state.watchedPrs.some((item) => prIdentityKey(item.pr) === prIdentityKey(pr)))
+        continue;
+      try {
+        await discover("worker snapshot", pr.url, false);
+      } catch (error) {
+        errors.push(
+          `Could not enroll worker PR ${pr.repo}#${pr.number}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
+    return errors;
   }
 
   async function pollPr(watched: WatchedPrState): Promise<number> {
     if (watched.baselinePending && !(await baselinePr(watched))) return 0;
-    const latest = await run<any>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,state,author,mergeable"]);
+    const latest = await run<any>("gh", [
+      "pr",
+      "view",
+      watched.pr.url,
+      "--json",
+      "headRefOid,headRefName,headRepository,state,author,mergeable",
+    ]);
     if (!latest) return 0;
     if (latest.state !== "OPEN") {
       if (state.orchestrationSessionId) {
-        state.resolvedOrchestrationPrUrls = [...new Set([...(state.resolvedOrchestrationPrUrls ?? []), watched.pr.url])];
+        state.resolvedOrchestrationPrUrls = [
+          ...new Set([...(state.resolvedOrchestrationPrUrls ?? []), watched.pr.url]),
+        ];
       }
       removePr(watched.pr);
       return 0;
     }
     const oldHead = watched.pr.headSha;
-    watched.pr = { ...watched.pr, headSha: latest.headRefOid, branch: latest.headRefName ?? watched.pr.branch, authorLogin: latest.author?.login };
+    watched.pr = {
+      ...watched.pr,
+      headSha: latest.headRefOid,
+      branch: latest.headRefName ?? watched.pr.branch,
+      headRepo: latest.headRepository?.nameWithOwner ?? watched.pr.headRepo,
+      authorLogin: latest.author?.login,
+    };
     if (oldHead !== latest.headRefOid) {
       watched.notifiedChecksKey = undefined;
       const pending = state.pendingPrUpdates.find((item) => prIdentityKey(item.pr) === prIdentityKey(watched.pr));
@@ -762,56 +978,72 @@ export async function createPrWatchController(options: ControllerOptions) {
       }
     }
     let added = 0;
-    const checks = await run<Check[]>("gh", ["pr", "checks", watched.pr.url, "--json", "name,state,bucket,workflow,link,completedAt"], "empty-array");
-    const allTerminal = checks !== undefined && checks.length > 0 && checks.every(isTerminalCheck);
-    const key = checksCompletionKey(watched.pr.headSha, checks ?? []);
-    const pending = pendingFor(state, watched.pr);
-    if (!allTerminal || pending.checksKey !== key) {
-      if (pending.checksKey) {
-        pending.checksKey = undefined;
-        pending.checksHeadSha = undefined;
+    const checks = await run<Check[]>(
+      "gh",
+      ["pr", "checks", watched.pr.url, "--json", "name,state,bucket,workflow,link,completedAt"],
+      "empty-array",
+    );
+    if (checks !== undefined) {
+      const allTerminal = checks.length > 0 && checks.every(isTerminalCheck);
+      const key = checksCompletionKey(watched.pr.headSha, checks);
+      const existingPending = state.pendingPrUpdates.find(
+        (item) => prIdentityKey(item.pr) === prIdentityKey(watched.pr),
+      );
+      if (existingPending?.checksKey && (!allTerminal || existingPending.checksKey !== key)) {
+        existingPending.checksKey = undefined;
+        existingPending.checksHeadSha = undefined;
+        removeEmptyPendingPr(state, watched.pr);
+      }
+      const notifiable = allTerminal && (!state.orchestrationSessionId || !checks.some(isFailingCheck));
+      if (notifiable && watched.notifiedChecksKey !== key) {
+        watched.notifiedChecksKey = key;
+        const pending = pendingFor(state, watched.pr);
+        pending.checksHeadSha = watched.pr.headSha;
+        pending.checksKey = key;
+        added += 1;
       }
     }
-    const notifiable = allTerminal && (!state.orchestrationSessionId || !checks?.some(isFailingCheck));
-    if (notifiable && watched.notifiedChecksKey !== key) {
-      watched.notifiedChecksKey = key;
-      pending.checksHeadSha = watched.pr.headSha;
-      pending.checksKey = key;
-      added += 1;
-    }
+    let pending = state.pendingPrUpdates.find((item) => prIdentityKey(item.pr) === prIdentityKey(watched.pr));
     const activities = await fetchActivities(watched.pr);
     if (activities) {
       const currentIDs = new Set(activities.map((activity) => activity.id));
-      pending.feedbackActivities = pending.feedbackActivities.filter(
-        (activity) =>
-          currentIDs.has(activity.id) &&
-          !(
-            !state.orchestrationSessionId &&
-            state.selfLogin &&
-            watched.pr.authorLogin !== state.selfLogin &&
-            activity.authorLogin === state.selfLogin
-          ),
-      );
+      if (pending) {
+        pending.feedbackActivities = pending.feedbackActivities.filter(
+          (activity) =>
+            currentIDs.has(activity.id) &&
+            !(
+              !state.orchestrationSessionId &&
+              state.selfLogin &&
+              watched.pr.authorLogin !== state.selfLogin &&
+              activity.authorLogin === state.selfLogin
+            ),
+        );
+      }
       const seen = new Set(watched.seenActivityIds);
       const fresh = activities.filter((activity) => !seen.has(activity.id));
       watched.seenActivityIds = activities.map((activity) => activity.id);
       if (fresh.length) {
-        const pendingIDs = new Set(pending.feedbackActivities.map((activity) => activity.id));
         const external = fresh.filter((activity) => {
           if (!state.selfLogin || activity.authorLogin !== state.selfLogin) return true;
           if (!state.orchestrationSessionId && watched.pr.authorLogin !== state.selfLogin) return false;
           const id = bareActivityId(activity.id);
           return !state.recentGhOutputs.some((output) => output.includes(id));
         });
-        pending.feedbackActivities.push(...external.filter((activity) => !pendingIDs.has(activity.id)));
-        added += external.length;
+        if (external.length) {
+          pending ??= pendingFor(state, watched.pr);
+          const pendingIDs = new Set(pending.feedbackActivities.map((activity) => activity.id));
+          const unique = external.filter((activity) => !pendingIDs.has(activity.id));
+          pending.feedbackActivities.push(...unique);
+          added += unique.length;
+        }
       }
     }
     if (!state.orchestrationSessionId && latest.mergeable === "CONFLICTING" && watched.mergeable !== "CONFLICTING") {
+      pending ??= pendingFor(state, watched.pr);
       pending.conflictsKey = `${watched.pr.headSha}:conflicting`;
       added += 1;
     }
-    if (latest.mergeable === "MERGEABLE" && pending.conflictsKey) pending.conflictsKey = undefined;
+    if (latest.mergeable === "MERGEABLE" && pending?.conflictsKey) pending.conflictsKey = undefined;
     if (latest.mergeable === "MERGEABLE" || latest.mergeable === "CONFLICTING") watched.mergeable = latest.mergeable;
     removeEmptyPendingPr(state, watched.pr);
     return added;
@@ -819,58 +1051,181 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function pollSha(): Promise<number> {
     if (!state.watchedSha || !(await baselineWatchedSha())) return 0;
-    const runs = await run<WorkflowRun[]>("gh", ["run", "list", "--commit", state.watchedSha.sha, "--json", "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt"]);
+    const runs = await run<WorkflowRun[]>("gh", [
+      "run",
+      "list",
+      "--commit",
+      state.watchedSha.sha,
+      "--json",
+      "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
+    ]);
     if (!runs) return 0;
     const allTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const key = runsCompletionKey(state.watchedSha.sha, runs);
+    if (state.pendingShaUpdate && (!allTerminal || state.pendingShaUpdate.runsKey !== key)) {
+      state.pendingShaUpdate = undefined;
+    }
     if (!allTerminal || state.watchedSha.notifiedChecksKey === key) return 0;
     state.watchedSha.notifiedChecksKey = key;
-    state.pendingShaUpdate = { repo: state.watchedSha.repo, sha: state.watchedSha.sha, runsKey: key };
+    state.pendingShaUpdate = {
+      repo: state.watchedSha.repo,
+      sha: state.watchedSha.sha,
+      runsKey: key,
+    };
     return 1;
   }
 
-  async function flushPending(): Promise<void> {
-    if (state.mode !== "active" || options.isIdle?.() === false || pendingCount(state) === 0) return;
-    const messages: string[] = [];
-    for (const pending of state.pendingPrUpdates) {
-      const orchestration = Boolean(state.orchestrationSessionId);
-      if (pending.checksKey) messages.push(buildChecksMessage(pending.pr, orchestration, state.selfLogin));
-      if (pending.conflictsKey) messages.push(buildConflictMessage(pending.pr, orchestration, state.selfLogin));
-      if (pending.feedbackActivities.length) messages.push(buildFeedbackMessage(pending.pr, pending.feedbackActivities, orchestration, state.selfLogin));
+  function workerSettlementIdentity(
+    settlement: Pick<PendingWorkerSettlement, "workerSessionId" | "assistantEntryId">,
+  ): string {
+    return `${settlement.workerSessionId}:${settlement.assistantEntryId}`;
+  }
+
+  function deliveryStillPending(delivery: PendingDelivery): boolean {
+    for (const delivered of delivery.pendingPrUpdates) {
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(delivered.pr),
+      );
+      if (!pending) return false;
+      if (delivered.checksKey && pending.checksKey !== delivered.checksKey) return false;
+      if (delivered.conflictsKey && pending.conflictsKey !== delivered.conflictsKey) return false;
+      const activityIDs = new Set(pending.feedbackActivities.map((activity) => activity.id));
+      if (delivered.feedbackActivities.some((activity) => !activityIDs.has(activity.id))) return false;
     }
-    if (state.pendingShaUpdate) messages.push(buildShaMessage(state.pendingShaUpdate));
-    for (const settlement of state.pendingWorkerSettlements ?? []) {
-      messages.push(`worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`);
+    if (delivery.pendingShaUpdate) {
+      if (
+        state.pendingShaUpdate?.repo !== delivery.pendingShaUpdate.repo ||
+        state.pendingShaUpdate.sha !== delivery.pendingShaUpdate.sha ||
+        state.pendingShaUpdate.runsKey !== delivery.pendingShaUpdate.runsKey
+      )
+        return false;
     }
-    if (!messages.length) return;
-    const marker = randomUUID();
-    await options.wake(`<pr-watch-harness-notification>\nNot a user message.\n\n${messages.join("\n\n---\n\n")}\n\n<!-- pr-watch-delivery:${marker} -->\n</pr-watch-harness-notification>`);
-    state.pendingPrUpdates = [];
-    state.pendingShaUpdate = undefined;
+    const workerIDs = new Set((state.pendingWorkerSettlements ?? []).map(workerSettlementIdentity));
+    return delivery.pendingWorkerSettlements.every((settlement) => workerIDs.has(workerSettlementIdentity(settlement)));
+  }
+
+  function acknowledgeDelivery(delivery: PendingDelivery): void {
+    for (const delivered of delivery.pendingPrUpdates) {
+      const pending = state.pendingPrUpdates.find(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(delivered.pr),
+      );
+      if (!pending) continue;
+      if (delivered.checksKey && pending.checksKey === delivered.checksKey) {
+        pending.checksHeadSha = undefined;
+        pending.checksKey = undefined;
+      }
+      if (delivered.conflictsKey && pending.conflictsKey === delivered.conflictsKey) pending.conflictsKey = undefined;
+      const deliveredActivityIDs = new Set(delivered.feedbackActivities.map((activity) => activity.id));
+      pending.feedbackActivities = pending.feedbackActivities.filter(
+        (activity) => !deliveredActivityIDs.has(activity.id),
+      );
+      removeEmptyPendingPr(state, delivered.pr);
+    }
+    if (
+      delivery.pendingShaUpdate &&
+      state.pendingShaUpdate?.repo === delivery.pendingShaUpdate.repo &&
+      state.pendingShaUpdate.sha === delivery.pendingShaUpdate.sha &&
+      state.pendingShaUpdate.runsKey === delivery.pendingShaUpdate.runsKey
+    )
+      state.pendingShaUpdate = undefined;
+    const deliveredWorkerIDs = new Set(delivery.pendingWorkerSettlements.map(workerSettlementIdentity));
+    state.pendingWorkerSettlements = (state.pendingWorkerSettlements ?? []).filter(
+      (settlement) => !deliveredWorkerIDs.has(workerSettlementIdentity(settlement)),
+    );
     state.resolvedWorkerSettlementIds = [
-      ...new Set([
-        ...(state.resolvedWorkerSettlementIds ?? []),
-        ...(state.pendingWorkerSettlements ?? []).map((settlement) => `${settlement.workerSessionId}:${settlement.assistantEntryId}`),
-      ]),
+      ...new Set([...(state.resolvedWorkerSettlementIds ?? []), ...deliveredWorkerIDs]),
     ];
-    state.pendingWorkerSettlements = [];
-    state.lastNotifyAt = Date.now();
-    await save();
+  }
+
+  async function flushPending(): Promise<void> {
+    if (state.mode !== "active" || options.isIdle?.() === false || deliveryInFlight) return;
+    if (state.pendingDelivery && (await options.hasDelivery?.(state.pendingDelivery.id))) {
+      acknowledgeDelivery(state.pendingDelivery);
+      state.pendingDelivery = undefined;
+      state.lastNotifyAt = Date.now();
+      await save();
+    }
+    if (state.pendingDelivery && !deliveryStillPending(state.pendingDelivery)) {
+      state.pendingDelivery = undefined;
+      await save();
+    }
+    if (pendingCount(state) === 0) return;
+    const messages: string[] = [];
+    if (!state.pendingDelivery) {
+      const pendingPrUpdates = structuredClone(state.pendingPrUpdates);
+      const pendingShaUpdate = structuredClone(state.pendingShaUpdate);
+      const pendingWorkerSettlements = structuredClone(state.pendingWorkerSettlements ?? []);
+      for (const pending of pendingPrUpdates) {
+        const orchestration = Boolean(state.orchestrationSessionId);
+        if (pending.checksKey) messages.push(buildChecksMessage(pending.pr, orchestration, state.selfLogin));
+        if (pending.conflictsKey) messages.push(buildConflictMessage(pending.pr, orchestration, state.selfLogin));
+        if (pending.feedbackActivities.length)
+          messages.push(buildFeedbackMessage(pending.pr, pending.feedbackActivities, orchestration, state.selfLogin));
+      }
+      if (pendingShaUpdate) messages.push(buildShaMessage(pendingShaUpdate));
+      for (const settlement of pendingWorkerSettlements) {
+        messages.push(
+          `worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`,
+        );
+      }
+      if (!messages.length) return;
+      const marker = randomUUID();
+      const body =
+        messages.length === 1
+          ? messages[0]
+          : `PR watch detected multiple updates.\n\n${messages.map((message, index) => `## Update ${index + 1}\n\n${message}`).join("\n\n---\n\n")}`;
+      state.pendingDelivery = {
+        id: marker,
+        message: `<pr-watch-harness-notification>\nNot a user message.\n\n${body}\n\n<!-- pr-watch-delivery:${marker} -->\n</pr-watch-harness-notification>`,
+        pendingPrUpdates,
+        pendingShaUpdate,
+        pendingWorkerSettlements,
+      };
+      await save();
+    }
+    const delivery = state.pendingDelivery;
+    if (!delivery) return;
+    deliveryInFlight = true;
+    try {
+      await options.wake(delivery.message);
+      acknowledgeDelivery(delivery);
+      if (state.pendingDelivery?.id === delivery.id) state.pendingDelivery = undefined;
+      state.lastNotifyAt = Date.now();
+      await save();
+    } catch (error) {
+      state.lastError = error instanceof Error ? error.message : String(error);
+      await save();
+    } finally {
+      deliveryInFlight = false;
+    }
   }
 
   async function poll(): Promise<void> {
-    if (polling || state.mode === "off") return;
+    if (polling || state.mode === "off" || !hasTargets()) return;
     polling = true;
     try {
-      if (state.orchestrationSessionId) await reconcileOrchestrationMembership();
+      state.lastError = undefined;
+      await refreshSelfLogin();
+      const errors = state.orchestrationSessionId ? await reconcileOrchestrationMembership() : [];
       if (state.orchestrationSessionId || state.watchedSha) await syncWatchedSha();
       let added = await pollSha();
-      for (const watched of [...state.watchedPrs]) added += await pollPr(watched);
+      for (const watched of [...state.watchedPrs]) {
+        try {
+          added += await pollPr(watched);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
       if (!state.orchestrationSessionId) await syncWatchedSha();
       state.lastPollAt = Date.now();
+      if (state.lastError) errors.push(state.lastError);
+      state.lastError = errors.length > 0 ? [...new Set(errors)].join("; ") : undefined;
+      if (!hasTargets()) stopPolling();
       await save();
       await publishWorkerSnapshot();
-      if (added > 0 && state.mode === "paused") notify(`PR Watch buffered ${added} update${added === 1 ? "" : "s"} (${pendingCount(state)} pending).`, "info");
+      if (added > 0)
+        notify(`PR Watch buffered ${added} update${added === 1 ? "" : "s"} (${pendingCount(state)} pending).`, "info");
+      if (added > 0) await save();
       await flushPending();
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -885,8 +1240,10 @@ export async function createPrWatchController(options: ControllerOptions) {
       state = initialState();
       state.orchestrationSessionId = registration.orchestrationID;
       await refreshSelfLogin();
-      await reconcileOrchestrationMembership();
+      const errors = await reconcileOrchestrationMembership();
       await syncWatchedSha();
+      if (state.lastError) errors.unshift(state.lastError);
+      state.lastError = errors.length > 0 ? [...new Set(errors)].join("; ") : undefined;
       await save();
       startPolling();
       return;
@@ -901,7 +1258,9 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function initialize(): Promise<void> {
-    const saved = await import("./pr-watch-ipc.ts").then(({ readJson }) => readJson<WatchState>(sessionStatePath(root, options.sessionID)));
+    const saved = await import("./pr-watch-ipc.ts").then(({ readJson }) =>
+      readJson<WatchState>(sessionStatePath(root, options.sessionID)),
+    );
     if (isWatchState(saved)) state = structuredClone(saved);
     state.pendingWorkerSettlements ??= [];
     if (!state.orchestrationSessionId && options.orchestrationID) {
@@ -911,20 +1270,28 @@ export async function createPrWatchController(options: ControllerOptions) {
     if (!state.orchestrationSessionId && !state.workerOrchestrationSessionId && options.workerOrchestrationID) {
       state.workerOrchestrationSessionId = options.workerOrchestrationID;
     }
-    const registration = await import("./pr-watch-ipc.ts").then(({ readJson }) => readJson<Registration>(registrationPath(root, options.sessionID)));
+    const registration = await import("./pr-watch-ipc.ts").then(({ readJson }) =>
+      readJson<Registration>(registrationPath(root, options.sessionID)),
+    );
     if (!state.orchestrationSessionId && registration?.orchestrationID) {
       state = initialState();
       state.orchestrationSessionId = registration.orchestrationID;
     }
     if (state.mode !== "off") {
+      state.lastError = undefined;
       await refreshSelfLogin();
-      for (const watched of [...state.watchedPrs]) await discover("startup", watched.pr.url, false);
+      const hadSavedPr = state.watchedPrs.length > 0;
+      for (const watched of [...state.watchedPrs]) await discover("startup", watched.pr.url, false, true);
+      const errors: string[] = [];
       if (state.orchestrationSessionId) {
-        await reconcileOrchestrationMembership();
+        errors.push(...(await reconcileOrchestrationMembership()));
         await syncWatchedSha();
-      } else if (state.watchedPrs.length === 0 && state.watchedSha) {
+      } else if (state.watchedPrs.length === 0 && (state.watchedSha || hadSavedPr)) {
         await syncWatchedSha();
       }
+      if (state.watchedSha) await baselineWatchedSha(true);
+      if (state.lastError) errors.unshift(state.lastError);
+      state.lastError = errors.length > 0 ? [...new Set(errors)].join("; ") : undefined;
     }
     await save();
     await publishWorkerSnapshot(true);
@@ -998,7 +1365,9 @@ export async function createPrWatchController(options: ControllerOptions) {
     } else if (action === "remove") {
       const number = Number(target.match(/\d+$/)?.[0]);
       const repo = repositoryFromPrUrl(target);
-      const watched = state.watchedPrs.find((item) => item.pr.number === number && (!repo || item.pr.repo.toLowerCase() === repo.toLowerCase()));
+      const watched = state.watchedPrs.find(
+        (item) => item.pr.number === number && (!repo || item.pr.repo.toLowerCase() === repo.toLowerCase()),
+      );
       if (!Number.isInteger(number) || number <= 0) {
         message = "Usage: /pr-watch remove <number-or-url>";
         variant = "warning";
@@ -1015,8 +1384,10 @@ export async function createPrWatchController(options: ControllerOptions) {
       state.orchestrationSessionId = orchestrationSessionId;
       state.workerOrchestrationSessionId = workerOrchestrationSessionId;
       if (orchestrationSessionId) {
-        await reconcileOrchestrationMembership();
+        const errors = await reconcileOrchestrationMembership();
         await syncWatchedSha();
+        if (state.lastError) errors.unshift(state.lastError);
+        state.lastError = errors.length > 0 ? [...new Set(errors)].join("; ") : undefined;
       } else if (!(await discover("manual reset", undefined, false))) await syncWatchedSha();
       startPolling();
       message = "PR watch reset.";
@@ -1029,7 +1400,14 @@ export async function createPrWatchController(options: ControllerOptions) {
     }
     await save();
     await publishWorkerSnapshot();
-    const response: CommandResponse = { version: 1, id, sessionID: options.sessionID, message, variant, createdAt: Date.now() };
+    const response: CommandResponse = {
+      version: 1,
+      id,
+      sessionID: options.sessionID,
+      message,
+      variant,
+      createdAt: Date.now(),
+    };
     await atomicWriteJson(commandResponsePath(root, options.sessionID, id), response);
     return response;
   }
@@ -1043,7 +1421,11 @@ export async function createPrWatchController(options: ControllerOptions) {
     settle: async (assistantEntryId: string, response: string) => {
       if (!state.workerOrchestrationSessionId) return;
       await refreshWorkerBranch();
-      state.latestWorkerSettlement = { assistantEntryId, response, hadWatchedPr: state.watchedPrs.length > 0 };
+      state.latestWorkerSettlement = {
+        assistantEntryId,
+        response,
+        hadWatchedPr: state.watchedPrs.length > 0,
+      };
       await save();
       await publishWorkerSnapshot(true);
     },

@@ -6,9 +6,11 @@ import test from "node:test";
 
 import {
   atomicWriteJson,
+  atomicWriteJsonSync,
   commandRequestPath,
   isFreshRegistration,
   readJson,
+  readJsonSync,
   sessionStatePath,
 } from "../lib/pr-watch-ipc.ts";
 
@@ -28,6 +30,24 @@ test("atomic JSON writes create parent directories and can be read", async () =>
     await atomicWriteJson(path, { version: 1, value: "ready" });
     assert.deepEqual(await readJson(path), { version: 1, value: "ready" });
     assert.match(await readFile(path, "utf8"), /\n$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("synchronous registration writes are immediately visible", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-ipc-"));
+  const path = join(root, "registrations", "session.json");
+  try {
+    atomicWriteJsonSync(path, { version: 1, orchestrationID: "parent-id" });
+    assert.deepEqual(readJsonSync(path), {
+      version: 1,
+      orchestrationID: "parent-id",
+    });
+    assert.deepEqual(await readJson(path), {
+      version: 1,
+      orchestrationID: "parent-id",
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

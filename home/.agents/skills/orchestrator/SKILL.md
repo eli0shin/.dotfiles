@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Coordinate parallel ticket workers as an event-driven control plane through repos worktrees, Pi sessions, delegated pull-request review, squash merges, and filesystem tracker frontiers. Use when orchestrating implementation tickets rather than implementing or reviewing one ticket directly.
+description: Coordinate parallel ticket workers as an event-driven control plane through repos worktrees, agent sessions, delegated pull-request review, squash merges, and filesystem tracker frontiers. Use when orchestrating implementation tickets rather than implementing or reviewing one ticket directly.
 disable-model-invocation: true
 metadata:
   opencode/slash: true
@@ -9,7 +9,7 @@ metadata:
 
 # Orchestrator
 
-Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary Pi worker, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn instead of blocking on a watch command or repeatedly checking for changes; PR Watch re-enters on relevant activity.
+Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary worker session, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn instead of blocking on a watch command or repeatedly checking for changes; PR Watch re-enters on relevant activity.
 
 ## Hard boundary
 
@@ -23,7 +23,7 @@ If information is missing, ask for it in a concise PR comment, wait for an event
 
 ## Establish the run
 
-Read `PI_ORCHESTRATION_SESSION_ID` before doing anything else. Stop clearly if it is absent. Treat the current named branch as the landing branch for the entire run; stop if HEAD is detached and never switch branches. All worker branches stack on the landing branch and all worker PRs target it. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
+Read the harness orchestration session ID before doing anything else: `PI_ORCHESTRATION_SESSION_ID` in Pi or `OPENCODE_ORCHESTRATION_SESSION_ID` in OpenCode. Stop clearly if it is absent. Treat the current named branch as the landing branch for the entire run; stop if HEAD is detached and never switch branches. All worker branches stack on the landing branch and all worker PRs target it. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
 
 Read repository instructions and the configured tracker instructions, then update the landing branch with a fast-forward-only pull. Before spawning, require it to track a same-named remote branch at exactly the same commit so every PR has a published base. Use the Tickets CLI with concise human-readable output to inspect tickets, assignment, blockers, and status. Never request JSON from Tickets. Use `tickets --help` when command syntax is uncertain.
 
@@ -33,7 +33,7 @@ This step is complete when the requested effort and its executable frontier are 
 
 Find every non-`done`, executable, unassigned, unblocked ticket in the requested effort. Apply the repository tracker’s frontier rules and the requested scope. Never spawn a map, parent, or other container ticket; its completion is orchestrator bookkeeping after its executable children resolve.
 
-Start all independent frontier tickets without waiting between them. Invoke the Bash script by its installed path so it works from Pi's Bash tool:
+Start all independent frontier tickets without waiting between them. Invoke the Bash script by its installed path so it works from the harness shell tool:
 
 ```bash
 ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
@@ -119,6 +119,6 @@ This step is complete when tracker evidence is recorded, the worker is cleaned u
 
 ## Recovery
 
-After interruption, resume in the landing-branch worktree, then use `repos list`, tracker state, `gh pr list`, and one-shot `gh pr view` calls to reconstruct tickets, workers, PR heads, comments, checks, and mergeability. Let PR Watch restore worker-published membership, but do not assume it replayed events that occurred during the interruption. Resume only workers that still need changes using ordinary Pi continuation in the existing `repos` session. Recovery does not relax the boundary against inspecting or modifying worker changes directly.
+After interruption, resume in the landing-branch worktree, then use `repos list`, tracker state, `gh pr list`, and one-shot `gh pr view` calls to reconstruct tickets, workers, PR heads, comments, checks, and mergeability. Let PR Watch restore worker-published membership, but do not assume it replayed events that occurred during the interruption. Resume only workers that still need changes using ordinary agent continuation in the existing `repos` session. Recovery does not relax the boundary against inspecting or modifying worker changes directly.
 
 The run is complete when the requested effort has no unresolved executable tickets, required container bookkeeping is resolved, and all completed ticket changes have landed on the landing branch.

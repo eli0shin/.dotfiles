@@ -5,6 +5,7 @@
   "default_agent": "build",
   "plugins": [
     "./plugins/pr-watch",
+    "./plugins/orchestrator",
     "./plugins/code-review",
     "./plugins/tree",
     "@plannotator/opencode@latest"

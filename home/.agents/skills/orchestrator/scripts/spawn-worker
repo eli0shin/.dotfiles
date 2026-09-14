@@ -25,8 +25,14 @@ shopt -s extglob
 context=${context##+([[:space:]])}
 context=${context%%+([[:space:]])}
 
-if [[ -z ${PI_ORCHESTRATION_SESSION_ID:-} ]]; then
-  echo "spawn-worker requires PI_ORCHESTRATION_SESSION_ID" >&2
+if [[ -n ${OPENCODE_ORCHESTRATION_SESSION_ID:-} ]]; then
+  orchestration_session_id=$OPENCODE_ORCHESTRATION_SESSION_ID
+  orchestration_harness=opencode
+elif [[ -n ${PI_ORCHESTRATION_SESSION_ID:-} ]]; then
+  orchestration_session_id=$PI_ORCHESTRATION_SESSION_ID
+  orchestration_harness=pi
+else
+  echo "spawn-worker requires OPENCODE_ORCHESTRATION_SESSION_ID or PI_ORCHESTRATION_SESSION_ID" >&2
   exit 2
 fi
 
@@ -126,13 +132,13 @@ fi
 launcher=$(mktemp /tmp/pi-worker.XXXXXXXXXX) || exit
 if ! {
   printf '%s\n' 'rm -- "$0" || exit'
-  if [[ -n ${OPENCODE_ORCHESTRATION_SESSION_ID:-} ]]; then
-    printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
-    printf 'export OPENCODE_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$OPENCODE_ORCHESTRATION_SESSION_ID"
-    printf 'exec opencode2 mini --prompt %q\n' "$prompt"
+  if [[ $orchestration_harness == opencode ]]; then
+    printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID OPENCODE_PARENT_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
+    printf 'export OPENCODE_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$orchestration_session_id"
+    printf 'exec opencode mini --standalone --prompt %q\n' "$prompt"
   else
-    printf '%s\n' 'unset PI_ORCHESTRATION_SESSION_ID'
-    printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$PI_ORCHESTRATION_SESSION_ID"
+    printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID OPENCODE_PARENT_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
+    printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$orchestration_session_id"
     printf 'exec pi %q\n' "$prompt"
   fi
 } > "$launcher"; then

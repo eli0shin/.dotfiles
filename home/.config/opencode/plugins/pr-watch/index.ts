@@ -16,7 +16,8 @@ import {
 } from "../../lib/pr-watch-ipc.ts";
 
 const COMMAND_POLL_MS = 500;
-const HARNESS_GUIDANCE = "PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.";
+const HARNESS_GUIDANCE =
+  "PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.";
 
 type Controller = Awaited<ReturnType<typeof createPrWatchController>>;
 type ShellCall = { command: string; output?: string };
@@ -28,6 +29,10 @@ function sameLocation(left: Location, right: Location): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export function withOrchestrationEnvironment(command: string, orchestrationID: string): string {
+  return `export OPENCODE_ORCHESTRATION_SESSION_ID=${shellQuote(orchestrationID)}; ${command}`;
 }
 
 function textContent(content: unknown): string {
@@ -47,11 +52,15 @@ export default Plugin.define({
   id: "dotfiles.pr-watch",
   setup: async (ctx) => {
     const root = stateRoot();
+    const requestedOrchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
+    const requestedWorkerOrchestrationID =
+      process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
     const controllers = new Map<string, Promise<Controller>>();
     const locations = new Map<string, string>();
     const shellCalls = new Map<string, ShellCall>();
     const commandRequests = new Map<string, string>();
     const idle = new Map<string, boolean>();
+    const assistantAtExecutionStart = new Map<string, string | undefined>();
     const disposals: Array<() => Promise<void> | void> = [];
 
     async function controller(sessionID: string, directory?: string): Promise<Controller> {
@@ -63,9 +72,14 @@ export default Plugin.define({
           sessionID,
           directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? ctx.location.directory,
           root,
-          orchestrationID: registered?.orchestrationID,
-          workerOrchestrationID: registered?.workerOrchestrationID,
+          orchestrationID: registered?.orchestrationID ?? requestedOrchestrationID,
+          workerOrchestrationID: registered?.workerOrchestrationID ?? requestedWorkerOrchestrationID,
           isIdle: () => idle.get(sessionID) !== false,
+          hasDelivery: async (id) => {
+            const marker = `<!-- pr-watch-delivery:${id} -->`;
+            const messages = await ctx.session.context({ sessionID });
+            return messages.some((message) => message.type === "synthetic" && message.text.includes(marker));
+          },
           wake: async (message) => {
             await ctx.session.synthetic({
               sessionID,
@@ -95,7 +109,10 @@ export default Plugin.define({
     }
 
     function registrationLocation(registration: Registration): Location {
-      return { directory: registration.directory, workspaceID: registration.workspaceID };
+      return {
+        directory: registration.directory,
+        workspaceID: registration.workspaceID,
+      };
     }
 
     function parseLocation(value: unknown): Location | undefined {
@@ -109,32 +126,39 @@ export default Plugin.define({
     }
 
     disposals.push(
-      (await ctx.session.hook("context", async (event) => {
-        if ((await controller(event.sessionID)).getState().mode !== "off") event.system.push({ type: "text", text: HARNESS_GUIDANCE });
-      })).dispose,
+      (
+        await ctx.session.hook("context", async (event) => {
+          if ((await controller(event.sessionID)).getState().mode !== "off")
+            event.system.push({ type: "text", text: HARNESS_GUIDANCE });
+        })
+      ).dispose,
     );
 
     disposals.push(
-      (await ctx.tool.hook("execute.before", async (input) => {
-        if (input.tool !== "shell" && input.tool !== "bash") return;
-        const value = input.input as { command?: unknown };
-        if (typeof value.command !== "string") return;
-        shellCalls.set(input.id, { command: value.command });
-        const registration = await readJson<Registration>(registrationPath(root, input.sessionID));
-        if (registration?.orchestrationID) {
-          value.command = `export PI_ORCHESTRATION_SESSION_ID=${shellQuote(registration.orchestrationID)} OPENCODE_ORCHESTRATION_SESSION_ID=${shellQuote(registration.orchestrationID)}; ${value.command}`;
-        }
-      })).dispose,
+      (
+        await ctx.tool.hook("execute.before", async (input) => {
+          if (input.tool !== "shell" && input.tool !== "bash") return;
+          const value = input.input as { command?: unknown };
+          if (typeof value.command !== "string") return;
+          shellCalls.set(input.id, { command: value.command });
+          const orchestrationID = (await controller(input.sessionID)).getState().orchestrationSessionId;
+          if (orchestrationID) {
+            value.command = withOrchestrationEnvironment(value.command, orchestrationID);
+          }
+        })
+      ).dispose,
     );
 
     disposals.push(
-      (await ctx.tool.hook("execute.after", async (input) => {
-        const call = shellCalls.get(input.id);
-        shellCalls.delete(input.id);
-        if (!call) return;
-        const output = input.status === "completed" ? textContent(input.result.content) : "";
-        await (await controller(input.sessionID)).observeShell(call.command, output, input.status === "completed");
-      })).dispose,
+      (
+        await ctx.tool.hook("execute.after", async (input) => {
+          const call = shellCalls.get(input.id);
+          shellCalls.delete(input.id);
+          if (!call) return;
+          const output = input.status === "completed" ? textContent(input.result.content) : "";
+          await (await controller(input.sessionID)).observeShell(call.command, output, input.status === "completed");
+        })
+      ).dispose,
     );
 
     const eventAbort = new AbortController();
@@ -143,59 +167,80 @@ export default Plugin.define({
     const eventLoop = (async () => {
       for await (const event of eventStream) {
         if (eventLoopStopped) break;
-        const data = event.data as Record<string, unknown>;
-        const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined;
-        if (!sessionID) continue;
-        if (event.type === "session.moved") {
-          const destination = parseLocation(data.location);
-          if (!destination || !sameLocation(destination, ctx.location)) {
+        try {
+          const data = event.data as Record<string, unknown>;
+          const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined;
+          if (!sessionID) continue;
+          if (event.type === "session.moved") {
+            const destination = parseLocation(data.location);
+            if (!destination || !sameLocation(destination, ctx.location)) {
+              await disposeController(sessionID);
+              continue;
+            }
+            locations.set(sessionID, destination.directory);
             await disposeController(sessionID);
+            await controller(sessionID, destination.directory);
             continue;
           }
-          locations.set(sessionID, destination.directory);
-          await disposeController(sessionID);
-          await controller(sessionID, destination.directory);
-          continue;
-        }
-        const sourceLocation = parseLocation(event.location);
-        if (!sourceLocation || !sameLocation(sourceLocation, ctx.location)) continue;
-        const directory = sourceLocation.directory;
-        if (directory) locations.set(sessionID, directory);
-        if (event.type === "session.created") await controller(sessionID, directory);
-        if (event.type === "session.execution.started") idle.set(sessionID, false);
-        if (
-          event.type === "session.execution.succeeded" ||
-          event.type === "session.execution.failed" ||
-          event.type === "session.execution.interrupted" ||
-          event.type === "session.idle"
-        ) {
-          idle.set(sessionID, true);
-          const current = await controller(sessionID, directory);
-          const registered = await readJson<Registration>(registrationPath(root, sessionID));
-          if (registered?.workerOrchestrationID && event.type !== "session.idle") {
-            await current.adoptRegistration(registered);
+          const sourceLocation = parseLocation(event.location);
+          if (!sourceLocation || !sameLocation(sourceLocation, ctx.location)) continue;
+          const directory = sourceLocation.directory;
+          if (directory) locations.set(sessionID, directory);
+          if (event.type === "session.created") await controller(sessionID, directory);
+          if (event.type === "session.execution.started") {
+            idle.set(sessionID, false);
             const messages = await ctx.session.context({ sessionID });
             const assistant = [...messages].reverse().find((message) => message.type === "assistant");
-            if (assistant?.type === "assistant") {
-              const response = assistant.content
-                .filter((part) => part.type === "text")
-                .map((part) => part.text)
-                .join("\n")
-                .trim() || assistant.error?.message || `Assistant stopped with reason: ${assistant.finish ?? "unknown"}.`;
-              await current.settle(assistant.id, response);
-            } else if (event.type === "session.execution.failed") {
-              await current.settle(event.id, String((data.error as { message?: unknown } | undefined)?.message ?? "Assistant execution failed."));
-            } else if (event.type === "session.execution.interrupted") {
-              await current.settle(event.id, "Assistant execution was interrupted.");
-            }
+            assistantAtExecutionStart.set(sessionID, assistant?.id);
           }
-          await current.flushPending();
-        }
-        if (event.type === "session.synthetic") {
-          const synthetic = data as { sessionID: string; text: string; metadata?: Record<string, unknown> };
-          if (synthetic.metadata?.kind !== "pr-watch-command" || typeof synthetic.metadata.requestID !== "string") continue;
-          commandRequests.set(synthetic.metadata.requestID, sessionID);
-          await (await controller(sessionID, directory)).command(synthetic.text, synthetic.metadata.requestID);
+          if (
+            event.type === "session.execution.succeeded" ||
+            event.type === "session.execution.failed" ||
+            event.type === "session.execution.interrupted" ||
+            event.type === "session.idle"
+          ) {
+            idle.set(sessionID, true);
+            const current = await controller(sessionID, directory);
+            const registered = await readJson<Registration>(registrationPath(root, sessionID));
+            if (current.getState().workerOrchestrationSessionId && event.type !== "session.idle") {
+              if (registered?.workerOrchestrationID) await current.adoptRegistration(registered);
+              const messages = await ctx.session.context({ sessionID });
+              const assistant = [...messages].reverse().find((message) => message.type === "assistant");
+              if (assistant?.type === "assistant" && assistant.id !== assistantAtExecutionStart.get(sessionID)) {
+                const response =
+                  assistant.content
+                    .filter((part) => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n")
+                    .trim() ||
+                  assistant.error?.message ||
+                  `Assistant stopped with reason: ${assistant.finish ?? "unknown"}.`;
+                await current.settle(assistant.id, response);
+              } else if (event.type === "session.execution.failed") {
+                await current.settle(
+                  event.id,
+                  String((data.error as { message?: unknown } | undefined)?.message ?? "Assistant execution failed."),
+                );
+              } else if (event.type === "session.execution.interrupted") {
+                await current.settle(event.id, "Assistant execution was interrupted.");
+              }
+              assistantAtExecutionStart.delete(sessionID);
+            }
+            await current.flushPending();
+          }
+          if (event.type === "session.synthetic") {
+            const synthetic = data as {
+              sessionID: string;
+              text: string;
+              metadata?: Record<string, unknown>;
+            };
+            if (synthetic.metadata?.kind !== "pr-watch-command" || typeof synthetic.metadata.requestID !== "string")
+              continue;
+            commandRequests.set(synthetic.metadata.requestID, sessionID);
+            await (await controller(sessionID, directory)).command(synthetic.text, synthetic.metadata.requestID);
+          }
+        } catch (error) {
+          console.error("PR Watch could not process an OpenCode event:", error);
         }
       }
     })();
@@ -205,7 +250,9 @@ export default Plugin.define({
       if (scanInFlight) return;
       scanInFlight = true;
       void (async () => {
-        const entries = await readdir(`${root}/registrations`, { withFileTypes: true }).catch(() => []);
+        const entries = await readdir(`${root}/registrations`, {
+          withFileTypes: true,
+        }).catch(() => []);
         const registrations = new Map<string, Registration>();
         for (const entry of entries) {
           if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -220,7 +267,9 @@ export default Plugin.define({
           await current.adoptRegistration(registered);
         }
         for (const [sessionID] of registrations) {
-          const requests = await readdir(commandDirectory(root, sessionID), { withFileTypes: true }).catch(() => []);
+          const requests = await readdir(commandDirectory(root, sessionID), {
+            withFileTypes: true,
+          }).catch(() => []);
           for (const entry of requests) {
             if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
             const path = `${commandDirectory(root, sessionID)}/${entry.name}`;
@@ -235,9 +284,11 @@ export default Plugin.define({
           const response = await readJson<CommandResponse>(commandResponsePath(root, sessionID, requestID));
           if (response) commandRequests.delete(requestID);
         }
-      })().finally(() => {
-        scanInFlight = false;
-      });
+      })()
+        .catch((error) => console.error("PR Watch could not scan OpenCode registrations:", error))
+        .finally(() => {
+          scanInFlight = false;
+        });
     }, COMMAND_POLL_MS);
 
     return async () => {

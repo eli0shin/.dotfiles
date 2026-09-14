@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,15 +37,16 @@ export type StatusSnapshot = {
   text?: string;
   warning: boolean;
   pending: number;
+  notifications?: Array<{
+    id: string;
+    message: string;
+    variant: "info" | "warning" | "error";
+  }>;
   updatedAt: number;
 };
 
 export function stateRoot(): string {
-  return join(
-    process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"),
-    "opencode",
-    "pr-watch",
-  );
+  return join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "opencode", "pr-watch");
 }
 
 function encoded(value: string): string {
@@ -74,8 +76,19 @@ export function commandResponsePath(root: string, sessionID: string, requestID: 
 export async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+    mode: 0o600,
+  });
   await rename(temporaryPath, path);
+}
+
+export function atomicWriteJsonSync(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, path);
 }
 
 export function commandDirectory(root: string, sessionID: string): string {
@@ -85,6 +98,17 @@ export function commandDirectory(root: string, sessionID: string): string {
 export async function readJson<T>(path: string): Promise<T | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export function readJsonSync<T>(path: string): T | undefined {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
       return undefined;
