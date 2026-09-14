@@ -7,7 +7,7 @@
     "./plugins/pr-watch",
     "./plugins/orchestrator",
     "./plugins/code-review",
-    "./plugins/tree",
+    "github:eli0shin/opencode-tree",
     "@plannotator/opencode@latest"
   ],
   "permissions": [
