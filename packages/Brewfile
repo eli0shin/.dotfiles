@@ -99,6 +99,7 @@ end
 
 cask "codex"
 cask "lm-studio"
+cask "obsidian"
 
 go "github.com/air-verse/air"
 go "github.com/go-delve/delve/cmd/dlv"
