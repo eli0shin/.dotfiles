@@ -23,7 +23,8 @@ struct MatcherTests {
         testSurroundingWildcardExclusion()
         testStableEmptyQuery()
         testLaunchPolicy()
-        print("Matcher and launch policy tests passed")
+        testSafariDiscovery()
+        print("Matcher, launch policy, and discovery tests passed")
     }
 
     private static func testExactAliasResolvesConflict() {
@@ -148,6 +149,29 @@ struct MatcherTests {
             ApplicationLaunchPolicy.action(intent: .newWindow, isRunning: true, existingWindowCount: 0)
                 == .openWindowInCurrentWorkspace,
             "the new-window action must not create two windows for a windowless app"
+        )
+    }
+
+    private static func testSafariDiscovery() {
+        let safariPath = "/Applications/Safari.app"
+        guard FileManager.default.fileExists(atPath: safariPath) else {
+            print("SKIP: Safari discovery test requires an installed Safari app")
+            return
+        }
+
+        // Exercise real discovery: macOS can mark the Safari application link hidden.
+        let applications = ApplicationDiscovery.installedApplications()
+        let matches = ApplicationMatcher.rank(query: "safari", candidates: applications)
+        expect(
+            matches.filter { $0.candidate.path == safariPath }.count == 1,
+            "installed Safari must appear exactly once, even when its application link is hidden"
+        )
+        let excludedMatches = ApplicationMatcher.rank(
+            query: "safari", candidates: applications, excluding: ["Safari"]
+        )
+        expect(
+            !excludedMatches.contains { $0.candidate.path == safariPath },
+            "explicit discovery must still respect the Safari exclusion"
         )
     }
 
