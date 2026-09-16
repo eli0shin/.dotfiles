@@ -3,6 +3,9 @@
   "share": "disabled",
   "autoupdate": true,
   "default_agent": "build",
+  "tools": {
+    "question": false
+  },
   "plugins": [
     "./plugins/pr-watch",
     "./plugins/orchestrator",
