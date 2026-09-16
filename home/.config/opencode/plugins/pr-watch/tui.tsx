@@ -19,6 +19,19 @@ import {
 const HEARTBEAT_MS = 5_000;
 type Location = { directory: string; workspaceID?: string };
 
+// The CLI runs plugin setup more than once per process (plugin reconciliation
+// disposes and re-creates plugins while the TUI starts, before a session
+// exists) and reloads this module when its source changes. Claim the launch
+// role once per process, keep the claim on globalThis so a module reload cannot
+// bind it to a second session, and leave the launch variables in the
+// environment so a later setup still sees them.
+const LAUNCH_CLAIM = Symbol.for("dotfiles.pr-watch.launchClaim");
+const claimLaunchRole: ReturnType<typeof createLaunchRoleClaim> = ((globalThis as any)[LAUNCH_CLAIM] ??=
+  createLaunchRoleClaim({
+    orchestrationID: process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined,
+    workerOrchestrationID: process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined,
+  }));
+
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -27,14 +40,6 @@ export default Plugin.define({
   id: "dotfiles.pr-watch-tui",
   setup: async (ctx) => {
     const root = stateRoot();
-    const launchOrchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID?.trim() || undefined;
-    const launchWorkerOrchestrationID = process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined;
-    const claimLaunchRole = createLaunchRoleClaim({
-      orchestrationID: launchOrchestrationID,
-      workerOrchestrationID: launchWorkerOrchestrationID,
-    });
-    delete process.env.OPENCODE_ORCHESTRATION_SESSION_ID;
-    delete process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
     const [view, updateView] = ctx.storage.memory<{ status?: StatusSnapshot }>("pr-watch-view", {
       initial: {},
     });

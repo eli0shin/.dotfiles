@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import plugin, { withOrchestrationEnvironment } from "../plugins/pr-watch/index.ts";
+import plugin, { LAUNCH_CLAIM, withOrchestrationEnvironment } from "../plugins/pr-watch/index.ts";
 import { atomicWriteJson, readJson, registrationPath, sessionStatePath, stateRoot } from "../lib/pr-watch-ipc.ts";
 
 test("OpenCode shell commands receive only the OpenCode orchestration marker", () => {
@@ -66,6 +66,7 @@ test("a standalone OpenCode Mini worker publishes its orchestration membership",
     else process.env.XDG_STATE_HOME = oldStateHome;
     if (oldWorkerOrchestrationID === undefined) delete process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
     else process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID = oldWorkerOrchestrationID;
+    delete (globalThis as any)[LAUNCH_CLAIM];
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -136,6 +137,7 @@ test("the server process environment cannot promote an ordinary PR Watch session
     else process.env.XDG_STATE_HOME = oldStateHome;
     if (oldOrchestrationID === undefined) delete process.env.OPENCODE_ORCHESTRATION_SESSION_ID;
     else process.env.OPENCODE_ORCHESTRATION_SESSION_ID = oldOrchestrationID;
+    delete (globalThis as any)[LAUNCH_CLAIM];
     await rm(root, { recursive: true, force: true });
   }
 });

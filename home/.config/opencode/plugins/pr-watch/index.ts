@@ -47,14 +47,19 @@ function textContent(content: unknown): string {
     .join("\n");
 }
 
+export const LAUNCH_CLAIM = Symbol.for("dotfiles.pr-watch.serverLaunchClaim");
+
 export default Plugin.define({
   id: "dotfiles.pr-watch",
   setup: async (ctx) => {
     const root = stateRoot();
-    const claimLaunchWorkerRole = createLaunchRoleClaim({
-      workerOrchestrationID: process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined,
-    });
-    delete process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID;
+    // Setup can run more than once per process and the module can reload, so
+    // claim the launch role once per process and leave the launch variable in
+    // place. The shell hook below keeps it out of tool shells.
+    const claimLaunchWorkerRole: ReturnType<typeof createLaunchRoleClaim> = ((globalThis as any)[LAUNCH_CLAIM] ??=
+      createLaunchRoleClaim({
+        workerOrchestrationID: process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined,
+      }));
     const controllers = new Map<string, Promise<Controller>>();
     const locations = new Map<string, string>();
     const shellCalls = new Map<string, ShellCall>();
