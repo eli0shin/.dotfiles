@@ -54,7 +54,7 @@ Sources:
 
 The selected system prompt is the adapted Pi prompt: OpenCode identity, Pi's short coding-assistant description, and Pi's two unconditional guidelines. The implementation will use both the documented server plugin API and the current beta TUI plugin API so commands, footer status, and toasts can match Pi.
 
-The OpenCode port retains the full orchestration contract. `orchestrate-opencode` creates the parent ID, and the OpenCode orchestrator plugin appends the canonical orchestrator role to each parent model request. When `spawn-worker` runs from that session, it starts an OpenCode Mini worker with `OPENCODE_PARENT_ORCHESTRATION_SESSION_ID`. OpenCode workers publish PR membership, branch identity, and terminal settlements through their OpenCode worker snapshot directory. Pi orchestration continues to launch Pi workers through its independent Pi markers and snapshot directory.
+The OpenCode port retains the full orchestration contract. `orchestrate-opencode` creates the parent ID, and the OpenCode orchestrator plugin appends the canonical orchestrator role to each parent model request. When `spawn-worker` runs from that session, it starts a standalone full-TUI OpenCode worker with `OPENCODE_PARENT_ORCHESTRATION_SESSION_ID`. OpenCode workers publish PR membership, branch identity, and terminal settlements through their OpenCode worker snapshot directory. Pi orchestration continues to launch Pi workers through its independent Pi markers and snapshot directory.
 
 ## PR-watch behavior to port
 
@@ -120,7 +120,7 @@ Therefore the normal shared service can support full-TUI orchestration through s
 - the standalone server plugin reads that ID directly for full-TUI and headless sessions;
 - the TUI plugin associates that ID with the selected OpenCode session and writes an atomic registration file;
 - the server plugin reads the registration and owns polling, persistence, and synthetic wake-ups;
-- standalone Mini workers pass only the parent orchestration ID to their private server;
+- standalone full-TUI workers pass only the parent orchestration ID to their private server;
 - resumed sessions keep their persisted orchestration identity instead of accepting a fresh accidental replacement;
 - ordinary OpenCode sessions can continue to use the shared service without an orchestration role.
 

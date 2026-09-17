@@ -139,7 +139,7 @@ test("orchestrate-opencode exports a fresh UUID and forwards every OpenCode argu
   }
 });
 
-test("spawn-worker launches an OpenCode Mini worker with only the OpenCode parent marker", async () => {
+test("spawn-worker launches a full-TUI OpenCode worker with only the OpenCode parent marker", async () => {
   const { root, fakeBin } = await fixture();
   const created = join(root, "created");
   const commandFile = join(root, "command");
@@ -165,8 +165,8 @@ fi
 [ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 4
 [ -z "\${PI_PARENT_ORCHESTRATION_SESSION_ID+x}" ] || exit 5
 [ "$OPENCODE_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 6
-[ "$1" = mini ] && [ "$2" = --standalone ] && [ "$3" = --prompt ] && [ "$#" = 4 ] || exit 7
-printf '%s' "$4" > ${JSON.stringify(received)}
+[ "$1" = --standalone ] && [ "$2" = --prompt ] && [ "$#" = 3 ] || exit 7
+printf '%s' "$3" > ${JSON.stringify(received)}
 `);
   const env = {
     ...process.env,

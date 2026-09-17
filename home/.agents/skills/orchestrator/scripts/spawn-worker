@@ -135,7 +135,7 @@ if ! {
   if [[ $orchestration_harness == opencode ]]; then
     printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID OPENCODE_PARENT_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
     printf 'export OPENCODE_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$orchestration_session_id"
-    printf 'exec opencode mini --standalone --prompt %q\n' "$prompt"
+    printf 'exec opencode --standalone --prompt %q\n' "$prompt"
   else
     printf '%s\n' 'unset OPENCODE_ORCHESTRATION_SESSION_ID OPENCODE_PARENT_ORCHESTRATION_SESSION_ID PI_ORCHESTRATION_SESSION_ID PI_PARENT_ORCHESTRATION_SESSION_ID'
     printf 'export PI_PARENT_ORCHESTRATION_SESSION_ID=%q\n' "$orchestration_session_id"

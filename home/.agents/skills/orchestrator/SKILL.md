@@ -57,14 +57,14 @@ When the user asks for current PR status, fetch each relevant PR with `gh pr vie
 
 On each PR Watch event, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files.
 
-Classify the event before delegating review:
+Classify the event:
 
-- **New head, comment, review, or review thread while checks are pending:** inspect the new metadata and feedback, but do not call `run_code_review`. Record what changed and yield for the CI-finished event. A worker's claim that feedback is addressed is not itself a review trigger.
-- **Failed or cancelled checks:** do not run code review. The worker also received a notification for the failing check and they will handle it.
-- **All applicable checks completed successfully for the current head:** call `run_code_review`.
-- **Relevant feedback added after a completed review:** fetch current state and delegate a follow-up only if all applicable checks for the current head still pass.
+- **New head:** record the head and yield for CI.
+- **Comment, review, or review thread:** inspect the feedback and decide whether worker action is needed.
+- **Failed or cancelled CI:** yield; the worker receives the failure event.
+- **Successful CI-finished event for a new PR head:** call `run_code_review`.
 
-Never review a head while substantive checks are queued or in progress. Review each successful head once unless new relevant feedback requires a follow-up. Before review, confirm the successful checks belong to the current head. Apply the merge compatibility gate below when the PR is otherwise ready to merge.
+Before review, confirm the successful checks belong to the current head. Apply the merge compatibility gate below when the PR is otherwise ready to merge.
 
 In `taskContext`, describe the worker worktree, PR, ticket, triggering CI-finished event, and relevant feedback, with this required return contract:
 

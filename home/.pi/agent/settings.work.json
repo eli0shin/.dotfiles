@@ -1,11 +1,11 @@
 {
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.6-sol",
+  "defaultModel": "anthropic/claude-fable-5-1",
   "enabledModels": [
     "anthropic/claude-opus-5",
     "anthropic/claude-opus-4-8",
     "anthropic/claude-sonnet-5",
-    "anthropic/claude-fable-5",
+    "anthropic/claude-fable-5-1",
     "openai-codex/gpt-5.5",
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-5.6-sol",
