@@ -49,9 +49,13 @@ Add context only for a task-specific decision or constraint absent from the tick
 
 Do not claim worker tickets; the worker skill owns that step. This step is complete when every currently executable frontier ticket has a worker. Then yield.
 
+## Report PR status
+
+When the user asks for current PR status, fetch each relevant PR with `gh pr view` before answering.
+
 ## Dispatch PR events
 
-On each PR Watch event, and whenever the user asks for current PR status, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files.
+On each PR Watch event, fetch each relevant PR with `gh pr view` before deciding what to do. Read the PR description, current comments, reviews, head SHA, target, mergeability, and check summaries without opening the diff or changed files.
 
 Classify the event before delegating review:
 
