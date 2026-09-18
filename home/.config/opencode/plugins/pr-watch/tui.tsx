@@ -21,10 +21,11 @@ type Location = { directory: string; workspaceID?: string };
 
 // The CLI runs plugin setup more than once per process (plugin reconciliation
 // disposes and re-creates plugins while the TUI starts, before a session
-// exists) and reloads this module when its source changes. Claim the launch
-// role once per process, keep the claim on globalThis so a module reload cannot
-// bind it to a second session, and leave the launch variables in the
-// environment so a later setup still sees them.
+// exists) and reloads this module when its source changes. Read the launch
+// role once per process, keep it on globalThis so a module reload sees the
+// same role, and leave the launch variables in the environment so a later
+// setup still sees them. Every root session this TUI registers receives the
+// launch role; child sessions (subagents) do not.
 const LAUNCH_CLAIM = Symbol.for("dotfiles.pr-watch.launchClaim");
 const claimLaunchRole: ReturnType<typeof createLaunchRoleClaim> = ((globalThis as any)[LAUNCH_CLAIM] ??=
   createLaunchRoleClaim({
@@ -56,9 +57,9 @@ export default Plugin.define({
       const existingLocation = existing
         ? { directory: existing.directory, workspaceID: existing.workspaceID }
         : undefined;
-      const location =
-        movedLocations.get(sessionID) ?? ctx.data.session.get(sessionID)?.location ?? existingLocation ?? ctx.location;
-      const role = claimLaunchRole(sessionID, existing);
+      const session = ctx.data.session.get(sessionID);
+      const location = movedLocations.get(sessionID) ?? session?.location ?? existingLocation ?? ctx.location;
+      const role = claimLaunchRole(sessionID, existing, { child: Boolean(session?.parentID) });
       return {
         version: 1,
         sessionID,

@@ -15,11 +15,28 @@ import {
   sessionStatePath,
 } from "../lib/pr-watch-ipc.ts";
 
-test("a launch orchestration identity can bind to only one session", () => {
+test("every root session in the launch process receives the launch role", () => {
   const claim = createLaunchRoleClaim({ orchestrationID: "parent-id" });
-  assert.deepEqual(claim("parent"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
-  assert.deepEqual(claim("ordinary"), { orchestrationID: undefined, workerOrchestrationID: undefined });
-  assert.deepEqual(claim("parent"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+  assert.deepEqual(claim("first"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+  assert.deepEqual(claim("second"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+  assert.deepEqual(claim("first"), { orchestrationID: "parent-id", workerOrchestrationID: undefined });
+});
+
+test("a child session never receives the launch role", () => {
+  const orchestrator = createLaunchRoleClaim({ orchestrationID: "parent-id" });
+  assert.deepEqual(orchestrator("subagent", undefined, { child: true }), {
+    orchestrationID: undefined,
+    workerOrchestrationID: undefined,
+  });
+  const worker = createLaunchRoleClaim({ workerOrchestrationID: "parent-id" });
+  assert.deepEqual(worker("subagent", undefined, { child: true }), {
+    orchestrationID: undefined,
+    workerOrchestrationID: undefined,
+  });
+  assert.deepEqual(worker("root", undefined, { child: false }), {
+    orchestrationID: undefined,
+    workerOrchestrationID: "parent-id",
+  });
 });
 
 test("a saved session role takes precedence over a new launch claim", () => {
@@ -35,7 +52,7 @@ test("a saved session role takes precedence over a new launch claim", () => {
     orchestrationID: "saved-parent",
     workerOrchestrationID: undefined,
   });
-  assert.deepEqual(claim("ordinary"), { orchestrationID: undefined, workerOrchestrationID: undefined });
+  assert.deepEqual(claim("ordinary"), { orchestrationID: undefined, workerOrchestrationID: "new-parent" });
 });
 
 test("IPC paths encode OpenCode session IDs", () => {

@@ -13,7 +13,7 @@ test("OpenCode shell commands receive only the OpenCode orchestration marker", (
   assert.doesNotMatch(command, /PI_ORCHESTRATION_SESSION_ID/);
 });
 
-test("a standalone OpenCode Mini worker publishes its orchestration membership", async () => {
+test("every root session of a standalone OpenCode Mini worker publishes its orchestration membership", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-plugin-"));
   const bin = join(root, "bin");
   await mkdir(bin);
@@ -34,6 +34,8 @@ test("a standalone OpenCode Mini worker publishes its orchestration membership",
         if (name === "context") contextHook = callback;
         return { dispose: async () => undefined };
       },
+      get: async ({ sessionID }: { sessionID: string }) =>
+        sessionID === "subagent-session" ? { id: sessionID, parentID: "worker-session" } : { id: sessionID },
       synthetic: async () => undefined,
       context: async () => [],
     },
@@ -52,13 +54,15 @@ test("a standalone OpenCode Mini worker publishes its orchestration membership",
   try {
     cleanup = await (plugin.setup as any)(context);
     assert.ok(contextHook);
-    const event = { sessionID: "worker-session", system: [] };
-    await contextHook(event);
-    const snapshot = JSON.parse(
-      await readFile(join(root, "opencode", "pr-watch", "orchestrations", "parent-id", "worker-session.json"), "utf8"),
-    );
-    assert.equal(snapshot.orchestrationId, "parent-id");
-    assert.equal(snapshot.branch, "worker-branch");
+    const snapshots = join(root, "opencode", "pr-watch", "orchestrations", "parent-id");
+    for (const sessionID of ["worker-session", "second-root-session"]) {
+      await contextHook({ sessionID, system: [] });
+      const snapshot = JSON.parse(await readFile(join(snapshots, `${sessionID}.json`), "utf8"));
+      assert.equal(snapshot.orchestrationId, "parent-id");
+      assert.equal(snapshot.branch, "worker-branch");
+    }
+    await contextHook({ sessionID: "subagent-session", system: [] });
+    await assert.rejects(readFile(join(snapshots, "subagent-session.json"), "utf8"), { code: "ENOENT" });
   } finally {
     await cleanup?.();
     process.env.PATH = oldPath;
@@ -92,6 +96,7 @@ test("the server process environment cannot promote an ordinary PR Watch session
         if (name === "context") contextHook = callback;
         return { dispose: async () => undefined };
       },
+      get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
       synthetic: async () => undefined,
       context: async () => [],
     },
@@ -163,6 +168,7 @@ test("the OpenCode adapter adds PR Watch harness guidance to active sessions", a
         if (name === "context") contextHook = callback;
         return { dispose: async () => undefined };
       },
+      get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
       synthetic: async () => undefined,
       context: async () => [],
     },
@@ -227,6 +233,7 @@ test("only the OpenCode plugin for a session location starts its PR Watch contro
           if (name === "context") contextHooks.set(directory, callback);
           return { dispose: async () => undefined };
         },
+        get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
         synthetic: async () => undefined,
         context: async () => [],
       },
@@ -292,6 +299,7 @@ test("a server does not claim another server's session at the same location", as
           if (name === "context") contextHooks.push(callback);
           return { dispose: async () => undefined };
         },
+        get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
         synthetic: async () => undefined,
         context: async () => [],
       },
@@ -348,6 +356,7 @@ test("one failed OpenCode event does not stop later PR Watch events", async () =
     location: { directory: root },
     session: {
       hook: async () => ({ dispose: async () => undefined }),
+      get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID }),
       synthetic: async () => undefined,
       context: async () => {
         contextCalls += 1;

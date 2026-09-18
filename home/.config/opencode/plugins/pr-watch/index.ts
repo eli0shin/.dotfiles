@@ -54,8 +54,10 @@ export default Plugin.define({
   setup: async (ctx) => {
     const root = stateRoot();
     // Setup can run more than once per process and the module can reload, so
-    // claim the launch role once per process and leave the launch variable in
-    // place. The shell hook below keeps it out of tool shells.
+    // read the launch role once per process and leave the launch variable in
+    // place. The shell hook below keeps it out of tool shells. Every root
+    // session in the launch process receives the worker role; child sessions
+    // (subagents) do not.
     const claimLaunchWorkerRole: ReturnType<typeof createLaunchRoleClaim> = ((globalThis as any)[LAUNCH_CLAIM] ??=
       createLaunchRoleClaim({
         workerOrchestrationID: process.env.OPENCODE_PARENT_ORCHESTRATION_SESSION_ID?.trim() || undefined,
@@ -68,12 +70,26 @@ export default Plugin.define({
     const assistantAtExecutionStart = new Map<string, string | undefined>();
     const disposals: Array<() => Promise<void> | void> = [];
 
+    /**
+     * A child session (for example a subagent run) has a parent session. It
+     * must not receive the launch role. If the lookup fails, treat the session
+     * as a root session so a transient error does not drop orchestration.
+     */
+    async function isChildSession(sessionID: string): Promise<boolean> {
+      try {
+        const session = await ctx.session.get({ sessionID: sessionID as never });
+        return Boolean(session?.parentID);
+      } catch {
+        return false;
+      }
+    }
+
     async function controller(sessionID: string, directory?: string): Promise<Controller> {
       const existing = controllers.get(sessionID);
       if (existing) return existing;
       const pending = (async () => {
         const registered = await readJson<Registration>(registrationPath(root, sessionID));
-        const role = claimLaunchWorkerRole(sessionID, registered);
+        const role = claimLaunchWorkerRole(sessionID, registered, { child: await isChildSession(sessionID) });
         const next = await createPrWatchController({
           sessionID,
           directory: directory ?? registered?.directory ?? locations.get(sessionID) ?? ctx.location.directory,

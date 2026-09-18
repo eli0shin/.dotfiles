@@ -3,5 +3,5 @@ function orchestrate-opencode --description "Start OpenCode with a new orchestra
     set -e PI_ORCHESTRATION_SESSION_ID
     set -e PI_PARENT_ORCHESTRATION_SESSION_ID
     set -lx OPENCODE_ORCHESTRATION_SESSION_ID $orchestration_id
-    exec opencode --standalone $argv
+    opencode --standalone $argv
 end

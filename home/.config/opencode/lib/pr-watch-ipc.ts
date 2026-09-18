@@ -16,13 +16,25 @@ export type Registration = {
 
 type OrchestrationRole = Pick<Registration, "orchestrationID" | "workerOrchestrationID">;
 
+export type LaunchRoleSession = {
+  /** True when the session has a parent session, such as a subagent run. */
+  child?: boolean;
+};
+
+/**
+ * Resolves the orchestration role of a session in the launch process.
+ *
+ * A saved registration always wins. Otherwise every root session in the launch
+ * process receives the launch role, so a new session opened in the same
+ * process (for example from the session tree) keeps orchestrating. Child
+ * sessions never receive the launch role; a subagent must not become an
+ * orchestrator or a worker.
+ */
 export function createLaunchRoleClaim(
   launch: OrchestrationRole,
-): (sessionID: string, existing?: Registration) => OrchestrationRole {
-  let launchSessionID: string | undefined;
-  return (sessionID, existing) => {
-    if (!launchSessionID && (launch.orchestrationID || launch.workerOrchestrationID)) launchSessionID = sessionID;
-    const requested = launchSessionID === sessionID ? launch : {};
+): (sessionID: string, existing?: Registration, session?: LaunchRoleSession) => OrchestrationRole {
+  return (_sessionID, existing, session) => {
+    const requested = session?.child ? {} : launch;
     const orchestrationID = existing?.orchestrationID ?? requested.orchestrationID;
     return {
       orchestrationID,
