@@ -59,8 +59,8 @@ if status is-interactive
     end
 end
 
-# Use vi key bindings with a block cursor in every mode.
-set --global fish_key_bindings fish_vi_key_bindings
+# Use Fish's default Emacs-style key bindings.
+set --global fish_key_bindings fish_default_key_bindings
 set --global fish_cursor_default block
 set --global fish_cursor_insert block
 set --global fish_cursor_replace_one block
