@@ -1,6 +1,6 @@
 {
   "defaultProvider": "anthropic",
-  "defaultModel": "claude-fable-5-1",
+  "defaultModel": "claude-opus-5-5",
   "enabledModels": [
     "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-4-8",
@@ -9,6 +9,7 @@
     "openai-codex/gpt-5.5",
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-6-sol",
     "openai-codex/gpt-5.6-terra"
   ],
   "warnings": {

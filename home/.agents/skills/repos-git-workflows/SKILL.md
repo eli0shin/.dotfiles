@@ -1,44 +1,37 @@
 ---
 name: repos-git-workflows
-description: Enforces `repos` for worktrees and rebases. Use when creating, resuming, or switching to a worktree, stacking a branch, rebasing or updating a branch onto its base or parent, or resolving, continuing, or aborting a rebase.
+description: Enforces `repos` for worktrees and rebases. Use when entering a worktree, stacking a branch, updating a branch onto its parent or base, or finishing a paused rebase.
 ---
 
 # repos Git Workflows
 
-`repos` owns branch ancestry, stack relationships, worktrees, and paused rebases. Git owns synchronization between the current branch and its configured upstream.
+Every worktree, stack, and rebase operation goes through `repos`. `repos` owns branch ancestry, stack relationships, worktrees, and paused rebases. Git owns synchronization between the current branch and its upstream.
 
-## Choose the updater
+## 1. Read the recorded state
 
-First identify which relationship must change:
+Run `repos list`. Its stack and worktree state is authoritative over branch names and Git history.
 
-- If the current branch is behind or has diverged from its configured upstream, run `git pull`. This includes a push rejected because the remote branch is ahead. After the pull succeeds, retry the push.
-- If the branch must move onto its recorded parent or base branch, use the `repos` workflow below.
+## 2. Run the operation
 
-A remote-tracking update is complete when `git status` shows that the current branch is up to date with its upstream. It is not a branch-ancestry update.
+Worktrees — continue all work from the path the command prints:
 
-## Guardrails
+- Enter a worktree for an independent branch: `repos work <branch>`
+- Create a child branch stacked on the current branch: `repos stack <child>`
 
-Before choosing a worktree or rebasing a branch, run `repos list`. Treat its recorded stack and worktree state as authoritative; do not infer relationships from branch names or Git history.
+Updates — first identify which relationship changed:
 
-Never run raw `git rebase`, `git rebase --continue`, or `git worktree`. Use `git rebase --abort` only to abandon a paused operation.
+- The current branch is behind or diverged from its upstream, including a rejected push: `git pull`, then retry the push. Done when `git status` reports the branch is up to date with its upstream.
+- The branch must move onto its recorded parent, or onto the default branch when independent: `repos rebase` with no arguments, from inside the branch's worktree. It rebases the branch and its children.
 
-## Choose the operation
+`repos <command> --help` lists arguments and options.
 
-- Create or resume an independent worktree: `repos work --no-tmux <branch>`
-- Create a child stacked on the current branch: `repos stack --no-tmux <child>`
-- Rebase a branch onto its recorded parent, or the default branch when independent: `repos rebase`
-- Rebase only that branch, excluding its children: `repos rebase --only`
+## 3. Finish a paused rebase
 
-Use `repos <command> --help` for arguments and options. After `work` or `stack`, continue all work from the path it prints.
-
-## Paused rebase
-
-Resolve conflicts with Git, stage every resolved file, then run:
+When `repos rebase` pauses on conflicts, resolve them in Git, then:
 
 ```bash
-git status
 git add <resolved-files>
 repos continue
 ```
 
-Never substitute `git rebase --continue`. To abandon the rebase, run `git rebase --abort`.
+Repeat until `git status` shows no rebase in progress. To abandon the rebase: `git rebase --abort`.
