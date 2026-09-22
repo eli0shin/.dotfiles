@@ -1,5 +1,10 @@
 [
   {
+    "command": "qmk",
+    "install": "curl -fsSL https://install.qmk.fm | sh -s -- --confirm",
+    "update": "curl -fsSL https://install.qmk.fm | sh -s -- --confirm"
+  },
+  {
     "command": "droid",
     "install": "curl -fsSL https://app.factory.ai/cli | sh"
   }

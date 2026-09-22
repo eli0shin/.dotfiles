@@ -9,9 +9,7 @@
     "launchdarkly/tap",
     "nikitabobko/tap",
     "opencode-ai/tap",
-    "osx-cross/arm",
     "plannotator/tap",
-    "qmk/qmk",
     "rjyo/moshi",
     "shaharia-lab/tap",
     "sst/tap",
@@ -22,7 +20,6 @@
     "felixkratz/formulae/sketchybar",
     "hashicorp/tap/terraform",
     "plannotator/tap/plannotator-tui",
-    "qmk/qmk/qmk",
     "rjyo/moshi/moshi-hook",
     "shaharia-lab/tap/slackcli"
   ],
