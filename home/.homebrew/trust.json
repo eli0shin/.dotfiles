@@ -16,6 +16,7 @@
     "tilt-dev/tap"
   ],
   "trustedformulae": [
+    "atlassian/acli/acli",
     "datadog/lapdog/lapdog",
     "felixkratz/formulae/sketchybar",
     "hashicorp/tap/terraform",
