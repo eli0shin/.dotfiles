@@ -6,6 +6,7 @@ set -uo pipefail
 
 AEROSPACE_BIN=${AEROSPACE_BIN:-/opt/homebrew/bin/aerospace}
 APP_LAUNCHER_BIN=${APP_LAUNCHER_BIN:-$HOME/.local/bin/app-launcher}
+OSASCRIPT_BIN=${OSASCRIPT_BIN:-/usr/bin/osascript}
 poll_interval=${AEROSPACE_CLOSE_POLL_INTERVAL:-0.05}
 max_poll_count=${AEROSPACE_CLOSE_MAX_POLLS:-100}
 focus_delay=${AEROSPACE_CLOSE_FOCUS_DELAY:-0.1}
@@ -14,11 +15,31 @@ workspace=$("$AEROSPACE_BIN" list-workspaces --focused 2>/dev/null) || exit 1
 window_id=$("$AEROSPACE_BIN" list-windows --focused --format '%{window-id}' 2>/dev/null) || exit 1
 [[ -n "$workspace" && "$window_id" =~ ^[0-9]+$ ]] || exit 1
 
-# Keep an unmanaged launcher panel focused while macOS removes the window.
-# Otherwise macOS can raise an application from another AeroSpace workspace.
-"$APP_LAUNCHER_BIN" --focus-sink || exit 1
-sleep "$focus_delay"
-"$AEROSPACE_BIN" close --window-id "$window_id" >/dev/null || exit 1
+app=$(
+    "$AEROSPACE_BIN" list-windows --focused --format '%{app-bundle-id}' 2>/dev/null
+) || exit 1
+if [[ "$app" == com.mitchellh.ghostty ]]; then
+    # AeroSpace's AX close makes Ghostty windows disappear briefly, then return.
+    # Ghostty's own Close Window menu item closes them permanently. The app
+    # must still be frontmost, or the menu action silently does nothing.
+    pid=$("$AEROSPACE_BIN" list-windows --focused --format '%{app-pid}' 2>/dev/null) || exit 1
+    [[ "$pid" =~ ^[0-9]+$ ]] || exit 1
+    "$OSASCRIPT_BIN" -l JavaScript - "$pid" <<'JXA' || exit 1
+ObjC.import('AppKit')
+function run(argv) {
+    if ($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier !== Number(argv[0])) {
+        throw new Error('Ghostty is not the frontmost application')
+    }
+}
+JXA
+    "$OSASCRIPT_BIN" -e 'tell application "System Events" to tell process "Ghostty" to click menu item "Close Window" of menu 1 of menu bar item "File" of menu bar 1' >/dev/null || exit 1
+else
+    # Keep an unmanaged launcher panel focused while macOS removes the window.
+    # Otherwise macOS can raise an application from another AeroSpace workspace.
+    "$APP_LAUNCHER_BIN" --focus-sink || exit 1
+    sleep "$focus_delay"
+    "$AEROSPACE_BIN" close --window-id "$window_id" >/dev/null || exit 1
+fi
 
 close_completed=false
 for ((poll_count = 0; poll_count < max_poll_count; poll_count++)); do
@@ -30,6 +51,15 @@ for ((poll_count = 0; poll_count < max_poll_count; poll_count++)); do
     sleep "$poll_interval"
 done
 [[ "$close_completed" == true ]] || exit 1
+
+# Ghostty can briefly remove a window from AeroSpace before restoring it.
+if [[ "$app" == com.mitchellh.ghostty ]]; then
+    sleep 0.5
+    window_ids=$("$AEROSPACE_BIN" list-windows --all --format '%{window-id}' 2>/dev/null) || exit 1
+    if grep -Fxq "$window_id" <<<"$window_ids"; then
+        exit 1
+    fi
+fi
 
 # Focus a window that remains in the same workspace. If the workspace is now
 # empty, leave the invisible launcher as the native focus sink.

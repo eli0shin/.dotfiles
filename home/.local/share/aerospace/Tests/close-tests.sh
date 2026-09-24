@@ -18,6 +18,16 @@ case "$*" in
   "list-windows --focused --format %{window-id}")
     printf '123\n'
     ;;
+  "list-windows --focused --format %{app-bundle-id}")
+    if [[ "$TEST_SCENARIO" == ghostty ]]; then
+        printf 'com.mitchellh.ghostty\n'
+    else
+        printf 'com.example.app\n'
+    fi
+    ;;
+  "list-windows --focused --format %{app-pid}")
+    printf '456\n'
+    ;;
   "list-windows --all --format %{window-id}")
     :
     ;;
@@ -27,12 +37,18 @@ case "$*" in
 esac
 MOCK
 
+cat >"$tmp_dir/osascript" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'osascript %s\n' "$*" >>"$TEST_LOG"
+MOCK
+
 cat >"$tmp_dir/app-launcher" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'app-launcher %s\n' "$*" >>"$TEST_LOG"
 MOCK
-chmod +x "$tmp_dir/aerospace" "$tmp_dir/app-launcher" "$script"
+chmod +x "$tmp_dir/aerospace" "$tmp_dir/app-launcher" "$tmp_dir/osascript" "$script"
 
 run_scenario() {
     local scenario=$1
@@ -42,6 +58,7 @@ run_scenario() {
     TEST_SCENARIO="$scenario" \
     AEROSPACE_BIN="$tmp_dir/aerospace" \
     APP_LAUNCHER_BIN="$tmp_dir/app-launcher" \
+    OSASCRIPT_BIN="$tmp_dir/osascript" \
     AEROSPACE_CLOSE_FOCUS_DELAY=0 \
     "$script"
     if ! grep -Fxq "$expected" "$tmp_dir/log"; then
@@ -55,12 +72,18 @@ run_scenario() {
 run_scenario empty-workspace "app-launcher --focus-sink"
 run_scenario empty-workspace "close --window-id 123"
 run_scenario remaining-window "focus --window-id 777"
+run_scenario ghostty 'osascript -e tell application "System Events" to tell process "Ghostty" to click menu item "Close Window" of menu 1 of menu bar item "File" of menu bar 1'
+if grep -Eq '^(close --window-id|app-launcher --focus-sink)' "$tmp_dir/log"; then
+    printf 'FAIL: Ghostty must use its native close action without the focus sink\n' >&2
+    exit 1
+fi
 
 : >"$tmp_dir/log"
 TEST_LOG="$tmp_dir/log" \
 TEST_SCENARIO=empty-workspace \
 AEROSPACE_BIN="$tmp_dir/aerospace" \
 APP_LAUNCHER_BIN="$tmp_dir/app-launcher" \
+OSASCRIPT_BIN="$tmp_dir/osascript" \
 AEROSPACE_CLOSE_FOCUS_DELAY=0 \
 "$script"
 if grep -Eq '^workspace (next|prev|[0-9]+)$' "$tmp_dir/log"; then
