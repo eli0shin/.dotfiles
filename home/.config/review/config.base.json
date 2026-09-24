@@ -1,5 +1,6 @@
 {
   "reviewCommand": "pi \"/skill:code-review review the changes in this pr and report your findings to me: $REVIEW_PR_URL\"",
+  "diffCommand": "fish -c 'pr \"$REVIEW_PR_URL\"'",
   "keyBindings": {
     "selectPrevious": [
       "k",
