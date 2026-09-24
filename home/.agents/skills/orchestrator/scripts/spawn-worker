@@ -61,63 +61,37 @@ if [[ ${HERDR_ENV:-} == 1 ]]; then
   workspace_manager=herdr
 fi
 
-if [[ $workspace_manager == herdr ]]; then
-  herdr_workspaces() {
-    herdr workspace list | python3 -c '
-import json, sys
-for workspace in json.load(sys.stdin)["result"]["workspaces"]:
-    print("{}\t{}".format(workspace["workspace_id"], workspace["label"]))
-'
-  }
-  workspaces_before=$(herdr_workspaces) || exit
+# An existing branch or worktree means the ticket is being recovered: reuse it
+# with `repos work`, which also reuses or creates its Managed Workspace.
+remote=${upstream%%/*}
+if git show-ref --verify --quiet "refs/heads/$ticket" ||
+  git ls-remote --exit-code --heads "$remote" "refs/heads/$ticket" >/dev/null 2>&1; then
+  repos work --no-focus "$ticket" || exit
 else
-  workspaces_before=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  repos stack --no-focus "$ticket" || exit
 fi
 
-repos stack --no-focus "$ticket" || exit
+# repos names the workspace <repo>@<branch>, with "/" in the branch as "-".
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir) || exit
+repo_name=$(basename "$(dirname "$common_dir")")
+worker_identity="$repo_name@${ticket//\//-}"
 
 if [[ $workspace_manager == herdr ]]; then
-  workspaces_after=$(herdr_workspaces) || exit
-else
-  workspaces_after=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-fi
-
-new_workspaces=()
-while IFS= read -r workspace; do
-  [[ -z $workspace ]] && continue
-  found=false
-  while IFS= read -r existing; do
-    if [[ $workspace == "$existing" ]]; then
-      found=true
-      break
-    fi
-  done <<< "$workspaces_before"
-  if [[ $found == false ]]; then
-    new_workspaces+=("$workspace")
-  fi
-done <<< "$workspaces_after"
-
-if [[ ${#new_workspaces[@]} -ne 1 ]]; then
-  if [[ $workspace_manager == herdr ]]; then
-    echo "repos did not create exactly one new Managed Workspace for $ticket" >&2
-  else
-    echo "repos did not create exactly one new worker session for $ticket" >&2
-  fi
-  exit 1
-fi
-
-if [[ $workspace_manager == herdr ]]; then
-  IFS=$'\t' read -r workspace_id worker_identity <<< "${new_workspaces[0]}"
-  pane_id=$(herdr pane list | python3 -c '
-import json, sys
-workspace_id = sys.argv[1]
-panes = [pane["pane_id"] for pane in json.load(sys.stdin)["result"]["panes"] if pane["workspace_id"] == workspace_id]
-if len(panes) != 1:
-    raise SystemExit(f"expected one pane in {workspace_id}, found {len(panes)}")
+  pane_id=$(python3 -c '
+import json, subprocess, sys
+label = sys.argv[1]
+herdr = lambda *args: json.loads(subprocess.check_output(["herdr", *args]))["result"]
+ids = [w["workspace_id"] for w in herdr("workspace", "list")["workspaces"] if w["label"] == label]
+if len(ids) != 1:
+    raise SystemExit(f"expected one Managed Workspace labeled {label}, found {len(ids)}")
+panes = [p["pane_id"] for p in herdr("pane", "list")["panes"] if p["workspace_id"] == ids[0]]
+if not panes:
+    raise SystemExit(f"no pane in Managed Workspace {label}")
 print(panes[0])
-' "$workspace_id") || exit
-else
-  worker_identity=${new_workspaces[0]}
+' "$worker_identity") || exit
+elif ! tmux has-session -t "=$worker_identity:" 2>/dev/null; then
+  echo "repos did not create worker session $worker_identity for $ticket" >&2
+  exit 1
 fi
 
 printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s' \
