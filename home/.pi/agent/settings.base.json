@@ -46,13 +46,13 @@
     {
       "source": "npm:@samfp/pi-essentials",
       "extensions": [
-        "-src/subagent.ts",
-        "-src/compact-header.ts",
-        "-src/context-pruner.ts",
-        "-src/daily-log.ts",
-        "-src/markdown-viewer.ts",
-        "-src/auto-title.ts",
-        "-src/auto-session-name.tx"
+        "-dist/subagent.js",
+        "-dist/compact-header.js",
+        "-dist/context-pruner.js",
+        "-dist/daily-log.js",
+        "-dist/markdown-viewer.js",
+        "-dist/auto-title.js",
+        "-dist/auto-session-name.js"
       ]
     }
   ],
