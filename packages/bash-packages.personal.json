@@ -7,5 +7,15 @@
   {
     "command": "droid",
     "install": "curl -fsSL https://app.factory.ai/cli | sh"
+  },
+  {
+    "command": "open-whispr",
+    "check": "test -x \"$HOME/.local/opt/openwhispr/app/open-whispr\"",
+    "platforms": {
+      "linux": {
+        "install": "\"$DOTFILES_DIR/scripts/install-openwhispr-fork.sh\"",
+        "update": "\"$DOTFILES_DIR/scripts/install-openwhispr-fork.sh\""
+      }
+    }
   }
 ]
