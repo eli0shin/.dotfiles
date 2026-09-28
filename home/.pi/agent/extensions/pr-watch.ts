@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -57,12 +57,18 @@ type PendingWorkerSettlement = {
   response: string;
 };
 
+type OrchestratorMessage = {
+  id: string;
+  text: string;
+};
+
 type PendingDelivery = {
   id: string;
   message: string;
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
   pendingWorkerSettlements?: PendingWorkerSettlement[];
+  pendingOrchestratorMessages?: OrchestratorMessage[];
 };
 
 type WorkerWatchSnapshot = {
@@ -89,6 +95,8 @@ type WatchState = {
   workerOrchestrationSessionId?: string;
   workerBranch?: string;
   latestWorkerSettlement?: WorkerSettlement;
+  pendingOrchestratorMessages?: OrchestratorMessage[];
+  deliveredOrchestratorMessageIds?: string[];
   workerSnapshots?: Record<string, WorkerWatchSnapshot>;
   resolvedOrchestrationPrUrls?: string[];
   resolvedWorkerSettlementIds?: string[];
@@ -158,9 +166,11 @@ const CUSTOM_STATE = "pr-watch-state";
 const NOTIFICATION_TYPE = "pr-watch-harness";
 const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
 const POLL_INTERVAL_MS = 60_000;
+const INBOX_POLL_INTERVAL_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
+const MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS = 100;
 const WORKER_ORCHESTRATION_ENV = "PI_PARENT_ORCHESTRATION_SESSION_ID";
-const ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
+const IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
 
 const initialState = (): WatchState => ({
   version: 4,
@@ -264,20 +274,21 @@ export function pullRequestUrlFromText(text: string): string | undefined {
   return Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g)).at(-1)?.[0];
 }
 
-export function shouldTrackActivity(
-  kind: ActivityKind,
-  activity: Activity,
-  orchestrationMode = false,
-): boolean {
+function isOrchestratorMessage(value: unknown): value is OrchestratorMessage & { version: 1 } {
+  return (
+    isObject(value) &&
+    value.version === 1 &&
+    typeof value.id === "string" &&
+    Boolean(value.id) &&
+    typeof value.text === "string" &&
+    Boolean(value.text.trim())
+  );
+}
+
+export function shouldTrackActivity(kind: ActivityKind, activity: Activity): boolean {
   if (activity.id === undefined || activity.id === null) return false;
   const authorLogin = (activity.author ?? activity.user)?.login?.toLowerCase();
-  if (
-    orchestrationMode &&
-    authorLogin &&
-    ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS.includes(authorLogin)
-  ) {
-    return false;
-  }
+  if (authorLogin && IGNORED_ACTIVITY_AUTHORS.includes(authorLogin)) return false;
   return kind !== "issue-comment" || !isBotActivity(activity);
 }
 
@@ -290,6 +301,8 @@ function isBotActivity(activity: Activity): boolean {
 export default function prWatch(pi: ExtensionAPI): void {
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
+  let inboxInterval: ReturnType<typeof setInterval> | undefined;
+  let inboxQueue = Promise.resolve(0);
   let polling = false;
   let deliveryAttemptedId: string | undefined;
   let lastPublishedMembership: string | undefined;
@@ -330,6 +343,69 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function workerSnapshotPath(orchestrationId: string, workerSessionId: string): string {
     return join(orchestrationDirectory(orchestrationId), `${encodeURIComponent(workerSessionId)}.json`);
+  }
+
+  function workerInboxDirectory(orchestrationId: string, workerSessionId: string): string {
+    return join(orchestrationDirectory(orchestrationId), "inbox", encodeURIComponent(workerSessionId));
+  }
+
+  // The orchestrator's message-worker script writes one JSON file per message.
+  // Messages move into the persisted state before their files are removed, so
+  // they use the same idle-only delivery as other PR Watch notifications.
+  function receiveOrchestratorMessages(ctx: ExtensionContext): Promise<number> {
+    inboxQueue = inboxQueue.then(async () => {
+      const orchestrationId = state.workerOrchestrationSessionId;
+      if (!orchestrationId) return 0;
+
+      const directory = workerInboxDirectory(orchestrationId, ctx.sessionManager.getSessionId());
+      let names: string[];
+      try {
+        names = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort();
+      } catch (error) {
+        if (isObject(error) && error.code === "ENOENT") return 0;
+        state.lastError = `Could not read orchestrator messages: ${error instanceof Error ? error.message : String(error)}`;
+        save();
+        setStatus(ctx);
+        return 0;
+      }
+      if (names.length === 0) return 0;
+
+      state.pendingOrchestratorMessages ??= [];
+      const known = new Set([
+        ...state.pendingOrchestratorMessages.map((message) => message.id),
+        ...(state.deliveredOrchestratorMessageIds ?? []),
+      ]);
+      const consumed: string[] = [];
+      const errors: string[] = [];
+      let added = 0;
+      for (const name of names) {
+        const path = join(directory, name);
+        try {
+          const value: unknown = JSON.parse(await readFile(path, "utf8"));
+          if (!isOrchestratorMessage(value) || `${value.id}.json` !== name) {
+            throw new Error("message identity or schema does not match");
+          }
+          if (!known.has(value.id)) {
+            state.pendingOrchestratorMessages.push({ id: value.id, text: value.text.trim() });
+            known.add(value.id);
+            added += 1;
+          }
+          consumed.push(path);
+        } catch (error) {
+          errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+          await rename(path, `${path}.invalid`).catch(() => undefined);
+        }
+      }
+
+      if (errors.length > 0) state.lastError = `Could not read orchestrator messages: ${errors.join("; ")}`;
+      if (added > 0 || errors.length > 0) {
+        save();
+        setStatus(ctx);
+      }
+      for (const path of consumed) await rm(path, { force: true }).catch(() => undefined);
+      return added;
+    });
+    return inboxQueue;
   }
 
   function membershipFingerprint(): string {
@@ -545,7 +621,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     return state.pendingPrUpdates.reduce(
       (count, pending) =>
         count + (pending.checksKey ? 1 : 0) + (pending.conflictsKey ? 1 : 0) + pending.feedbackActivities.length,
-      (state.pendingShaUpdate ? 1 : 0) + state.pendingWorkerSettlements.length,
+      (state.pendingShaUpdate ? 1 : 0) +
+        state.pendingWorkerSettlements.length +
+        (state.pendingOrchestratorMessages?.length ?? 0),
     );
   }
 
@@ -578,6 +656,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (interval || state.mode === "off" || !hasTargets()) return;
     interval = setInterval(() => poll(ctx), POLL_INTERVAL_MS);
     setStatus(ctx);
+  }
+
+  function startInboxPolling(ctx: ExtensionContext): void {
+    if (inboxInterval || !state.workerOrchestrationSessionId) return;
+    inboxInterval = setInterval(async () => {
+      if ((await receiveOrchestratorMessages(ctx)) > 0) flushPending(ctx);
+    }, INBOX_POLL_INTERVAL_MS);
+    inboxInterval.unref?.();
+  }
+
+  function stopInboxPolling(): void {
+    if (inboxInterval) clearInterval(inboxInterval);
+    inboxInterval = undefined;
   }
 
   function stopPolling(ctx?: ExtensionContext): void {
@@ -883,9 +974,15 @@ export default function prWatch(pi: ExtensionAPI): void {
     );
   }
 
+  // In an orchestration, the orchestrator acts on passing CI and the worker
+  // fixes failing CI. Ordinary sessions receive every CI result.
   function checksAreNotifiable(checks: Check[]): boolean {
     const allChecksTerminal = checks.length > 0 && checks.every(isTerminalCheck);
-    return allChecksTerminal && (!state.orchestrationSessionId || !checks.some(isFailingCheck));
+    if (!allChecksTerminal) return false;
+    const failing = checks.some(isFailingCheck);
+    if (state.orchestrationSessionId) return !failing;
+    if (state.workerOrchestrationSessionId) return failing;
+    return true;
   }
 
   function checksCompletionKey(headSha: string, checks: Check[]): string {
@@ -969,7 +1066,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
     return (activities ?? [])
-      .filter((activity) => shouldTrackActivity(kind, activity, Boolean(state.orchestrationSessionId)))
+      .filter((activity) => shouldTrackActivity(kind, activity))
       .map((activity) => ({
         id: `${kind}:${activity.id}`,
         authorLogin: activityAuthorLogin(activity),
@@ -1008,6 +1105,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     pending.pr = structuredClone(watched.pr);
     pending.feedbackActivities = pending.feedbackActivities.filter(
       (activity) =>
+        !state.workerOrchestrationSessionId &&
         !isIgnoredReviewerSelfActivity(watched, activity) &&
         (!currentActivityIds || currentActivityIds.has(activity.id)),
     );
@@ -1075,6 +1173,10 @@ export default function prWatch(pi: ExtensionAPI): void {
         ? `New activity was added for ${identity}, which you are reviewing.`
         : `New activity was added for watched ${identity}.`;
     return `${headline}\n\n${reviewerSafetyNotice(watched)}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${authorLogin}`;
+  }
+
+  function buildOrchestratorMessage(message: OrchestratorMessage): string {
+    return `Message from the orchestrator:\n\n${message.text}`;
   }
 
   function buildWorkerSettlementMessage(settlement: PendingWorkerSettlement): string {
@@ -1168,6 +1270,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     pendingPrUpdates: PendingPrUpdate[],
     pendingShaUpdate: PendingShaUpdate | undefined,
     pendingWorkerSettlements: PendingWorkerSettlement[],
+    pendingOrchestratorMessages: OrchestratorMessage[],
   ): string {
     const messages: string[] = [];
     for (const pending of pendingPrUpdates) {
@@ -1180,6 +1283,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
     if (pendingShaUpdate) messages.push(buildShaChecksMessage(pendingShaUpdate));
     for (const settlement of pendingWorkerSettlements) messages.push(buildWorkerSettlementMessage(settlement));
+    for (const message of pendingOrchestratorMessages) messages.push(buildOrchestratorMessage(message));
     return buildBatchMessage(messages);
   }
 
@@ -1225,6 +1329,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     if ((delivery.pendingWorkerSettlements ?? []).some((settlement) => !pendingWorkerIds.has(workerSettlementIdentity(settlement)))) {
       return false;
     }
+    const pendingMessageIds = new Set((state.pendingOrchestratorMessages ?? []).map((message) => message.id));
+    if ((delivery.pendingOrchestratorMessages ?? []).some((message) => !pendingMessageIds.has(message.id))) {
+      return false;
+    }
     return true;
   }
 
@@ -1241,12 +1349,19 @@ export default function prWatch(pi: ExtensionAPI): void {
       const pendingPrUpdates = structuredClone(state.pendingPrUpdates);
       const pendingShaUpdate = structuredClone(state.pendingShaUpdate);
       const pendingWorkerSettlements = structuredClone(state.pendingWorkerSettlements);
+      const pendingOrchestratorMessages = structuredClone(state.pendingOrchestratorMessages ?? []);
       state.pendingDelivery = {
         id,
-        message: `${buildPendingMessage(pendingPrUpdates, pendingShaUpdate, pendingWorkerSettlements)}\n\n${deliveryMarker(id)}`,
+        message: `${buildPendingMessage(
+          pendingPrUpdates,
+          pendingShaUpdate,
+          pendingWorkerSettlements,
+          pendingOrchestratorMessages,
+        )}\n\n${deliveryMarker(id)}`,
         pendingPrUpdates,
         pendingShaUpdate,
         pendingWorkerSettlements,
+        pendingOrchestratorMessages,
       };
       save();
     }
@@ -1307,6 +1422,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.resolvedWorkerSettlementIds = [
       ...new Set([...(state.resolvedWorkerSettlementIds ?? []), ...deliveredWorkerIds]),
     ];
+
+    const deliveredMessageIds = new Set((delivery.pendingOrchestratorMessages ?? []).map((message) => message.id));
+    state.pendingOrchestratorMessages = (state.pendingOrchestratorMessages ?? []).filter(
+      (message) => !deliveredMessageIds.has(message.id),
+    );
+    state.deliveredOrchestratorMessageIds = [
+      ...new Set([...(state.deliveredOrchestratorMessageIds ?? []), ...deliveredMessageIds]),
+    ].slice(-MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS);
 
     state.pendingDelivery = undefined;
     deliveryAttemptedId = undefined;
@@ -1388,7 +1511,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     const seen = new Set(watched.seenActivityIds);
     const newActivities = currentActivities.filter((activity) => !seen.has(activity.id));
     const triggeringActivities = newActivities.filter((activity) => !isSuppressedSelfActivity(watched, activity));
-    if (triggeringActivities.length > 0) {
+    // The orchestrator receives worker PR feedback and relays accepted items
+    // with message-worker, so the worker does not act on it twice.
+    if (triggeringActivities.length > 0 && !state.workerOrchestrationSessionId) {
       const pending = pendingPr(watched);
       const pendingIds = new Set(pending.feedbackActivities.map((activity) => activity.id));
       const uniqueActivities = triggeringActivities.filter((activity) => !pendingIds.has(activity.id));
@@ -1500,6 +1625,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (event, ctx) => {
+    stopInboxPolling();
     state = initialState();
     deliveryAttemptedId = undefined;
     lastPublishedMembership = undefined;
@@ -1532,12 +1658,17 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     }
     state.pendingWorkerSettlements ??= [];
+    state.pendingOrchestratorMessages ??= [];
     if (state.orchestrationSessionId) {
       process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
     } else {
       delete process.env.PI_ORCHESTRATION_SESSION_ID;
     }
-    if (state.workerOrchestrationSessionId) await refreshWorkerBranch();
+    if (state.workerOrchestrationSessionId) {
+      await refreshWorkerBranch();
+      await receiveOrchestratorMessages(ctx);
+      startInboxPolling(ctx);
+    }
     reconcileDelivery(ctx);
 
     if (state.mode === "off") {
@@ -1577,12 +1708,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     stopPolling();
+    stopInboxPolling();
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     if (state.workerOrchestrationSessionId) {
       await captureWorkerSettlement(ctx);
       await publishWorkerSnapshot(ctx, true);
+      await receiveOrchestratorMessages(ctx);
     }
     reconcileDelivery(ctx);
     flushPending(ctx);
@@ -1761,6 +1894,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         ...state.pendingWorkerSettlements.map(
           (settlement) => `  worker ${settlement.branch}: stopped without a watched PR`,
         ),
+        ...(state.pendingOrchestratorMessages ?? []).map(() => "  orchestrator message"),
       ];
       const lines = [
         `PR watch mode: ${state.mode}`,

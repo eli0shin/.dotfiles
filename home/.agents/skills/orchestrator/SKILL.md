@@ -17,9 +17,22 @@ Never implement ticket changes yourself. After spawning a worker:
 
 - Never block the orchestration loop with `gh pr watch`, `gh run watch`, repeated `sleep`/status loops, or manual watching of GitHub, CI, worker sessions, or worker worktrees. One-shot state retrieval is not polling: use `gh pr list`, `gh pr view`, `gh run view`, and equivalent metadata queries whenever needed to reconcile state, respond to the user, or direct a review.
 - Never read a worker diff, changed-file contents, or worker worktree yourself; delegate code inspection to `run_code_review`. You may read changed-file paths and commit metadata for the merge compatibility gate below, but never patches or file contents. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
-- Never edit, commit, or push a worker branch, and never send manual instructions into a healthy worker's tmux session.
+- Never edit, commit, or push a worker branch.
+- Send instructions to a worker only with `message-worker`. Never type into a worker's terminal with `herdr agent prompt`, `herdr pane send-text`, `herdr pane run`, or `tmux send-keys`.
+- Never tell a worker about merge conflicts or failed CI. PR Watch notifies the worker of both automatically.
 
-If information is missing, ask for it in a concise PR comment, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.
+If information is missing, ask the worker with `message-worker`, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.
+
+## Message a worker
+
+The orchestrator and its workers do not talk through PR comments. PR Watch sends PR feedback to the orchestrator, not to the worker. When the worker must act, send one message:
+
+```bash
+~/.agents/skills/orchestrator/scripts/message-worker <ticket-name> "Address review 123456 by alice on the retry loop; keep the public API unchanged."
+printf '%s\n' "<message>" | ~/.agents/skills/orchestrator/scripts/message-worker <ticket-name>
+```
+
+The worker receives the message when its current turn is complete, so a message never interrupts it. For feedback that is already on the PR, refer to the comment or review by ID or URL and add only the context the worker needs. Do not copy the feedback into a new PR comment.
 
 ## Establish the run
 
@@ -60,9 +73,10 @@ On each PR Watch event, fetch each relevant PR with `gh pr view` before deciding
 Classify the event:
 
 - **New head:** record the head and yield for CI.
-- **Comment, review, or review thread:** inspect the feedback and decide whether worker action is needed.
-- **Failed or cancelled CI:** yield; the worker receives the failure event.
-- **Successful CI-finished event for a new PR head:** call `run_code_review`.
+- **Comment, review, or review thread:** inspect the feedback and decide whether worker action is needed. If it is, send the accepted items with `message-worker`. The worker does not receive PR feedback directly.
+- **Failed or cancelled CI:** PR Watch does not send this event to you; the worker receives it.
+- **Merge conflict:** PR Watch does not send this event to you; the worker receives it.
+- **Successful CI-finished event for a new PR head:** call `run_code_review`. The worker does not receive this event.
 
 Before review, confirm the successful checks belong to the current head. Apply the merge compatibility gate below when the PR is otherwise ready to merge.
 
@@ -83,7 +97,7 @@ A review cycle is complete only when delegated evidence covers the current succe
 
 Act as the final authority on review feedback. Assess delegated findings and existing PR feedback against the ticket, ADRs, designs, and repository contracts using the returned evidence and allowed PR context; do not pass through feedback that conflicts with those sources. Derive the next action from the evidence rather than asking the reviewer for a routing label.
 
-- If the worker must change code, regenerate outputs, or initiate missing verification, publish all accepted actionable findings through one ordinary PR comment or a GitHub review. Never request review by tagging a bot. Then yield for the worker's update.
+- If the worker must change code, regenerate outputs, or initiate missing verification, send all accepted actionable findings in one `message-worker` message. Never request review by tagging a bot. Then yield for the worker's update.
 - If no worker action is needed but checks or another external operation are already running, yield for the next event.
 - Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed for that head, generated changes are intentional, and actionable findings are resolved. Require current mergeability and the merge compatibility gate below before merging. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
 
@@ -91,7 +105,7 @@ Act as the final authority on review feedback. Assess delegated findings and exi
 
 Being behind the landing branch alone does not require an update. The orchestrator applies this gate from metadata; it adds no reviewer duty or worker compatibility report.
 
-If GitHub reports a merge conflict, leave the PR unmerged and yield. The worker receives the conflict notification and handles it; no orchestrator comment is needed.
+If GitHub reports a merge conflict, leave the PR unmerged and yield. The worker receives the conflict notification and resolves it. Never send the worker a message or PR comment about the conflict.
 
 When a PR is otherwise ready to merge:
 
@@ -99,7 +113,7 @@ When a PR is otherwise ready to merge:
 2. Compare the PR's changed-file paths with all paths changed by landing commits since that ancestor. Use complete path metadata, including old and new paths for renames, without reading diffs or file contents. Check ticket and PR metadata for known dependencies between these changes.
 3. Act on the result:
    - **No shared paths and no known dependency:** keep the existing review and passing CI results. Merge without requesting an update or another CI run.
-   - **Shared paths or a known dependency, without a GitHub conflict:** post one ordinary PR comment asking the worker to update onto the landing branch, preserve landed behavior, and run the relevant checks. Then yield. The updated head follows the normal CI and review process.
+   - **Shared paths or a known dependency, without a GitHub conflict:** send one `message-worker` message asking the worker to update onto the landing branch, preserve landed behavior, and run the relevant checks. Then yield. The updated head follows the normal CI and review process.
 
 Shared paths trigger an update even when GitHub can merge the changes cleanly. This conservative gate does not prove that changes in separate files are independent. If path metadata is incomplete or mergeability is unknown, retrieve the missing metadata or yield rather than treating the PR as ready.
 

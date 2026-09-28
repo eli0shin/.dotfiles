@@ -17,4 +17,4 @@ Commit and push the changes, then open a PR against the supplied PR base using t
 
 Do not merge the PR or resolve the ticket; the orchestrator owns that.
 
-Do not poll the PR or its checks. PR Watch will deliver CI results and review feedback. Address that feedback, run the relevant checks and `run_code_review`, then commit and push the fixes.
+Do not poll the PR or its checks. PR Watch delivers failed CI, merge conflicts, and messages from the orchestrator. It does not deliver passing CI or PR feedback; the orchestrator reviews those and sends you the items to act on. Act on each notification, run the relevant checks and `run_code_review`, then commit and push the fixes.

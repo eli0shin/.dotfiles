@@ -6,7 +6,7 @@ Tracked first-pass Pi extensions for this dotfiles setup.
 - `protected-paths.ts`: block writes to secret or generated paths
 - `status-line.ts`: show simple turn progress in the footer
 - `model-status.ts`: notify when the active model changes
-- `pr-watch.ts`: session-local multi-PR watcher that wakes after PR/git push activity, batches CI and feedback updates until the agent settles, supports paused delivery while polling continues, shares worker watch membership with parent orchestration sessions, and reports settled workers that have no watched PR
+- `pr-watch.ts`: session-local multi-PR watcher that wakes after PR/git push activity, batches CI and feedback updates until the agent settles, supports paused delivery while polling continues, shares worker watch membership with parent orchestration sessions, and reports settled workers that have no watched PR. In an orchestration, the orchestrator receives passing CI and PR feedback, the worker receives failing CI, merge conflicts, and orchestrator messages from `~/.agents/skills/orchestrator/scripts/message-worker`, and Codex reviews are ignored
 - `orchestrator.ts`: append the canonical `~/.agents/skills/orchestrator/SKILL.md` instructions to the system prompt before each agent run when `PI_ORCHESTRATION_SESSION_ID` is set; role instructions stay outside compacted conversation history, and PR Watch restores the variable on resume. Workers with only `PI_PARENT_ORCHESTRATION_SESSION_ID` keep their ordinary role. Use `/reload` to load this extension in an existing session.
 - `trust-all.ts`: automatically trust every project to bypass project trust prompts
 - `visible-markdown-links.ts`: keep assistant Markdown links clickable and print each hidden external URL after its label

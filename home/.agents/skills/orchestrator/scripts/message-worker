@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+
+# Queue a message for the Pi worker of one ticket. The worker's PR Watch
+# delivers it as a harness notification when the worker is idle, so the
+# message never interrupts a worker turn.
+
+set -o pipefail
+
+usage() {
+  echo "Usage: message-worker <ticket-name> [<message>]" >&2
+  echo "       printf '%s\\n' <message> | message-worker <ticket-name>" >&2
+  exit 2
+}
+
+if [[ $# -ne 1 && $# -ne 2 ]]; then
+  usage
+fi
+
+ticket=$1
+if [[ $# -eq 2 ]]; then
+  message=$2
+elif [[ ! -t 0 ]]; then
+  message=$(cat)
+else
+  usage
+fi
+
+if [[ -z ${PI_ORCHESTRATION_SESSION_ID:-} ]]; then
+  echo "message-worker requires PI_ORCHESTRATION_SESSION_ID" >&2
+  exit 2
+fi
+
+state_root=${PI_PR_WATCH_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pi/pr-watch/orchestrations}
+
+python3 - "$state_root" "$PI_ORCHESTRATION_SESSION_ID" "$ticket" "$message" <<'PY'
+import json
+import os
+import sys
+import tempfile
+import time
+import uuid
+from urllib.parse import quote
+
+state_root, orchestration_id, ticket, text = sys.argv[1:5]
+text = text.strip()
+if not text:
+    raise SystemExit("message-worker requires a non-empty message")
+
+# Match encodeURIComponent in pr-watch.ts.
+encode = lambda value: quote(value, safe="-_.!~*'()")
+directory = os.path.join(state_root, encode(orchestration_id))
+
+workers = []
+try:
+    names = os.listdir(directory)
+except FileNotFoundError:
+    names = []
+for name in names:
+    if not name.endswith(".json"):
+        continue
+    try:
+        with open(os.path.join(directory, name), encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+    except (OSError, ValueError):
+        continue
+    if (
+        isinstance(snapshot, dict)
+        and snapshot.get("orchestrationId") == orchestration_id
+        and snapshot.get("branch") == ticket
+        and isinstance(snapshot.get("workerSessionId"), str)
+        and isinstance(snapshot.get("revision"), (int, float))
+    ):
+        workers.append((snapshot["revision"], snapshot["workerSessionId"]))
+
+if not workers:
+    raise SystemExit(f"no Pi worker found on branch {ticket}")
+
+# A respawned worker leaves the old session's snapshot behind. The live worker
+# publishes a new revision on each start and settle, so the newest one wins.
+worker_session_id = max(workers)[1]
+inbox = os.path.join(directory, "inbox", encode(worker_session_id))
+os.makedirs(inbox, mode=0o700, exist_ok=True)
+message_id = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
+descriptor, temporary = tempfile.mkstemp(dir=inbox, prefix=f".{message_id}.", suffix=".tmp")
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump({"version": 1, "id": message_id, "text": text}, handle)
+        handle.write("\n")
+    os.rename(temporary, os.path.join(inbox, f"{message_id}.json"))
+except BaseException:
+    os.unlink(temporary)
+    raise
+
+print(f"Queued message {message_id} for worker {ticket}; it arrives when the worker is idle.")
+PY

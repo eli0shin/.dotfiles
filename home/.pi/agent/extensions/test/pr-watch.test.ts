@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,6 +75,7 @@ function createHarness() {
     ],
   ]);
   let intervalCallback: (() => unknown) | undefined;
+  let inboxCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
   let currentBranch = "main";
@@ -208,8 +209,9 @@ function createHarness() {
   async function withFakeTimer<T>(action: () => Promise<T> | T): Promise<T> {
     const originalSetInterval = globalThis.setInterval;
     const originalClearInterval = globalThis.clearInterval;
-    globalThis.setInterval = ((callback: () => unknown) => {
-      intervalCallback = callback;
+    globalThis.setInterval = ((callback: () => unknown, ms?: number) => {
+      if (ms === 5_000) inboxCallback = callback;
+      else intervalCallback = callback;
       return { fake: true };
     }) as any;
     globalThis.clearInterval = (() => {}) as any;
@@ -289,6 +291,15 @@ function createHarness() {
   async function runPoll(): Promise<void> {
     assert.ok(intervalCallback, "polling interval was not registered");
     await withFakeTimer(() => intervalCallback?.());
+  }
+
+  async function runInboxPoll(): Promise<void> {
+    assert.ok(inboxCallback, "inbox interval was not registered");
+    await withFakeTimer(() => inboxCallback?.());
+  }
+
+  function workerInbox(orchestrationId: string, workerSessionId: string): string {
+    return join(stateRoot, encodeURIComponent(orchestrationId), "inbox", encodeURIComponent(workerSessionId));
   }
 
   async function writeWorkerSnapshot(
@@ -371,6 +382,8 @@ function createHarness() {
     merge,
     rerun,
     runPoll,
+    runInboxPoll,
+    workerInbox,
     startSession,
     settleAgent,
     shutdown,
@@ -456,11 +469,10 @@ test("tracks reviews and inline review comments from bots", () => {
   assert.equal(shouldTrackActivity("review-comment", botActivity), true);
 });
 
-test("orchestration ignores reviews and inline review comments from configured authors", () => {
-  assert.equal(shouldTrackActivity("review", codexActivity, true), false);
-  assert.equal(shouldTrackActivity("review-comment", codexActivity, true), false);
-  assert.equal(shouldTrackActivity("review", codexActivity), true);
-  assert.equal(shouldTrackActivity("review", botActivity, true), true);
+test("ignores reviews and inline review comments from configured authors in every mode", () => {
+  assert.equal(shouldTrackActivity("review", codexActivity), false);
+  assert.equal(shouldTrackActivity("review-comment", codexActivity), false);
+  assert.equal(shouldTrackActivity("review", botActivity), true);
 });
 
 test("ignores activities without an id", () => {
@@ -819,6 +831,164 @@ test("worker fallback waits in the existing delivery loop while the orchestrator
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
   }
+});
+
+async function withWorker(
+  action: (harness: ReturnType<typeof createHarness>) => Promise<void>,
+): Promise<void> {
+  const harness = createHarness();
+  const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+  process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.setCurrentBranch("ticket-one");
+  try {
+    await harness.startSession();
+    await action(harness);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+  }
+}
+
+const messageWorker = join(import.meta.dirname, "../../../../.agents/skills/orchestrator/scripts/message-worker");
+
+function runMessageWorker(args: string[], orchestrationId = "session-123") {
+  return spawnSync(messageWorker, args, {
+    encoding: "utf8",
+    env: { ...process.env, PI_ORCHESTRATION_SESSION_ID: orchestrationId },
+  });
+}
+
+test("associated workers receive failing CI but not passing CI", async () => {
+  await withWorker(async (harness) => {
+    await harness.activate(104);
+    harness.checks.set(104, [terminalCheck("104")]);
+    await harness.runPoll();
+    assert.deepEqual(harness.sentMessages, []);
+
+    harness.checks.set(104, [failingCheck("104")]);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for branch remove-collapse-command \(PR #104\)/);
+  });
+});
+
+test("associated workers do not receive PR feedback", async () => {
+  await withWorker(async (harness) => {
+    await harness.activate(104);
+    harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+    harness.reviewComments.set(104, [{ id: 78, user: { login: "review-bot[bot]", type: "Bot" } }]);
+    harness.issueComments.set(104, [{ id: 79, user: { login: "reviewer", type: "User" } }]);
+    await harness.runPoll();
+    assert.deepEqual(harness.sentMessages, []);
+  });
+});
+
+test("associated workers still receive merge conflicts", async () => {
+  await withWorker(async (harness) => {
+    await harness.activate(104);
+    harness.prs.get(104)!.mergeable = "CONFLICTING";
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts/);
+  });
+});
+
+test("message-worker delivers an orchestrator message once, only when the worker is idle", async () => {
+  await withWorker(async (harness) => {
+    harness.setIdle(false);
+    const queued = runMessageWorker(["ticket-one", "Address review 77 on the retry loop."]);
+    assert.equal(queued.status, 0, queued.stderr);
+    assert.match(queued.stdout, /arrives when the worker is idle/);
+
+    await harness.runInboxPoll();
+    assert.deepEqual(harness.sentMessages, []);
+    assert.deepEqual(await readdir(harness.workerInbox("session-123", "worker-session")), []);
+    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
+
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+    assert.match(
+      harness.sentMessages[0] ?? "",
+      /Message from the orchestrator:\n\nAddress review 77 on the retry loop\./,
+    );
+
+    await harness.runInboxPoll();
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+  });
+});
+
+test("orchestrator messages delivered before a restart are not delivered again", async () => {
+  await withWorker(async (harness) => {
+    const directory = harness.workerInbox("session-123", "worker-session");
+    await mkdir(directory, { recursive: true });
+    const message = { version: 1, id: "0001-a", text: "Update onto the landing branch." };
+    await writeFile(join(directory, "0001-a.json"), JSON.stringify(message));
+    await harness.runInboxPoll();
+    assert.equal(harness.sentMessages.length, 1);
+
+    // A file that was not removed must not produce a second delivery.
+    await writeFile(join(directory, "0001-a.json"), JSON.stringify(message));
+    harness.setBranchEntries([
+      ...[{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }],
+    ]);
+    await harness.startSession("resume");
+    await harness.runInboxPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(await readdir(directory), []);
+  });
+});
+
+test("invalid orchestrator messages are set aside and reported", async () => {
+  await withWorker(async (harness) => {
+    const directory = harness.workerInbox("session-123", "worker-session");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "bad.json"), "{corrupt");
+    await harness.runInboxPoll();
+    assert.deepEqual(harness.sentMessages, []);
+    assert.deepEqual(await readdir(directory), ["bad.json.invalid"]);
+    assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not read orchestrator messages: bad\.json/);
+  });
+});
+
+test("message-worker sends to the newest worker when a ticket was respawned", async () => {
+  await withWorker(async (harness) => {
+    const stale = await harness.writeWorkerSnapshot("session-123", "old-worker", [], {
+      branch: "ticket-one",
+      assistantEntryId: "assistant-old",
+      response: "Stopped.",
+      hadWatchedPr: false,
+    });
+    const snapshot = JSON.parse(await readFile(stale, "utf8"));
+    await writeFile(stale, JSON.stringify({ ...snapshot, revision: 1 }));
+
+    const queued = runMessageWorker(["ticket-one", "hello"]);
+    assert.equal(queued.status, 0, queued.stderr);
+    assert.equal((await readdir(harness.workerInbox("session-123", "worker-session"))).length, 1);
+    await assert.rejects(readdir(harness.workerInbox("session-123", "old-worker")));
+  });
+});
+
+test("message-worker requires a worker on the ticket branch and a message", async () => {
+  await withWorker(async () => {
+    const missing = runMessageWorker(["unknown-ticket", "hello"]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /no Pi worker found on branch unknown-ticket/);
+
+    const empty = runMessageWorker(["ticket-one", "   "]);
+    assert.notEqual(empty.status, 0);
+    assert.match(empty.stderr, /non-empty message/);
+
+    const noOrchestration = spawnSync(messageWorker, ["ticket-one", "hello"], {
+      encoding: "utf8",
+      env: { ...process.env, PI_ORCHESTRATION_SESSION_ID: "" },
+    });
+    assert.equal(noOrchestration.status, 2);
+  });
 });
 
 test("watches the session branch SHA and a PR created from another worktree", async () => {
