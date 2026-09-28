@@ -11,6 +11,11 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 3. Repeat across files — comments are stored per-repo as JSON
 4. Press `<leader>dcy` to copy all comments, or `<leader>dcx` to copy and delete them
 
+Open comments are also kept in a Review comments file that agents can read. It is rewritten on every add, edit, or delete, and removed when no comments remain:
+
+- PR review (`pr` / `PR_DIFF_URL` set): `/tmp/review/<org>/<repo>/<pr-number>.txt`
+- Otherwise: `/tmp/review/current/<org>/<repo>/<branch>.txt` (skipped without an `origin` remote or on a detached HEAD)
+
 Fish commands provide the same repository-scoped actions outside Neovim:
 
 - `dcl` — open the comment list in Neovim

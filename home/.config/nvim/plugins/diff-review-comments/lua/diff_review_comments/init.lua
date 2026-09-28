@@ -9,6 +9,7 @@ local input_float = require 'diff_review_comments.ui.input_float'
 local list_ui = require 'diff_review_comments.ui.list'
 local prompt = require 'diff_review_comments.prompt'
 local terminal = require 'diff_review_comments.terminal'
+local review_file = require 'diff_review_comments.review_file'
 
 local state = {
   config = nil,
@@ -17,6 +18,14 @@ local state = {
 local function notify(msg, level)
   if state.config and state.config.notify then
     vim.notify(msg, level or vim.log.levels.INFO)
+  end
+end
+
+local function sync_review_file(repo_root)
+  local comments = store.get_open_comments(state.config.storage_path, repo_root)
+  local ok, err = pcall(review_file.sync, repo_root, comments)
+  if not ok then
+    notify('Failed to write review comments file: ' .. tostring(err), vim.log.levels.WARN)
   end
 end
 
@@ -57,6 +66,7 @@ function M.add_from_visual()
     on_submit = function(text)
       local comment = make_comment(captured, text)
       store.add_comment(state.config.storage_path, captured.repo_root, comment)
+      sync_review_file(captured.repo_root)
       notify(string.format('Saved %s diff review comment %s', side.label, comment.id))
     end,
   }
@@ -86,6 +96,7 @@ end
 
 function M.list_comments()
   local repo_root = context.current_repo_root()
+  sync_review_file(repo_root)
 
   list_ui.open {
     repo_root = repo_root,
@@ -95,6 +106,7 @@ function M.list_comments()
     delete_comment = function(comment)
       local deleted = store.delete_comment(state.config.storage_path, repo_root, comment.id)
       if deleted then
+        sync_review_file(repo_root)
         local side = utils.side_info(comment.diff.selected_side)
         notify(string.format('Deleted %s comment %s', side.label, comment.id))
       end
@@ -102,12 +114,14 @@ function M.list_comments()
     update_comment = function(comment, text)
       local ok = store.update_comment_text(state.config.storage_path, repo_root, comment.id, text)
       if ok then
+        sync_review_file(repo_root)
         local side = utils.side_info(comment.diff.selected_side)
         notify(string.format('Updated %s comment %s', side.label, comment.id))
       end
     end,
     clear_all = function()
       store.clear_repo(state.config.storage_path, repo_root)
+      sync_review_file(repo_root)
       notify('Cleared all comments for repo')
     end,
     run_comments = function(comments)
@@ -123,6 +137,7 @@ function M.clear_comments()
     return
   end
   store.clear_repo(state.config.storage_path, repo_root)
+  sync_review_file(repo_root)
   notify('Cleared all comments for repo')
 end
 
@@ -139,6 +154,7 @@ local function copy_all_comments(delete_after)
     for _, comment in ipairs(comments) do
       store.delete_comment(state.config.storage_path, repo_root, comment.id)
     end
+    sync_review_file(repo_root)
     notify(string.format('Yanked and deleted %d diff review comment(s)', #comments))
   else
     notify(string.format('Yanked %d diff review comment(s)', #comments))
