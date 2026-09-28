@@ -3,6 +3,7 @@
     "ctrl+x"
   ],
   "app.editor.external": "ctrl+e",
+  "app.clipboard.pasteImage": "ctrl+shift+v",
   "tui.altScreen.bottom": [
     "end",
     "ctrl+shift+g"
