@@ -5,7 +5,7 @@ description: Eli's personal action items in the workbench. Use when Eli asks wha
 
 # Action items
 
-An action item is a follow-up Eli personally owes: something he said he would do, or that Ben assigned to him. It may concern a project, PR, or Jira issue, but it is not a project deliverable; it links to those instead of duplicating them. Other people's commitments are not action items.
+An action item is a follow-up Eli personally owes: something he said he would do, or that Ben assigned to him. It may concern a project, PR, or Jira issue, but it is not a project deliverable; it links to those instead of duplicating them. An open PR is its own artifact, so never create an action item to get a PR reviewed, approved, or merged. Other people's commitments are not action items.
 
 ## The workbench
 
@@ -20,8 +20,8 @@ Follow the `tickets` skill for the CLI rules. Every item is Eli's, so create it 
 ## Statuses
 
 - `todo` — Eli owes it and hasn't started.
-- `in-progress` — Eli is actively working it (an open PR, a draft, a thread he's driving).
-- `waiting` — blocked on someone else. Name who and what in the body.
+- `in-progress` — Eli is actively working it (a draft, a thread he's driving).
+- `waiting` — blocked on someone else. List every external blocker in `Waiting-On` frontmatter (see below), and explain in the body what each one owes.
 - done — via `tickets done`, after appending the resolution.
 
 ## Ticket body
@@ -37,6 +37,15 @@ The description is a short imperative (`draw crawl walk run diagram for jimmy`).
 
 ## Log
 - 2026-09-28: dated progress notes, newest last.
+```
+
+`Blocked-By` accepts only ticket IDs from this tracker. Put blockers from outside it in a `Waiting-On` list, placed after `Blocked-By`: Jira keys, PR or Slack URLs, or people's names from `people.md`. Every `waiting` item needs at least one entry, and an item with none isn't `waiting`. Lint doesn't validate `Waiting-On`, so check it by hand.
+
+```yaml
+Blocked-By: []
+Waiting-On:
+  - FANDEVX-3935
+  - Ian Bartholomew
 ```
 
 Tag by project or theme (`ffs-admin`, `fanapp-ios`, `snowflake`) so items group in reports.
