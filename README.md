@@ -21,6 +21,7 @@ dot unstow            # Remove symlinks
 dot update            # Pull repo and run setup
 dot doctor            # Check installation health
 dot automount apply   # Configure macOS network automounts
+dot keyboard apply    # Apply keyboard remappings (macOS / Omarchy)
 dot edit              # Open dotfiles in editor
 dot benchmark-shell   # Benchmark Fish shell startup performance
 dot benchmark-shell -r 20 -v  # 20 runs with per-run timing
@@ -112,6 +113,33 @@ Stopping the service removes only the matching rule. Remove the Linux installer
 call in `scripts/services/tailscale.sh` if the rollback should survive later
 `dot service start` runs. Neither installation nor rollback requires restarting
 Tailscale or changing advertised routes.
+
+## Keyboard remapping on Omarchy
+
+`dot` setup and `dot keyboard apply` read the merged `settings/keyboard.json`
+on macOS and Omarchy. Run `dot merge` first after changing a keyboard layer.
+
+On Omarchy, the supported mappings are Caps Lock → Escape (`caps:escape`) and
+Right Option/Alt → Right Control (`ctrl:ralt_rctrl`). Other mappings are rejected
+without changing the config. macOS continues to use `hidutil`.
+
+The Omarchy backend requires the Lua Hyprland configuration. It generates
+`~/.config/hypr/dot-keyboard.lua` and adds one load line to `hyprland.lua`, backing
+up the latter first. It preserves unrelated XKB options and replaces conflicting
+ones, including Omarchy's default Caps Lock Compose key. It does not modify
+packaged Omarchy files or replace your input configuration.
+
+The mappings apply to all keyboards in Hyprland, including hot-plugged keyboards
+and the desktop lock screen, but not Linux virtual consoles or other desktop
+sessions. No root access or extra daemon is needed. A running session is reloaded
+and checked for config errors; offline setup takes effect at the next login.
+Use `dot keyboard show` to inspect the current options.
+
+Test without changing your desktop:
+
+```bash
+bash tests/keyboard.sh
+```
 
 ## Adding New Configs
 

@@ -38,11 +38,12 @@ cmd_setup() {
         cmd_pmset apply || warn "pmset settings could not be applied"
         cmd_automount apply || warn "automount settings could not be applied"
         cmd_defaults apply || warn "macOS defaults could not be applied"
-        cmd_keyboard apply || warn "keyboard remappings could not be applied"
         cmd_askpass apply || warn "sudo askpass could not be configured"
     else
         warn "Skipping macOS system settings on $(uname -s)"
     fi
+
+    cmd_keyboard apply || warn "keyboard remappings could not be applied"
 
     success "Initialization complete!"
 }
