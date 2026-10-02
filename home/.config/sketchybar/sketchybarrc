@@ -27,37 +27,50 @@ sketchybar --bar \
 sketchybar --remove '/space\..*/' 2>/dev/null || true
 sketchybar --remove workspace_observer 2>/dev/null || true
 sketchybar --remove clock 2>/dev/null || true
-sketchybar --add event aerospace_workspace_change
+sketchybar --add event aerospace_focus_change
 
 for workspace in {1..10}; do
     item="space.$workspace"
     label="$workspace"
     [[ "$workspace" == "10" ]] && label="0"
 
+    # The icon slot holds the workspace number and its focus border. The label
+    # slot holds the app icon of the workspace's focused window, so the number
+    # keeps a fixed width and the border never surrounds the app icon.
     sketchybar --add item "$item" left \
         --set "$item" \
-            width=20 \
             padding_left=1 \
             padding_right=1 \
-            icon.drawing=off \
-            label="$label" \
-            label.align=center \
-            label.width=20 \
-            label.font="Menlo:Regular:12.0" \
-            label.color=0xff686868 \
+            icon="$label" \
+            icon.align=center \
+            icon.width=20 \
+            icon.font="Menlo:Regular:12.0" \
+            icon.color=0xff686868 \
+            icon.background.drawing=off \
+            icon.background.color=0x00000000 \
+            icon.background.border_width=1 \
+            icon.background.height=18 \
+            icon.background.corner_radius=5 \
+            icon.background.y_offset=-1 \
+            label="" \
+            label.drawing=off \
+            label.background.drawing=on \
+            label.background.image.scale=0.65 \
+            label.background.image.padding_left=3 \
+            label.background.image.y_offset=-1 \
             background.drawing=off \
             click_script="$PLUGIN_DIR/aerospace-workspace.sh $workspace"
 done
 
 # One observer calculates all workspace states so AeroSpace is queried once per
-# update. Window events provide immediate updates; polling is a fallback for
-# AeroSpace-only occupancy changes that macOS does not report.
+# update. AeroSpace focus and window events provide immediate updates; polling
+# is a fallback for AeroSpace-only occupancy changes that macOS does not report.
 sketchybar --add item workspace_observer left \
     --set workspace_observer \
         drawing=off \
         update_freq=5 \
         script="$PLUGIN_DIR/aerospace-workspace.sh" \
-    --subscribe workspace_observer aerospace_workspace_change space_windows_change system_woke
+    --subscribe workspace_observer aerospace_focus_change space_windows_change system_woke
 
 sketchybar --add item clock right \
     --set clock \

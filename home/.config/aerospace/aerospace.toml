@@ -5,10 +5,12 @@ start-at-login = true
 auto-reload-config = true
 
 exec.env-vars.PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-exec-on-workspace-change = [
-    "/bin/bash",
-    "-c",
-    "sketchybar --trigger aerospace_workspace_change FOCUSED_WORKSPACE=$AEROSPACE_FOCUSED_WORKSPACE",
+# SketchyBar shows each workspace's focused window, so it must update on window
+# focus changes as well as workspace changes. This callback covers both. Pass
+# the newly focused window because focus can move again before SketchyBar
+# queries AeroSpace.
+on-focus-changed = [
+    "exec-and-forget sketchybar --trigger aerospace_focus_change FOCUSED_WINDOW_ID=${AEROSPACE_WINDOW_ID:-}",
 ]
 
 # System Settings reports its main window as a dialog. Keep the application in
