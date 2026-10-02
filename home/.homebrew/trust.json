@@ -22,7 +22,8 @@
     "hashicorp/tap/terraform",
     "plannotator/tap/plannotator-tui",
     "rjyo/moshi/moshi-hook",
-    "shaharia-lab/tap/slackcli"
+    "shaharia-lab/tap/slackcli",
+    "tilt-dev/tap/tilt"
   ],
   "trustedcasks": [
     "nikitabobko/tap/aerospace",
