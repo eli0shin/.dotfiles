@@ -1,4 +1,5 @@
 {
+  "theme": "dark",
   "defaultThinkingLevel": "medium",
   "quietStartup": true,
   "collapseChangelog": true,
