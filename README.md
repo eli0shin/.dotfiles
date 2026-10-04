@@ -178,9 +178,8 @@ it is not the standard `herdr --remote` transport.
 
 Each tunnel gets an owner-only directory under `~/.cache/herdr-work/` on the
 relay. `current` points to the most recently connected tunnel; concurrent
-older tunnels do not overwrite its sockets. Closing the pane stops sharing,
-leaving Mac agents running; Ctrl-C/Ctrl-\\/Ctrl-Z are ignored so keys typed
-from a remote client cannot kill the tunnel. Remote cleanup occurs on exit or within roughly 15 seconds
+older tunnels do not overwrite its sockets. Ctrl-C (or closing the pane) stops
+sharing, leaving Mac agents running. Remote cleanup occurs on exit or within roughly 15 seconds
 of noticing a disconnected channel. A connection that fails before the remote
 cleanup handler starts may leave a private unused directory. The Mac must
 remain awake and connected; rerun the script after a disconnect. No persistent
