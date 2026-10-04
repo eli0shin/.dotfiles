@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Forward the already-running Mac Herdr session, not the Mac's SSH server.
+# Keep this running in a dedicated pane; Ctrl-C closes the tunnel.
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+    printf 'usage: herdr-share [ssh-target] [herdr-session]\n'
+    exit 0
+fi
+if (( $# > 2 )) || [[ ${1:-} == -* ]]; then
+    printf 'usage: herdr-share [ssh-target] [herdr-session]\n' >&2
+    exit 2
+fi
+
+target=${1:-elioshinsky@devbox.home.arpa}
+herdr_args=()
+if [[ -n ${2:-} ]]; then
+    herdr_args=(--session "$2")
+fi
+for dependency in herdr jq ssh; do
+    command -v "$dependency" >/dev/null || {
+        printf 'herdr-share: missing dependency: %s\n' "$dependency" >&2
+        exit 1
+    }
+done
+
+status=$(herdr "${herdr_args[@]}" status server --json)
+api_socket=$(jq -er 'select(.running == true) | .socket | select(type == "string" and startswith("/"))' <<<"$status") || {
+    printf 'herdr-share: start your Herdr session first.\n' >&2
+    exit 1
+}
+# Match Herdr's filename file_stem(), including extensionless overrides and
+# leading-dot filenames. Never strip an extension from a parent directory.
+filename=${api_socket##*/}
+stem=${filename%.*}
+[[ -n $stem ]] || stem=$filename
+client_socket="${api_socket%/*}/$stem-client.sock"
+if [[ -z ${HERDR_SOCKET_PATH:-} && -z ${2:-} && -n ${HERDR_CLIENT_SOCKET_PATH:-} ]]; then
+    client_socket=$HERDR_CLIENT_SOCKET_PATH
+fi
+for socket in "$api_socket" "$client_socket"; do
+    if [[ ! -S $socket ]]; then
+        printf 'herdr-share: socket not found: %s\n' "$socket" >&2
+        exit 1
+    fi
+    # OpenSSH forwarding specifications use these characters as delimiters.
+    if [[ $socket == *:* || $socket == *'['* || $socket == *']'* || $socket == *[$'\t\r\n ']* ]]; then
+        printf 'herdr-share: unsupported socket path: %s\n' "$socket" >&2
+        exit 1
+    fi
+done
+
+ssh_options=(-T -a -x -o ControlMaster=no -o ControlPath=none
+    -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+# A new private directory per invocation prevents replacing a live tunnel's
+# sockets. Do not use StreamLocalBindUnlink to overwrite an existing listener.
+remote_dir=$(ssh "${ssh_options[@]}" -o ClearAllForwardings=yes "$target" 'sh -s' <<'REMOTE'
+set -eu
+umask 077
+base="$HOME/.cache/herdr-work"
+[ ! -L "$base" ] || { echo 'herdr-share: cache directory is a symlink' >&2; exit 1; }
+mkdir -p "$base"
+chmod 700 "$base"
+mktemp -d "$base/tunnel.XXXXXX"
+REMOTE
+)
+if [[ $remote_dir != /* || $remote_dir == *:* || $remote_dir == *'['* || $remote_dir == *']'* || $remote_dir == *[$'\t\r\n ']* ]]; then
+    printf 'herdr-share: unexpected remote directory: %s\n' "$remote_dir" >&2
+    exit 1
+fi
+
+# Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
+quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
+printf 'Connecting Herdr to %s. Keep this pane open; Ctrl-C stops sharing.\n' "$target"
+# ClearAllForwardings would discard our explicit -R options too; use it only
+# for preparation, and explicitly allow forwarding on the tunnel connection.
+exec ssh "${ssh_options[@]}" -o ClearAllForwardings=no \
+    -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177 \
+    -R "$remote_dir/herdr.sock:$api_socket" \
+    -R "$remote_dir/herdr-client.sock:$client_socket" \
+    "$target" "sh -s -- $quoted_remote_dir" <<'REMOTE'
+set -eu
+dir=$1
+base="$HOME/.cache/herdr-work"
+cleanup() {
+    if [ "$(readlink "$base/current" 2>/dev/null || true)" = "$dir" ]; then
+        rm -f "$base/current"
+    fi
+    rm -f "$dir/herdr.sock" "$dir/herdr-client.sock"
+    rmdir "$dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 0' HUP INT TERM PIPE
+[ -L "$base/current" ] || [ ! -e "$base/current" ] || {
+    echo 'herdr-share: current path exists and is not a symlink' >&2
+    exit 1
+}
+ln -sfn "$dir" "$base/current"
+printf 'Ready. SSH into this host and run work-herdr.\n'
+# Periodic writes let the remote shell notice a disconnected SSH channel and
+# clean up its sockets. This uses no daemon, sudo, sshd, or macOS settings.
+while sleep 15; do
+    printf '\rHerdr tunnel active. Ctrl-C to stop.'
+done
+REMOTE

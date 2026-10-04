@@ -141,6 +141,50 @@ Test without changing your desktop:
 bash tests/keyboard.sh
 ```
 
+## Share work-Mac Herdr through devbox
+
+On the Mac, keep this script running in a dedicated terminal/pane:
+
+```bash
+~/.dotfiles/home/.local/bin/herdr-share
+# Optional alternate relay / named Herdr session:
+~/.dotfiles/home/.local/bin/herdr-share elioshinsky@omarchy work
+```
+
+After SSHing into the receiving host from your iPhone, run:
+
+```fish
+work-herdr
+```
+
+The default relay is `elioshinsky@devbox.home.arpa`, matching `devbox.fish`.
+Both machines need Herdr; the Mac also needs SSH and jq. Install the Fish
+function through the usual `dot stow`, or load it without stowing:
+
+```fish
+source ~/.dotfiles/home/.config/fish/functions/work-herdr.fish
+```
+
+The Mac initiates outbound SSH and reverse-forwards Herdr's API and client
+Unix sockets. It does **not** enable macOS Remote Login, run an SSH server,
+open a TCP listener on the Mac, or start a second Herdr session. The receiver
+runs Herdr's existing client-only mode, so a missing/disconnected tunnel cannot
+silently start a local session. This uses Herdr's low-level socket overrides;
+it is not the standard `herdr --remote` transport.
+
+Each tunnel gets an owner-only directory under `~/.cache/herdr-work/` on the
+relay. `current` points to the most recently connected tunnel; concurrent
+older tunnels do not overwrite its sockets. Ctrl-C stops sharing, leaving
+Mac agents running. Remote cleanup occurs on exit or within roughly 15 seconds
+of noticing a disconnected channel. A connection that fails before the remote
+cleanup handler starts may leave a private unused directory. The Mac must
+remain awake and connected; rerun the script after a disconnect. No persistent
+service or automatic reconnection is installed.
+
+Access to the relay account grants control of the shared Herdr session,
+including starting commands on the Mac. Use this only where that remote control
+and work-data relay are permitted. Agent/X11 forwarding is disabled.
+
 ## Adding New Configs
 
 1. Add config to `home/.config/<app>/` or `home/.<file>`
