@@ -98,7 +98,8 @@ assert 'ClearAllForwardings=yes' not in tunnel
 assert 'ClearAllForwardings=no' in tunnel
 assert 'ExitOnForwardFailure=yes' in tunnel
 assert 'ControlPath=none' in tunnel
-assert 'elioshinsky@devbox.home.arpa' in tunnel
+assert 'ssh://elioshinsky@devbox.home.arpa:2222' in tunnel
+assert 'ssh://elioshinsky@devbox.home.arpa:2222' in prep
 forwards = [tunnel[i+1] for i, arg in enumerate(tunnel) if arg == '-R']
 assert len(forwards) == 2, forwards
 assert forwards[0].endswith('/herdr.sock:' + root + '/mac/herdr.sock')

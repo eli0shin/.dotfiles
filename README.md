@@ -157,7 +157,11 @@ After SSHing into the receiving host from your iPhone, run:
 work-herdr
 ```
 
-The default relay is `elioshinsky@devbox.home.arpa`, matching `devbox.fish`.
+The default relay is `ssh://elioshinsky@devbox.home.arpa:2222`. On the home
+LAN, the LAN Ingress Boundary forwards that port to devbox SSH on port 22,
+without requiring Tailscale on the Mac. Your iPhone keeps its usual devbox
+connection on port 22. For a directly reachable relay, pass its normal SSH
+target explicitly.
 Both machines need Herdr; the Mac also needs SSH and jq. Install the Fish
 function through the usual `dot stow`, or load it without stowing:
 

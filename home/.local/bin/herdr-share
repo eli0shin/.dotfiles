@@ -12,7 +12,8 @@ if (( $# > 2 )) || [[ ${1:-} == -* ]]; then
     exit 2
 fi
 
-target=${1:-elioshinsky@devbox.home.arpa}
+# The LAN Ingress Boundary proxies 2222 to devbox SSH without Tailscale.
+target=${1:-ssh://elioshinsky@devbox.home.arpa:2222}
 herdr_args=()
 if [[ -n ${2:-} ]]; then
     herdr_args=(--session "$2")
