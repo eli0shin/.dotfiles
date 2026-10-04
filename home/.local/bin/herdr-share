@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Forward the already-running Mac Herdr session, not the Mac's SSH server.
-# Keep this running in a dedicated pane; Ctrl-C closes the tunnel.
+# Keep this running in a dedicated pane; close the pane to stop sharing.
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     printf 'usage: herdr-share [ssh-target] [herdr-session]\n'
     exit 0
@@ -72,7 +72,12 @@ fi
 
 # Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
 quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
-printf 'Connecting Herdr to %s. Keep this pane open; Ctrl-C stops sharing.\n' "$target"
+printf 'Connecting Herdr to %s. Close this pane to stop sharing.\n' "$target"
+# This pane is part of the shared session, so a remote client may type into
+# it. ssh's stdin is the heredoc below, so only terminal-generated signals can
+# reach it; ignore them (ssh keeps inherited SIG_IGN for INT/QUIT). Closing
+# the pane still sends SIGHUP.
+trap '' INT QUIT TSTP
 # ClearAllForwardings would discard our explicit -R options too; use it only
 # for preparation, and explicitly allow forwarding on the tunnel connection.
 exec ssh "${ssh_options[@]}" -o ClearAllForwardings=no \
@@ -101,6 +106,6 @@ printf 'Ready. SSH into this host and run work-herdr.\n'
 # Periodic writes let the remote shell notice a disconnected SSH channel and
 # clean up its sockets. This uses no daemon, sudo, sshd, or macOS settings.
 while sleep 15; do
-    printf '\rHerdr tunnel active. Ctrl-C to stop.'
+    printf '\rHerdr tunnel active. Close this pane to stop.'
 done
 REMOTE
