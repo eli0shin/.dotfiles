@@ -45,7 +45,7 @@ Source for all directory-change classifications: [`v1.2.3...v1.3.1` comparison](
 
 ## Update compatibility risks
 
-1. **Glossary migration:** `home/.agents/AGENTS.md` still says to always read `CONTEXT.md`, as do other local instructions and skills. Upstream now expects `GLOSSARY.md` and `GLOSSARY-MAP.md`. Decide whether to migrate project docs and all consumers together, or adapt the incoming changes to preserve your current naming. Do not silently split vocabulary between two files. No `CONTEXT.md` files were found in this dotfiles checkout; other projects were not audited.
+1. **Glossary migration:** At the initial audit, global instructions and some local skills still referenced `CONTEXT.md`. Upstream intentionally renamed the domain glossary to `GLOSSARY.md`/`GLOSSARY-MAP.md`: it holds domain terms, not decisions or general documentation. Update consumers to the new names; existing project glossaries should be renamed, not retained through a fallback. No `CONTEXT.md` files were found in this dotfiles checkout; other projects were not audited.
 2. **Harness invocation:** Several updates now literally say `Call the Skill tool`. This session exposes file-reading tools, not a Skill tool. Adapt those instructions to the actual skill-loading mechanism in your harness rather than copying nonexistent tool calls.
 3. **Local customizations:** Preserve OpenCode slash/autoinvoke frontmatter. Body/reference customizations exist in `improve-codebase-architecture`, `codebase-design`, `grilling`, `wayfinder`, `writing-for-agents`, and `research`; these generally replace background-subagent instructions with direct work. In particular, your Wayfinder resolves research in separate sessions instead of launching research subagents while charting. `code-review` is a separate local rewrite.
 
@@ -75,10 +75,10 @@ Other uninstalled beta/misc skills exist (writing skills, TypeScript boundary se
 
 ## Proposed next step
 
-Selectively merge meaningful upstream changes while preserving your local adaptations. Resolve the glossary filename policy before updating domain-document consumers. Install `retro` and `to-questionnaire`; optionally add `wizard`. No skills, lockfiles or global instructions were changed during the initial audit.
+Selectively merge meaningful upstream changes while preserving your local adaptations. Adopt the upstream `GLOSSARY.md`/`GLOSSARY-MAP.md` rename across domain-document consumers. Install `retro` and `to-questionnaire`; optionally add `wizard`. No skills, lockfiles or global instructions were changed during the initial audit.
 
 ## Applied changes
 
 On the user's subsequent request, merged the 18 installed-skill updates from v1.3.1 while preserving local body edits and OpenCode metadata. Removed `resolving-merge-conflicts` and its lockfile entry. Added `retro` and `pr`, both user-invoked; `pr` explicitly has `disable-model-invocation: true` and OpenCode autoinvocation disabled. Updated the lockfile's upstream folder hashes and timestamps. Left custom `code-review`, unchanged `implement`, and unrelated skills untouched.
 
-Adapted upstream Skill-tool instructions to explicit file reads for this setup. Adopted the new glossary convention with compatibility for configured or existing legacy `CONTEXT.md`/`CONTEXT-MAP.md`, without renaming any project domain documents or changing global instructions.
+Adapted upstream Skill-tool instructions to explicit file reads for this setup. An unrequested legacy filename fallback was initially added, then removed on the user's correction. Skills and global instructions now use `GLOSSARY.md`/`GLOSSARY-MAP.md` only. The domain-modeling and setup instructions match upstream; glossaries hold domain terms only, while decisions belong in ADRs. Custom `code-review` policy remains unchanged apart from its glossary filename reference.

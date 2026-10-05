@@ -1,7 +1,5 @@
 # GLOSSARY.md Format
 
-Apply this format to the glossary selected by `SKILL.md`, including an existing legacy `CONTEXT.md`. The filename examples below use the new convention; preserve a configured or legacy layout.
-
 ## Structure
 
 ```md
@@ -55,8 +53,8 @@ _Avoid_: Client, buyer, account
 
 The skill infers which structure applies:
 
-- If the selected `GLOSSARY-MAP.md` or legacy `CONTEXT-MAP.md` exists, read it to find contexts
-- If only the selected root glossary exists, single context
-- If no configured or legacy glossary exists, create a root `GLOSSARY.md` lazily when the first term is resolved
+- If `GLOSSARY-MAP.md` exists, read it to find contexts
+- If only a root `GLOSSARY.md` exists, single context
+- If neither exists, create a root `GLOSSARY.md` lazily when the first term is resolved
 
 When multiple contexts exist, infer which one the current topic relates to. If unclear, ask.

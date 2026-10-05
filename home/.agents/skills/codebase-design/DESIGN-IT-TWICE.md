@@ -25,7 +25,7 @@ Generate 3+ **radically different** interfaces for the deepened module. Define a
 - Design 3: "Optimise for the most common caller: make the default case trivial."
 - Design 4 (if applicable): "Design around ports & adapters for cross-seam dependencies."
 
-Use both [SKILL.md](SKILL.md) vocabulary and the project's glossary (`GLOSSARY.md`, or legacy `CONTEXT.md`) vocabulary so each design names things consistently with the architecture language and the project's domain language.
+Use both [SKILL.md](SKILL.md) vocabulary and GLOSSARY.md vocabulary so each design names things consistently with the architecture language and the project's domain language.
 
 Each design includes:
 

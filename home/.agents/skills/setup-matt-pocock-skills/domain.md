@@ -4,8 +4,6 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-Use the repo's configured glossary location. Otherwise prefer `GLOSSARY.md`/`GLOSSARY-MAP.md`, falling back to legacy `CONTEXT.md`/`CONTEXT-MAP.md`. Follow either map to the relevant contexts. The glossary filenames below mean the selected convention; keep existing legacy files rather than creating a second glossary. If both conventions exist without a configured choice, ask which is authoritative before writing.
-
 - **`GLOSSARY.md`** at the repo root, or
 - **`GLOSSARY-MAP.md`** at the repo root if it exists: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
 - **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
