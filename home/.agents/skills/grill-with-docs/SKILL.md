@@ -7,4 +7,4 @@ metadata:
   opencode/autoinvoke: false
 ---
 
-Run a `/grilling` session, using the `/domain-modeling` skill.
+Read both `../grilling/SKILL.md` and `../domain-modeling/SKILL.md` with the file-reading tool. Run the interview while maintaining the domain model.

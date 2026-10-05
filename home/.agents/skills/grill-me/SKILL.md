@@ -7,4 +7,4 @@ metadata:
   opencode/autoinvoke: false
 ---
 
-Run a `/grilling` session.
+Read `../grilling/SKILL.md` with the file-reading tool and run the interview.
