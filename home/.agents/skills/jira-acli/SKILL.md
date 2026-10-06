@@ -73,6 +73,14 @@ acli jira workitem comment create \
   --json
 ```
 
+## Transitions
+
+```bash
+acli jira workitem transition --key FCC-114 --status "<status>" --yes
+```
+
+To abandon a ticket, transition it to `Abandoned`. For any other status, use the exact name the user gives; `acli` cannot list a ticket's allowed transitions, so when the name is unknown, ask rather than guess.
+
 Before changing Jira state or fields, confirm with the user. Adding a requested comment/link is low-risk, but still report exactly what was added.
 
 ## Attachments

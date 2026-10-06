@@ -19,7 +19,7 @@ Before reviewing:
 
 1. Read:
     - The applicable repository instructions and `GLOSSARY.md` files.
-    - The ticket if available.
+    - The ticket if available, including its comments: decisions often land there rather than in the description. For Jira, `acli jira workitem view <KEY> --fields summary,description,comment --json`.
     - Pull request description if available.
     - Linked decisions if available.
     - Linked PRs.
