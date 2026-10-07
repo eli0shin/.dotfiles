@@ -1360,6 +1360,199 @@ test("SHA watch reports a branch-tip lookup failure and retains its current SHA"
   assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch main/);
 });
 
+function completedRun(databaseId: number, name = "CI") {
+  return {
+    databaseId,
+    attempt: 1,
+    name,
+    workflowName: name,
+    status: "completed",
+    conclusion: "success",
+    url: `https://github.com/eli0shin/repos/actions/runs/${databaseId}`,
+  };
+}
+
+test("SHA watch does not notify again when completed runs disappear and return", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  const ci = completedRun(123);
+  const version = completedRun(124, "Version");
+  harness.runs.push(ci, version);
+
+  try {
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA main-sh/);
+
+    harness.runs.splice(0, 1);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1, "a missing run is not a new completion");
+
+    harness.runs.unshift(ci);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1, "returning completed runs must stay deduplicated");
+
+    harness.runs.splice(0);
+    await harness.runPoll();
+    harness.runs.push(version, ci);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1, "empty and reordered snapshots must not rearm CI");
+
+    harness.runs.push(completedRun(125, "Deploy"));
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 2, "a newly completed workflow still notifies");
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("SHA watch keeps undelivered CI through partial and empty polls", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  harness.setIdle(false);
+  const ci = completedRun(123);
+  const version = completedRun(124, "Version");
+  harness.runs.push(ci, version);
+
+  try {
+    await harness.runPoll();
+    const pending = structuredClone(harness.savedStates.at(-1)?.pendingShaUpdate);
+    assert.ok(pending);
+
+    harness.runs.splice(0, 1);
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingShaUpdate, pending);
+    harness.runs.splice(0);
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingShaUpdate, pending);
+    harness.setBranchEntries([
+      { type: "custom", customType: "pr-watch-state", data: structuredClone(harness.savedStates.at(-1)) },
+    ]);
+    await harness.startSession("resume");
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingShaUpdate, pending);
+
+    harness.runs.push(completedRun(125, "Deploy"));
+    await harness.runPoll();
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha.notifiedRunKeys.length, 3);
+    harness.runs.push(ci, version);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+for (const legacy of [false, true]) {
+  test(`SHA watch retains ${legacy ? "legacy snapshot" : "per-run"} history across resume with missing runs`, async () => {
+    const harness = createHarness();
+    await harness.startSession();
+    await harness.push();
+    const ci = completedRun(123);
+    const version = completedRun(124, "Version");
+    harness.runs.push(ci, version);
+
+    try {
+      await harness.runPoll();
+      const saved = structuredClone(harness.savedStates.at(-1));
+      if (legacy) delete saved.watchedSha.notifiedRunKeys;
+      harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
+      harness.runs.splice(0, 1);
+      await harness.startSession("resume");
+      harness.runs.unshift(ci);
+      await harness.runPoll();
+      assert.equal(harness.sentMessages.length, 1);
+      assert.equal(harness.savedStates.at(-1)?.watchedSha.notifiedRunKeys.length, 2);
+    } finally {
+      await harness.shutdown();
+    }
+  });
+}
+
+for (const legacy of [false, true]) {
+  test(`SHA baseline does not consume ${legacy ? "legacy" : "current"} undelivered completions`, async () => {
+    const harness = createHarness();
+    await harness.startSession();
+    await harness.push();
+    await harness.commands.get("pr-watch")?.handler("pause", harness.ctx);
+    const ci = completedRun(123);
+    harness.runs.push(ci);
+    const persistForResume = () => {
+      const saved = structuredClone(harness.savedStates.at(-1));
+      if (legacy) delete saved.watchedSha.notifiedRunKeys;
+      harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
+    };
+
+    try {
+      await harness.runPoll();
+      persistForResume();
+      await harness.startSession("resume");
+      assert.ok(harness.savedStates.at(-1)?.pendingShaUpdate);
+      ci.status = "in_progress";
+      ci.conclusion = "";
+      persistForResume();
+      await harness.startSession("resume");
+      assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
+      ci.status = "completed";
+      ci.conclusion = "success";
+      await harness.commands.get("pr-watch")?.handler("resume", harness.ctx);
+      assert.equal(harness.sentMessages.length, 1, "baselining must not acknowledge buffered outcomes");
+    } finally {
+      await harness.shutdown();
+    }
+  });
+}
+
+test("reactivating the same SHA retains delivered run history", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  const ci = completedRun(123);
+  const version = completedRun(124, "Version");
+  harness.runs.push(ci, version);
+
+  try {
+    await harness.runPoll();
+    harness.runs.splice(0, 1);
+    await harness.push();
+    harness.runs.unshift(ci);
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("SHA watch requeues an undelivered completion after an observed unfinished run", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  harness.setIdle(false);
+  const ci = completedRun(123);
+  harness.runs.push(ci);
+
+  try {
+    await harness.runPoll();
+    ci.status = "in_progress";
+    ci.conclusion = "";
+    await harness.runPoll();
+    assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
+    ci.status = "completed";
+    ci.conclusion = "success";
+    await harness.runPoll();
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1, "canceled delivery must not consume its run outcomes");
+  } finally {
+    await harness.shutdown();
+  }
+});
+
 test("SHA watch notifies when a rerun reaches the same conclusion", async () => {
   const harness = createHarness();
   await harness.startSession();

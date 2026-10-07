@@ -26,6 +26,7 @@ type WatchedSha = {
   repo: string;
   sha: string;
   notifiedChecksKey?: string;
+  notifiedRunKeys?: string[];
 };
 
 type WatchMode = "active" | "paused" | "off";
@@ -726,8 +727,10 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.watchedSha = undefined;
       state.pendingShaUpdate = undefined;
     } else {
-      if (state.watchedSha?.sha !== sha) state.pendingShaUpdate = undefined;
-      state.watchedSha = { repo: repoName, sha };
+      if (state.watchedSha?.sha !== sha || state.watchedSha.repo !== repoName) {
+        state.pendingShaUpdate = undefined;
+        state.watchedSha = { repo: repoName, sha };
+      }
       await baselineCurrentShaState(ctx);
     }
 
@@ -1008,6 +1011,26 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `${sha}:${runSignature}`;
   }
 
+  function runKeysFromCompletionKey(sha: string, key: string | undefined): string[] {
+    const prefix = `${sha}:`;
+    return key?.startsWith(prefix) ? key.slice(prefix.length).split(";").filter(Boolean) : [];
+  }
+
+  function pendingRunKeys(watched: WatchedSha): string[] {
+    const pending = state.pendingShaUpdate;
+    return pending?.repo === watched.repo && pending.sha === watched.sha
+      ? runKeysFromCompletionKey(watched.sha, pending.runsKey)
+      : [];
+  }
+
+  function notifiedRunKeys(watched: WatchedSha): string[] {
+    // Existing version-4 sessions only stored the last aggregate snapshot.
+    // Seed its history without treating buffered outcomes as acknowledged.
+    const pending = new Set(pendingRunKeys(watched));
+    return (watched.notifiedRunKeys ??= runKeysFromCompletionKey(watched.sha, watched.notifiedChecksKey)
+      .filter((key) => !pending.has(key)));
+  }
+
   async function baselinePrState(watched: WatchedPrState, ctx: ExtensionContext): Promise<void> {
     const checks = await fetchChecks(watched, ctx);
     if (checks) {
@@ -1041,8 +1064,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!runs) return false;
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
+    const previousKeys = notifiedRunKeys(state.watchedSha);
+    if (allRunsTerminal) {
+      const pending = new Set(pendingRunKeys(state.watchedSha));
+      const baselineKeys = runKeysFromCompletionKey(state.watchedSha.sha, runsKey).filter((key) => !pending.has(key));
+      state.watchedSha.notifiedRunKeys = [...new Set([...previousKeys, ...baselineKeys])];
+    }
     state.watchedSha.notifiedChecksKey = allRunsTerminal ? runsKey : undefined;
-    if (state.pendingShaUpdate && (!allRunsTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
+    if (state.pendingShaUpdate && runs.length > 0 && !allRunsTerminal) {
       state.pendingShaUpdate = undefined;
     }
     return true;
@@ -1408,6 +1437,18 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (
       delivery.pendingShaUpdate &&
+      state.watchedSha?.repo === delivery.pendingShaUpdate.repo &&
+      state.watchedSha.sha === delivery.pendingShaUpdate.sha
+    ) {
+      state.watchedSha.notifiedRunKeys = [
+        ...new Set([
+          ...notifiedRunKeys(state.watchedSha),
+          ...runKeysFromCompletionKey(state.watchedSha.sha, delivery.pendingShaUpdate.runsKey),
+        ]),
+      ];
+    }
+    if (
+      delivery.pendingShaUpdate &&
       state.pendingShaUpdate?.repo === delivery.pendingShaUpdate.repo &&
       state.pendingShaUpdate.sha === delivery.pendingShaUpdate.sha &&
       state.pendingShaUpdate.runsKey === delivery.pendingShaUpdate.runsKey
@@ -1589,13 +1630,23 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (!runs) return 0;
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
-    if (state.pendingShaUpdate && (!allRunsTerminal || state.pendingShaUpdate.runsKey !== runsKey)) {
+    const deliveredKeys = notifiedRunKeys(state.watchedSha);
+    // A missing run is not evidence of new CI or a rerun. Only an observed
+    // unfinished run invalidates the buffered all-runs-complete notification.
+    if (state.pendingShaUpdate && runs.length > 0 && !allRunsTerminal) {
       state.pendingShaUpdate = undefined;
     }
-    if (!allRunsTerminal || state.watchedSha.notifiedChecksKey === runsKey) return 0;
+    if (!allRunsTerminal) return 0;
 
-    state.watchedSha.notifiedChecksKey = runsKey;
-    state.pendingShaUpdate = { repo: state.watchedSha.repo, sha: state.watchedSha.sha, runsKey };
+    const pendingKeys = pendingRunKeys(state.watchedSha);
+    const knownKeys = new Set([...deliveredKeys, ...pendingKeys]);
+    const currentKeys = runKeysFromCompletionKey(state.watchedSha.sha, runsKey);
+    if (currentKeys.every((key) => knownKeys.has(key))) return 0;
+
+    // Preserve undelivered outcomes even when this snapshot omits their runs.
+    const bufferedKey = `${state.watchedSha.sha}:${[...new Set([...pendingKeys, ...currentKeys])].sort().join(";")}`;
+    state.watchedSha.notifiedChecksKey = bufferedKey;
+    state.pendingShaUpdate = { repo: state.watchedSha.repo, sha: state.watchedSha.sha, runsKey: bufferedKey };
     return 1;
   }
 
