@@ -21,8 +21,19 @@ local function notify(msg, level)
   end
 end
 
+-- Store bucket for comments. PR reviews (PR_DIFF_URL set) are keyed by the PR
+-- alone, so a PR shares one bucket from any checkout and never mixes with
+-- other PRs reviewed in the same checkout.
+local function scope_key(repo_root)
+  local pr = utils.current_pr()
+  if pr then
+    return string.format('pr:%s/%s', pr.slug, pr.number)
+  end
+  return repo_root
+end
+
 local function sync_review_file(repo_root)
-  local comments = store.get_open_comments(state.config.storage_path, repo_root)
+  local comments = store.get_open_comments(state.config.storage_path, scope_key(repo_root))
   local ok, err = pcall(review_file.sync, repo_root, comments)
   if not ok then
     notify('Failed to write review comments file: ' .. tostring(err), vim.log.levels.WARN)
@@ -65,7 +76,7 @@ function M.add_from_visual()
     title = string.format('Comment %s (%s)', target, side.label),
     on_submit = function(text)
       local comment = make_comment(captured, text)
-      store.add_comment(state.config.storage_path, captured.repo_root, comment)
+      store.add_comment(state.config.storage_path, scope_key(captured.repo_root), comment)
       sync_review_file(captured.repo_root)
       notify(string.format('Saved %s diff review comment %s', side.label, comment.id))
     end,
@@ -101,10 +112,10 @@ function M.list_comments()
   list_ui.open {
     repo_root = repo_root,
     get_comments = function()
-      return store.get_open_comments(state.config.storage_path, repo_root)
+      return store.get_open_comments(state.config.storage_path, scope_key(repo_root))
     end,
     delete_comment = function(comment)
-      local deleted = store.delete_comment(state.config.storage_path, repo_root, comment.id)
+      local deleted = store.delete_comment(state.config.storage_path, scope_key(repo_root), comment.id)
       if deleted then
         sync_review_file(repo_root)
         local side = utils.side_info(comment.diff.selected_side)
@@ -112,7 +123,7 @@ function M.list_comments()
       end
     end,
     update_comment = function(comment, text)
-      local ok = store.update_comment_text(state.config.storage_path, repo_root, comment.id, text)
+      local ok = store.update_comment_text(state.config.storage_path, scope_key(repo_root), comment.id, text)
       if ok then
         sync_review_file(repo_root)
         local side = utils.side_info(comment.diff.selected_side)
@@ -120,7 +131,7 @@ function M.list_comments()
       end
     end,
     clear_all = function()
-      store.clear_repo(state.config.storage_path, repo_root)
+      store.clear_repo(state.config.storage_path, scope_key(repo_root))
       sync_review_file(repo_root)
       notify('Cleared all comments for repo')
     end,
@@ -136,14 +147,14 @@ function M.clear_comments()
   if answer ~= 1 then
     return
   end
-  store.clear_repo(state.config.storage_path, repo_root)
+  store.clear_repo(state.config.storage_path, scope_key(repo_root))
   sync_review_file(repo_root)
   notify('Cleared all comments for repo')
 end
 
 local function copy_all_comments(delete_after)
   local repo_root = context.current_repo_root()
-  local comments = store.get_open_comments(state.config.storage_path, repo_root)
+  local comments = store.get_open_comments(state.config.storage_path, scope_key(repo_root))
   if #comments == 0 then
     notify('No open comments to yank', vim.log.levels.WARN)
     return
@@ -152,7 +163,7 @@ local function copy_all_comments(delete_after)
   clipboard.copy(prompt.build(repo_root, comments))
   if delete_after then
     for _, comment in ipairs(comments) do
-      store.delete_comment(state.config.storage_path, repo_root, comment.id)
+      store.delete_comment(state.config.storage_path, scope_key(repo_root), comment.id)
     end
     sync_review_file(repo_root)
     notify(string.format('Yanked and deleted %d diff review comment(s)', #comments))
@@ -171,7 +182,7 @@ end
 
 function M.run_comments(comments)
   local repo_root = context.current_repo_root()
-  comments = comments or store.get_open_comments(state.config.storage_path, repo_root)
+  comments = comments or store.get_open_comments(state.config.storage_path, scope_key(repo_root))
   if #comments == 0 then
     notify('No open comments to run', vim.log.levels.WARN)
     return
@@ -197,7 +208,7 @@ function M.run_comments(comments)
     comment_count = #comments,
   }
 
-  store.set_last_run(state.config.storage_path, repo_root, {
+  store.set_last_run(state.config.storage_path, scope_key(repo_root), {
     at = os.date('!%Y-%m-%dT%H:%M:%SZ'),
     provider = provider_name,
     comment_ids = vim.tbl_map(function(c)

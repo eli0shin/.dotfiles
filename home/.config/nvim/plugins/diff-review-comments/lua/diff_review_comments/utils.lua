@@ -21,6 +21,19 @@ function M.side_info(side)
   }
 end
 
+-- The PR under review when launched via `pr` (PR_DIFF_URL set), else nil.
+function M.current_pr()
+  local url = vim.env.PR_DIFF_URL
+  if not url or url == '' then
+    return nil
+  end
+  local slug, number = url:match 'github%.com/([^/]+/[^/]+)/pull/(%d+)'
+  if not slug then
+    return nil
+  end
+  return { slug = slug, number = number }
+end
+
 function M.get_lines(bufnr, start_line, end_line)
   local max = vim.api.nvim_buf_line_count(bufnr)
   local safe_end = math.min(max, end_line)

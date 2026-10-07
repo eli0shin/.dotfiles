@@ -8,7 +8,7 @@ Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvi
 
 1. Open a diff view (diffview, octo PR review, or `:diffsplit`)
 2. Visually select code and press `<leader>dca` to add a comment
-3. Repeat across files — comments are stored per-repo as JSON
+3. Repeat across files — comments are stored as JSON per checkout, or per PR when launched via `pr` (`PR_DIFF_URL` set). A PR's comments are shared across every checkout of that repo
 4. Press `<leader>dcy` to copy all comments, or `<leader>dcx` to copy and delete them
 
 Open comments are also kept in a Review comments file that agents can read. It is rewritten on every add, edit, or delete, and removed when no comments remain:
@@ -16,11 +16,11 @@ Open comments are also kept in a Review comments file that agents can read. It i
 - PR review (`pr` / `PR_DIFF_URL` set): `/tmp/review/<org>/<repo>/<pr-number>.txt`
 - Otherwise: `/tmp/review/current/<org>/<repo>/<branch>.txt` (skipped without an `origin` remote or on a detached HEAD)
 
-Fish commands provide the same repository-scoped actions outside Neovim:
+Fish commands provide the same actions outside Neovim. With no argument they use the current checkout's comments; pass a PR number to use that PR's comments instead (resolved against the `origin` remote):
 
-- `dcl` — open the comment list in Neovim
-- `dcy` — yank all comments and keep them
-- `dcx` — yank all comments and delete them
+- `dcl [pr-number]` — open the comment list in Neovim
+- `dcy [pr-number]` — yank all comments and keep them
+- `dcx [pr-number]` — yank all comments and delete them
 
 ## Keymaps
 

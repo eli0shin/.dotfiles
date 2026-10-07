@@ -5,6 +5,7 @@
 local M = {}
 
 local prompt = require 'diff_review_comments.prompt'
+local utils = require 'diff_review_comments.utils'
 
 local root_dir = '/tmp/review'
 
@@ -27,12 +28,9 @@ local function github_slug(url)
 end
 
 function M.path(repo_root)
-  local pr_url = vim.env.PR_DIFF_URL
-  if pr_url and pr_url ~= '' then
-    local slug, number = pr_url:match 'github%.com/([^/]+/[^/]+)/pull/(%d+)'
-    if slug then
-      return string.format('%s/%s/%s.txt', root_dir, slug, number)
-    end
+  local pr = utils.current_pr()
+  if pr then
+    return string.format('%s/%s/%s.txt', root_dir, pr.slug, pr.number)
   end
 
   local slug = github_slug(git(repo_root, { 'remote', 'get-url', 'origin' }))
