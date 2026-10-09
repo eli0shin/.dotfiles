@@ -56,12 +56,31 @@ if [[ ${#extracted_dirs[@]} -ne 1 || ! -x "${extracted_dirs[0]}/open-whispr" ]];
   exit 1
 fi
 
-# Stop only this user-installed fork before replacing files it can load lazily.
-pkill -TERM -f "$app_dir/open-whispr-app" 2>/dev/null || true
+# The launcher changes argv[0] with exec -a, and children may use /proc/self/exe.
+# Match the actual executable, limited to this user's installed fork.
+fork_pids() {
+  local process_dir executable
+  for process_dir in /proc/[0-9]*; do
+    [[ -O "$process_dir" ]] || continue
+    executable=$(readlink "$process_dir/exe" 2>/dev/null) || continue
+    if [[ "$executable" == "$app_dir/open-whispr-app" ]]; then
+      printf '%s\n' "${process_dir##*/}"
+    fi
+  done
+}
+
+mapfile -t running_pids < <(fork_pids)
+if (( ${#running_pids[@]} )); then
+  kill -TERM "${running_pids[@]}" 2>/dev/null || true
+fi
 for _ in {1..50}; do
-  pgrep -f "$app_dir/open-whispr-app" >/dev/null || break
+  [[ -z "$(fork_pids)" ]] && break
   sleep 0.1
 done
+if [[ -n "$(fork_pids)" ]]; then
+  printf 'OpenWhispr is still running; quit it before updating. Installation unchanged.\n' >&2
+  exit 1
+fi
 
 mkdir -p "$install_root"
 if [[ -d "$app_dir" ]]; then
