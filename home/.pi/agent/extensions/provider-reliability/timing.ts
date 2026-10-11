@@ -1,13 +1,11 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { writeLine } from "./log.ts";
 
-// Logs one JSONL record per provider request with the stage where time was
+// Logs one JSONL record per Anthropic request with the stage where time was
 // spent: request sent -> response headers -> first stream event -> first
 // content -> end. A request that stalls also gets an early "stall" record so
 // the evidence survives a killed process.
 
-const STATUS_KEY = "provider-timing";
-const STATUS_AFTER_MS = 10_000;
 const STALL_LOG_AFTER_MS = 30_000;
 const TICK_MS = 1_000;
 // A warm request that errors never reaches message_stop; stop routing events to it.
@@ -88,19 +86,17 @@ export function registerTiming(pi: ExtensionAPI): void {
 	let warm: InFlight | undefined;
 	let lastFinishedAt: number | undefined;
 	let ticker: ReturnType<typeof setInterval> | undefined;
-	let statusCtx: ExtensionContext | undefined;
 
-	const clearStatus = () => {
+	const stopTicker = () => {
 		if (ticker) clearInterval(ticker);
 		ticker = undefined;
-		statusCtx?.ui.setStatus(STATUS_KEY, undefined);
 	};
 
 	const finish = (inFlight: InFlight | undefined, outcome: NonNullable<RequestRecord["outcome"]>) => {
 		if (!inFlight) return;
 		if (inFlight === turn) {
 			turn = undefined;
-			clearStatus();
+			stopTicker();
 		} else if (inFlight === warm) {
 			warm = undefined;
 		}
@@ -128,23 +124,20 @@ export function registerTiming(pi: ExtensionAPI): void {
 		const now = Date.now();
 		const elapsed = now - inFlight.startedAt;
 		const stage = waitingFor(inFlight.record);
-		const quietMs = now - (inFlight.lastEventAt ?? inFlight.startedAt);
 
 		if (stage && elapsed >= STALL_LOG_AFTER_MS && !inFlight.stallLogged) {
 			inFlight.stallLogged = true;
 			writeLine({ ...inFlight.record, kind: "stall", ts: new Date(now).toISOString(), waitingFor: stage, totalMs: elapsed });
 		}
-
-		if (stage && elapsed >= STATUS_AFTER_MS) {
-			statusCtx?.ui.setStatus(STATUS_KEY, `⏳ waiting for ${stage.replace("_", " ")} ${Math.round(elapsed / 1000)}s`);
-		} else if (!stage && quietMs >= STATUS_AFTER_MS) {
-			statusCtx?.ui.setStatus(STATUS_KEY, `⏳ stream quiet ${Math.round(quietMs / 1000)}s`);
-		} else {
-			statusCtx?.ui.setStatus(STATUS_KEY, undefined);
-		}
 	};
 
 	pi.on("before_provider_request", (event, ctx) => {
+		if (ctx.model?.provider !== "anthropic") {
+			finish(turn, "superseded");
+			finish(warm, "superseded");
+			lastFinishedAt = undefined;
+			return;
+		}
 		const now = Date.now();
 		const maxTokens = maxTokensOf(event.payload);
 		const isWarm = maxTokens === 1;
@@ -172,7 +165,6 @@ export function registerTiming(pi: ExtensionAPI): void {
 		finish(warm, "superseded");
 		finish(turn, "superseded");
 		record.idleMsSincePrevious = lastFinishedAt === undefined ? undefined : now - lastFinishedAt;
-		statusCtx = ctx;
 		const signal = ctx.signal;
 		if (signal && !signal.aborted) {
 			inFlight.signal = signal;
@@ -186,7 +178,8 @@ export function registerTiming(pi: ExtensionAPI): void {
 		ticker.unref?.();
 	});
 
-	pi.on("after_provider_response", (event) => {
+	pi.on("after_provider_response", (event, ctx) => {
+		if (ctx.model?.provider !== "anthropic") return;
 		// Headers go to whichever open request has not received them yet.
 		const open = target();
 		const inFlight = open === warm && warm?.record.headersMs === undefined ? warm : turn;
@@ -200,6 +193,7 @@ export function registerTiming(pi: ExtensionAPI): void {
 	});
 
 	pi.on("provider_stream_event", (event) => {
+		if (event.provider !== "anthropic") return;
 		const inFlight = target();
 		if (!inFlight) return;
 		const now = Date.now();
@@ -219,12 +213,12 @@ export function registerTiming(pi: ExtensionAPI): void {
 		if (type === "message_stop") {
 			record.streamEndMs = now - inFlight.startedAt;
 			if (inFlight === warm) finish(warm, "completed");
-			else clearStatus();
+			else stopTicker();
 		}
 	});
 
 	pi.on("message_end", (event) => {
-		if (!turn || event.message.role !== "assistant") return;
+		if (!turn || event.message.role !== "assistant" || event.message.provider !== "anthropic") return;
 		const message = event.message;
 		turn.record.stopReason = message.stopReason;
 		turn.record.errorMessage = message.errorMessage;

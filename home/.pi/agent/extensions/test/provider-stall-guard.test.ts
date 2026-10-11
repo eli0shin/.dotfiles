@@ -159,6 +159,24 @@ test("error responses and unguarded requests pass through untouched", async () =
 	assert.equal(calls.length, 2);
 });
 
+test("OpenAI requests pass through with the original input, init, signal, and response", async () => {
+	const input = "https://chatgpt.com/backend-api/codex/responses";
+	const init = { ...STREAM_INIT, signal: new AbortController().signal };
+	const response = new Response("codex response");
+	let calls = 0;
+	const inner = (async (actualInput, actualInit) => {
+		calls++;
+		assert.equal(actualInput, input);
+		assert.equal(actualInit, init);
+		return response;
+	}) as typeof fetch;
+	const { opts, resends, giveUps } = options({ firstEventDeadlineMs: 1 });
+	assert.equal(await createStallGuardFetch(inner, opts)(input, init), response);
+	assert.equal(calls, 1);
+	assert.deepEqual(resends, []);
+	assert.deepEqual(giveUps, []);
+});
+
 test("a zero deadline disables the guard", async () => {
 	const { fn, calls } = fakeFetch([upstream(100, [{ afterMs: 0, text: PING }])]);
 	const { opts, resends } = options({ firstEventDeadlineMs: 0 });
