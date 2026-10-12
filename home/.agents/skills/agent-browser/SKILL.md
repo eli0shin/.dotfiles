@@ -15,7 +15,7 @@ Install: `npm i -g agent-browser && agent-browser install`
 
 These rules override the CLI-provided skills:
 
-- For authenticated tasks, use `agent-browser profiles` to find the Chrome profile, then start a named, isolated session with `--profile <name>`. This copies the profile to a temporary directory and does not control the visible Chrome window. Ask the user to select the profile when the choice is ambiguous.
+- For authenticated tasks, launch the user's installed Google Chrome with their profile: use `agent-browser profiles` to find the Chrome profile, then start a named, isolated session with `--profile <name> --executable-path <installed Google Chrome binary>`. The binary's path is OS-specific; locate it on the current machine. agent-browser's bundled Chromium opens the copied profile signed out, so real Chrome is what carries the user's logins. This copies the profile to a temporary directory and does not control the visible Chrome window. Ask the user to select the profile when the choice is ambiguous. A signed-out page means the launch is wrong: fix the browser or profile and relaunch, since the profile supplies the login.
 - Derive one stable session ID with `agent-browser session id --scope worktree --prefix <task>` and pass `--session <id>` on every browser command.
 - Work only in the session's active tab. Use `get url` and `snapshot -i` to inspect it.
 - **Never list tabs. Do not run `tab list`, including for diagnostics or recovery.** Open a new isolated session if the active tab cannot be recovered.
