@@ -181,9 +181,12 @@ relay. `current` points to the most recently connected tunnel; concurrent
 older tunnels do not overwrite its sockets. Ctrl-C (or closing the pane) stops
 sharing, leaving Mac agents running. Remote cleanup occurs on exit or within roughly 15 seconds
 of noticing a disconnected channel. A connection that fails before the remote
-cleanup handler starts may leave a private unused directory. The Mac must
-remain awake and connected; rerun the script after a disconnect. No persistent
-service or automatic reconnection is installed.
+cleanup handler starts may leave a private unused directory. If the SSH
+connection drops (e.g. a broken pipe), the script reconnects with a fresh
+tunnel directory, backing off up to 30 seconds between attempts, until you
+stop it; `work-herdr` clients need to be restarted after a reconnect. Remote
+script errors (such as a symlinked cache directory) stop it instead. No
+persistent service is installed.
 
 Access to the relay account grants control of the shared Herdr session,
 including starting commands on the Mac. Use this only where that remote control

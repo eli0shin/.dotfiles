@@ -53,9 +53,30 @@ done
 
 ssh_options=(-T -a -x -o ControlMaster=no -o ControlPath=none
     -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
-# A new private directory per invocation prevents replacing a live tunnel's
-# sockets. Do not use StreamLocalBindUnlink to overwrite an existing listener.
-remote_dir=$(ssh "${ssh_options[@]}" -o ClearAllForwardings=yes "$target" 'sh -s' <<'REMOTE'
+
+# Ctrl-C, closing the pane, or kill stops sharing; anything else reconnects.
+# Children run in the background so `wait` returns as soon as a signal arrives.
+child_pid=
+stop() {
+    trap '' INT TERM HUP
+    if [[ -n $child_pid ]]; then
+        kill "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+    fi
+    printf '\nherdr-share: stopped sharing.\n' 2>/dev/null || true
+    exit "$1"
+}
+trap 'stop 130' INT
+trap 'stop 143' TERM
+trap 'stop 129' HUP
+
+delay=1
+while :; do
+    started=$SECONDS
+    status=0
+    # A new private directory per connection prevents replacing a live tunnel's
+    # sockets. Do not use StreamLocalBindUnlink to overwrite an existing listener.
+    if remote_dir=$(ssh "${ssh_options[@]}" -o ClearAllForwardings=yes "$target" 'sh -s' <<'REMOTE'
 set -eu
 umask 077
 base="$HOME/.cache/herdr-work"
@@ -64,22 +85,22 @@ mkdir -p "$base"
 chmod 700 "$base"
 mktemp -d "$base/tunnel.XXXXXX"
 REMOTE
-)
-if [[ $remote_dir != /* || $remote_dir == *:* || $remote_dir == *'['* || $remote_dir == *']'* || $remote_dir == *[$'\t\r\n ']* ]]; then
-    printf 'herdr-share: unexpected remote directory: %s\n' "$remote_dir" >&2
-    exit 1
-fi
+    ); then
+        if [[ $remote_dir != /* || $remote_dir == *:* || $remote_dir == *'['* || $remote_dir == *']'* || $remote_dir == *[$'\t\r\n ']* ]]; then
+            printf 'herdr-share: unexpected remote directory: %s\n' "$remote_dir" >&2
+            exit 1
+        fi
 
-# Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
-quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
-printf 'Connecting Herdr to %s. Press Ctrl-C to stop sharing.\n' "$target"
-# ClearAllForwardings would discard our explicit -R options too; use it only
-# for preparation, and explicitly allow forwarding on the tunnel connection.
-exec ssh "${ssh_options[@]}" -o ClearAllForwardings=no \
-    -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177 \
-    -R "$remote_dir/herdr.sock:$api_socket" \
-    -R "$remote_dir/herdr-client.sock:$client_socket" \
-    "$target" "sh -s -- $quoted_remote_dir" <<'REMOTE'
+        # Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
+        quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
+        printf 'Connecting Herdr to %s. Press Ctrl-C to stop sharing.\n' "$target"
+        # ClearAllForwardings would discard our explicit -R options too; use it
+        # only for preparation, and explicitly allow forwarding on the tunnel.
+        ssh "${ssh_options[@]}" -o ClearAllForwardings=no \
+            -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177 \
+            -R "$remote_dir/herdr.sock:$api_socket" \
+            -R "$remote_dir/herdr-client.sock:$client_socket" \
+            "$target" "sh -s -- $quoted_remote_dir" <<'REMOTE' &
 set -eu
 dir=$1
 base="$HOME/.cache/herdr-work"
@@ -104,3 +125,25 @@ while sleep 15; do
     printf '\rHerdr tunnel active. Press Ctrl-C to stop.'
 done
 REMOTE
+        child_pid=$!
+        wait "$child_pid" || status=$?
+        child_pid=
+    else
+        status=$?
+    fi
+
+    # 255 is ssh's own failure (e.g. broken pipe, timeout, unreachable host);
+    # 0 means the remote side was hung up. Other statuses are remote script
+    # errors that a reconnect will not fix.
+    if (( status != 0 && status != 255 )); then
+        printf 'herdr-share: ssh exited with status %s; not reconnecting.\n' "$status" >&2
+        exit "$status"
+    fi
+    (( SECONDS - started < 60 )) || delay=1
+    printf '\nherdr-share: connection lost; reconnecting in %ss. Press Ctrl-C to stop.\n' "$delay" >&2
+    sleep "$delay" &
+    child_pid=$!
+    wait "$child_pid" || true
+    child_pid=
+    (( delay = delay * 2 > 30 ? 30 : delay * 2 ))
+done
