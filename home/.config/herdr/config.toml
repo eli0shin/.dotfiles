@@ -68,6 +68,11 @@ split_horizontal = "prefix+h"
 close_pane = "prefix+q"
 zoom = ""
 resize_mode = ""
+# alt+shift+hjkl avoids the alt+j/k Lumen aliases and alt+left/right word jumps.
+resize_pane_left = "alt+shift+h"
+resize_pane_right = "alt+shift+l"
+resize_pane_down = "alt+shift+j"
+resize_pane_up = "alt+shift+k"
 
 [[keys.command]]
 key = "ctrl+h"
