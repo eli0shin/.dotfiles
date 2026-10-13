@@ -22,9 +22,20 @@ type WatchedPrState = {
   mergeable?: string;
 };
 
+type MergedPr = {
+  number: number;
+  url: string;
+  mergedAt?: string;
+};
+
+// Outside an orchestration, a watched SHA is either the tip of the session's
+// feature branch or, when mergedPr is set, the merge commit of a watched PR.
 type WatchedSha = {
   repo: string;
   sha: string;
+  branch?: string;
+  mergedPr?: MergedPr;
+  watchedAt?: number;
   notifiedChecksKey?: string;
   notifiedRunKeys?: string[];
 };
@@ -43,6 +54,8 @@ type PendingShaUpdate = {
   repo: string;
   sha: string;
   runsKey: string;
+  branch?: string;
+  mergedPr?: MergedPr;
 };
 
 type WorkerSettlement = {
@@ -101,6 +114,7 @@ type WatchState = {
   workerSnapshots?: Record<string, WorkerWatchSnapshot>;
   resolvedOrchestrationPrUrls?: string[];
   resolvedWorkerSettlementIds?: string[];
+  mergedBranches?: string[];
   selfLogin?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -124,6 +138,7 @@ type WorkflowRun = {
   status?: string;
   conclusion?: string;
   url?: string;
+  event?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -151,8 +166,32 @@ type BashToolResultLike = {
 type PrPollResult = {
   addedCount: number;
   remove?: boolean;
+  merged?: { sha?: string; mergedAt?: string };
   error?: string;
 };
+
+type PrViewResult = {
+  number: number;
+  url: string;
+  headRefName: string;
+  headRefOid: string;
+  headRepository?: { nameWithOwner?: string };
+  state: string;
+  author?: { login?: string };
+  mergeable?: string;
+  mergeCommit?: { oid?: string } | null;
+  mergedAt?: string | null;
+};
+
+type DiscoverOptions = {
+  alreadyEnrolled?: boolean;
+  // A merge command may start a merge-commit watch for a PR that was not watched.
+  allowMergeWatch?: boolean;
+  // Stack arguments may be stack numbers, which do not resolve as PRs.
+  ignoreUnresolved?: boolean;
+};
+
+type BranchResult = { ok: true; branch: string } | { ok: false; error: string };
 
 type BranchTipResult =
   | { ok: true; branch: string; sha: string }
@@ -170,6 +209,23 @@ const POLL_INTERVAL_MS = 60_000;
 const INBOX_POLL_INTERVAL_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 const MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS = 100;
+const MAX_MERGED_BRANCHES = 20;
+// Chained workflow_run runs (e.g. post-deploy verification) start shortly after
+// the run they follow, so a merge commit waits this long after its last run
+// update before reporting.
+const MERGE_SETTLE_MS = 3 * 60_000;
+const MERGE_WATCH_TIMEOUT_MS = 30 * 60_000;
+const MERGE_RUN_EVENTS = ["push", "workflow_run"];
+// gh pr create takes no PR argument; its output URL identifies the new PR.
+const PR_TARGET_SUBCOMMANDS = ["view", "ready", "edit", "checkout"];
+const VALUE_FLAGS = new Set([
+  "-R", "--repo", "--json", "-q", "--jq", "-t", "--template", "--title", "-b", "--body", "-F",
+  "--body-file", "-B", "--base", "-H", "--head", "-a", "--assignee", "-l", "--label", "-m",
+  "--milestone", "-r", "--reviewer", "-p", "--project", "--add-label", "--remove-label",
+  "--add-reviewer", "--remove-reviewer", "--add-assignee", "--remove-assignee", "--add-project",
+  "--remove-project", "--match-head-commit", "--subject", "-A", "--author-email", "--remote",
+  "--merge-method",
+]);
 const WORKER_ORCHESTRATION_ENV = "PI_PARENT_ORCHESTRATION_SESSION_ID";
 const IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
 
@@ -271,8 +327,96 @@ function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
   );
 }
 
+export function pullRequestUrlsFromText(text: string): string[] {
+  return [...new Set(Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g), (match) => match[0]))];
+}
+
 export function pullRequestUrlFromText(text: string): string | undefined {
   return Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g)).at(-1)?.[0];
+}
+
+// Splits a shell command into one token list per pipeline segment. Quoted text
+// stays inside its token, so a multi-word `--title "Fix #12"` is one value.
+function commandSegments(command: string): string[][] {
+  const segments: string[][] = [[]];
+  let token = "";
+  let inToken = false;
+  let quote: string | undefined;
+  const endToken = () => {
+    if (inToken) segments.at(-1)?.push(token);
+    token = "";
+    inToken = false;
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\" && quote === '"' && index + 1 < command.length) token += command[(index += 1)];
+      else token += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      inToken = true;
+    } else if (/\s/.test(char) && char !== "\n") {
+      endToken();
+    } else if (char === ";" || char === "\n" || char === "|" || (char === "&" && command[index + 1] === "&")) {
+      endToken();
+      segments.push([]);
+      if (char === "&" || (char === "|" && command[index + 1] === "|")) index += 1;
+    } else {
+      token += char;
+      inToken = true;
+    }
+  }
+  endToken();
+  return segments;
+}
+
+// Returns the positional arguments of each `gh <group> <subcommand>` in a shell
+// command, with `-R owner/repo` applied to bare PR numbers. Flag values are
+// skipped so `--json number` or `--remote origin` never reads as a target.
+export function commandTargets(command: string, group: "pr" | "stack", subcommands: string[]): string[] {
+  const targets: string[] = [];
+  for (const tokens of commandSegments(command)) {
+    const index = tokens.findIndex(
+      (token, position) =>
+        token === "gh" && tokens[position + 1] === group && subcommands.includes(tokens[position + 2] ?? ""),
+    );
+    if (index < 0) continue;
+
+    let repo: string | undefined;
+    const positional: string[] = [];
+    const args = tokens.slice(index + 3);
+    for (let position = 0; position < args.length; position += 1) {
+      const token = args[position] ?? "";
+      if (!token) continue;
+      if (token === "-R" || token === "--repo") {
+        repo = args[position + 1];
+        position += 1;
+        continue;
+      }
+      if (token.startsWith("--repo=")) {
+        repo = token.slice("--repo=".length);
+        continue;
+      }
+      if (token.startsWith("-")) {
+        if (!token.includes("=") && VALUE_FLAGS.has(token)) position += 1;
+        continue;
+      }
+      if (/^\d*[<>]/.test(token)) break;
+      positional.push(token);
+    }
+
+    for (const token of positional) {
+      const number = token.match(/^#?(\d+)$/)?.[1];
+      if (number && repo) targets.push(`https://github.com/${repo}/pull/${number}`);
+      else if (number) targets.push(number);
+      else if (/^https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+$/.test(token)) targets.push(token);
+      else if (group === "stack") targets.push(token);
+    }
+  }
+  return [...new Set(targets)];
 }
 
 function isOrchestratorMessage(value: unknown): value is OrchestratorMessage & { version: 1 } {
@@ -308,7 +452,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   let deliveryAttemptedId: string | undefined;
   let lastPublishedMembership: string | undefined;
   let currentRepo: string | undefined;
+  let currentDefaultBranch: string | undefined;
   let currentRepoLookup: Promise<string | undefined> | undefined;
+  const defaultBranches = new Map<string, string>();
   let snapshotPublishQueue = Promise.resolve();
   const coordinationRoot =
     process.env.PI_PR_WATCH_STATE_DIR ??
@@ -641,6 +787,9 @@ export default function prWatch(pi: ExtensionAPI): void {
       return `PR watch: ${prs}${pendingSuffix}`;
     }
 
+    if (state.watchedSha?.mergedPr) {
+      return `PR watch: #${state.watchedSha.mergedPr.number} merge ${state.watchedSha.sha.slice(0, 7)}${pendingSuffix}`;
+    }
     if (state.watchedSha) return `SHA ${state.watchedSha.sha.slice(0, 7)} watch${pendingSuffix}`;
     return `PR watch:${pendingSuffix}`;
   }
@@ -691,13 +840,36 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function ensureCurrentRepo(ctx: ExtensionContext): Promise<string | undefined> {
     currentRepoLookup ??= (async () => {
-      const repo = await execJson<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"], ctx);
+      const repo = await execJson<{ nameWithOwner: string; defaultBranchRef?: { name?: string } | null }>(
+        "gh",
+        ["repo", "view", "--json", "nameWithOwner,defaultBranchRef"],
+        ctx,
+      );
       currentRepo = repo?.nameWithOwner;
+      currentDefaultBranch = repo?.defaultBranchRef?.name || undefined;
       return currentRepo;
     })();
     const repo = await currentRepoLookup;
     if (!repo) currentRepoLookup = undefined;
     return repo;
+  }
+
+  async function defaultBranchFor(repo: string, ctx: ExtensionContext): Promise<string | undefined> {
+    const current = await ensureCurrentRepo(ctx);
+    if (current?.toLowerCase() === repo.toLowerCase() && currentDefaultBranch) return currentDefaultBranch;
+
+    const key = repo.toLowerCase();
+    if (!defaultBranches.has(key)) {
+      const result = await execJson<{ defaultBranchRef?: { name?: string } | null }>(
+        "gh",
+        ["repo", "view", repo, "--json", "defaultBranchRef"],
+        ctx,
+      );
+      const name = result?.defaultBranchRef?.name;
+      if (!name) return undefined;
+      defaultBranches.set(key, name);
+    }
+    return defaultBranches.get(key);
   }
 
   function hasWatchedPrForBranch(repo: string, branch: string): boolean {
@@ -706,13 +878,107 @@ export default function prWatch(pi: ExtensionAPI): void {
     );
   }
 
+  function mergedBranchKey(repo: string, branch: string): string {
+    return `${repo.toLowerCase()}:${branch}`;
+  }
+
+  function recordMergedBranch(pr: Pick<WatchedPr, "repo" | "headRepo" | "branch">): void {
+    if (state.orchestrationSessionId) return;
+    const key = mergedBranchKey(pr.headRepo ?? pr.repo, pr.branch);
+    state.mergedBranches = [...(state.mergedBranches ?? []).filter((candidate) => candidate !== key), key].slice(
+      -MAX_MERGED_BRANCHES,
+    );
+  }
+
+  // An orchestrator watches its landing branch. Every other session watches
+  // only feature branches: the default branch moves with everyone's merges, and
+  // a merged branch is covered by its merge commit.
+  async function branchTipIsWatchable(
+    repo: string,
+    branch: string,
+    ctx: ExtensionContext,
+  ): Promise<{ watchable: boolean; error?: string }> {
+    if (state.orchestrationSessionId) return { watchable: true };
+    if (state.mergedBranches?.includes(mergedBranchKey(repo, branch))) return { watchable: false };
+    const defaultBranch = await defaultBranchFor(repo, ctx);
+    if (!defaultBranch) return { watchable: false, error: `Could not resolve the default branch of ${repo}` };
+    return { watchable: branch !== defaultBranch };
+  }
+
+  function mergeWatchActive(): boolean {
+    return !state.orchestrationSessionId && Boolean(state.watchedSha?.mergedPr);
+  }
+
+  function clearBranchTipWatch(): boolean {
+    if (!state.watchedSha || mergeWatchActive()) return false;
+    state.watchedSha = undefined;
+    state.pendingShaUpdate = undefined;
+    return true;
+  }
+
+  // Outside an orchestration, the merge commit of a PR you authored is the only
+  // default-branch SHA PR Watch reports. A later merge replaces an earlier one.
+  function startMergeWatch(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
+    if (state.orchestrationSessionId || state.workerOrchestrationSessionId) return false;
+    if (!merged.sha || !state.selfLogin || pr.authorLogin !== state.selfLogin) return false;
+
+    const current = state.watchedSha?.mergedPr;
+    if (current && state.watchedSha?.sha === merged.sha) return true;
+    if (current?.mergedAt && merged.mergedAt && current.mergedAt > merged.mergedAt) return true;
+
+    state.watchedSha = {
+      repo: pr.repo,
+      sha: merged.sha,
+      mergedPr: { number: pr.number, url: pr.url, mergedAt: merged.mergedAt },
+      watchedAt: Date.now(),
+    };
+    state.pendingShaUpdate = undefined;
+    return true;
+  }
+
+  function handleMergedPr(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
+    recordMergedBranch(pr);
+    return startMergeWatch(pr, merged);
+  }
+
   async function watchCurrentBranch(
     ctx: ExtensionContext,
     repoName: string,
     reason: string,
     notify: boolean,
   ): Promise<boolean> {
-    const branchTip = await currentBranchTip(repoName);
+    if (mergeWatchActive()) {
+      startPolling(ctx);
+      setStatus(ctx);
+      return true;
+    }
+
+    const current = await currentBranchName();
+    if (!current.ok) {
+      state.lastError = current.error;
+      save();
+      setStatus(ctx);
+      return false;
+    }
+
+    const watchability = hasWatchedPrForBranch(repoName, current.branch)
+      ? { watchable: false }
+      : await branchTipIsWatchable(repoName, current.branch, ctx);
+    if (watchability.error) {
+      state.lastError = watchability.error;
+      save();
+      setStatus(ctx);
+      return false;
+    }
+    if (!watchability.watchable) {
+      clearBranchTipWatch();
+      state.lastError = undefined;
+      save();
+      setStatus(ctx);
+      return true;
+    }
+
+    const branchTip = await remoteBranchTip(repoName, current.branch);
     if (!branchTip.ok) {
       state.lastError = branchTip.error;
       save();
@@ -723,16 +989,11 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     await refreshSelfLogin(ctx);
 
-    if (!state.orchestrationSessionId && hasWatchedPrForBranch(repoName, branchTip.branch)) {
-      state.watchedSha = undefined;
+    if (state.watchedSha?.sha !== sha || state.watchedSha.repo !== repoName) {
       state.pendingShaUpdate = undefined;
-    } else {
-      if (state.watchedSha?.sha !== sha || state.watchedSha.repo !== repoName) {
-        state.pendingShaUpdate = undefined;
-        state.watchedSha = { repo: repoName, sha };
-      }
-      await baselineCurrentShaState(ctx);
+      state.watchedSha = { repo: repoName, sha, branch: branchTip.branch };
     }
+    await baselineCurrentShaState(ctx);
 
     state.lastError = undefined;
     save();
@@ -747,7 +1008,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     reason: string,
     notify = true,
     prTarget?: string,
-    alreadyEnrolled = false,
+    options: DiscoverOptions = {},
   ): Promise<boolean> {
     if (state.mode === "off") return false;
 
@@ -757,19 +1018,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const prViewArgs = ["pr", "view"];
     if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push("--json", "number,url,headRefName,headRefOid,headRepository,state,author,mergeable");
-    const pr = await execJson<{
-      number: number;
-      url: string;
-      headRefName: string;
-      headRefOid: string;
-      headRepository?: { nameWithOwner?: string };
-      state: string;
-      author?: { login?: string };
-      mergeable?: string;
-    }>("gh", prViewArgs, ctx);
+    prViewArgs.push(
+      "--json",
+      "number,url,headRefName,headRefOid,headRepository,state,author,mergeable,mergeCommit,mergedAt",
+    );
+    const pr = await execJson<PrViewResult>("gh", prViewArgs, ctx);
 
     if (!pr && prTarget) {
+      if (options.ignoreUnresolved) return false;
       state.lastError = `Could not resolve PR ${prTarget}`;
       save();
       setStatus(ctx);
@@ -794,7 +1050,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       const watched = existing ?? { pr: watchedPr, seenActivityIds: [] };
       if (existing) {
         existing.pr = watchedPr;
-        if (alreadyEnrolled) await baselinePrState(existing, ctx);
+        if (options.alreadyEnrolled) await baselinePrState(existing, ctx);
       } else {
         state.watchedPrs.push(watched);
         await baselinePrState(watched, ctx);
@@ -813,6 +1069,35 @@ export default function prWatch(pi: ExtensionAPI): void {
       await publishWorkerSnapshot(ctx);
       if (notify && !wasAlreadyWatched) ctx.ui.notify(`PR watch added #${pr.number} (${reason}).`, "info");
       return true;
+    }
+
+    if (pr?.state === "MERGED" && !state.orchestrationSessionId) {
+      const mergedPr: WatchedPr = {
+        repo: repositoryFromPrUrl(pr.url) ?? repoName,
+        number: pr.number,
+        url: pr.url,
+        branch: pr.headRefName,
+        headSha: pr.headRefOid,
+        headRepo: pr.headRepository?.nameWithOwner,
+        authorLogin: pr.author?.login,
+      };
+      const wasWatched = state.watchedPrs.some(
+        (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(mergedPr),
+      );
+      if (wasWatched || options.allowMergeWatch) {
+        await refreshSelfLogin(ctx);
+        const merged = { sha: pr.mergeCommit?.oid, mergedAt: pr.mergedAt ?? undefined };
+        if (handleMergedPr(mergedPr, merged)) {
+          removePr(mergedPr);
+          state.lastError = undefined;
+          save();
+          startPolling(ctx);
+          setStatus(ctx);
+          await publishWorkerSnapshot(ctx);
+          if (notify) ctx.ui.notify(`PR watch is waiting for CI on the merge commit of #${pr.number}.`, "info");
+          return true;
+        }
+      }
     }
 
     if (prTarget) {
@@ -866,14 +1151,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => prIdentityKey(candidate.pr) !== key);
   }
 
-  async function currentBranchTip(repo: string): Promise<BranchTipResult> {
+  async function currentBranchName(): Promise<BranchResult> {
     const branchResult = await pi.exec("git", ["branch", "--show-current"], { timeout: 30_000 });
     const branch = branchResult.stdout.trim();
     if (branchResult.code !== 0 || !branch) {
       const detail = branchResult.stderr.trim() || "the current checkout has no branch";
       return { ok: false, error: `Could not resolve the current branch: ${detail}` };
     }
+    return { ok: true, branch };
+  }
 
+  async function remoteBranchTip(repo: string, branch: string): Promise<BranchTipResult> {
     const commitResult = await pi.exec(
       "gh",
       ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`],
@@ -894,21 +1182,24 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
+    if (mergeWatchActive()) return { changed: false };
     const repo = await ensureCurrentRepo(ctx);
     if (!repo) return { changed: false, error: "Could not resolve the current GitHub repository" };
-    const branchTip = await currentBranchTip(repo);
-    if (!branchTip.ok) return { changed: false, error: branchTip.error };
-    if (!state.orchestrationSessionId && hasWatchedPrForBranch(repo, branchTip.branch)) {
-      const changed = Boolean(state.watchedSha);
-      state.watchedSha = undefined;
-      state.pendingShaUpdate = undefined;
-      return { changed };
+    const current = await currentBranchName();
+    if (!current.ok) return { changed: false, error: current.error };
+    if (!state.orchestrationSessionId) {
+      if (hasWatchedPrForBranch(repo, current.branch)) return { changed: clearBranchTipWatch() };
+      const watchability = await branchTipIsWatchable(repo, current.branch, ctx);
+      if (watchability.error) return { changed: false, error: watchability.error };
+      if (!watchability.watchable) return { changed: clearBranchTipWatch() };
     }
+    const branchTip = await remoteBranchTip(repo, current.branch);
+    if (!branchTip.ok) return { changed: false, error: branchTip.error };
     const sha = branchTip.sha;
     if (state.watchedSha?.sha === sha) return { changed: false };
 
     const firstObservation = !state.watchedSha;
-    state.watchedSha = { repo, sha };
+    state.watchedSha = { repo, sha, branch: branchTip.branch };
     state.pendingShaUpdate = undefined;
     if (firstObservation && !(await baselineCurrentShaState(ctx))) {
       if (state.orchestrationSessionId) state.watchedSha = undefined;
@@ -933,15 +1224,39 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function fetchRunsForSha(ctx: ExtensionContext): Promise<WorkflowRun[] | undefined> {
-    if (!state.watchedSha) return undefined;
-    return execJson<WorkflowRun[]>("gh", [
+    const watched = state.watchedSha;
+    if (!watched) return undefined;
+    const runs = await execJson<WorkflowRun[]>("gh", [
       "run",
       "list",
       "--commit",
-      state.watchedSha.sha,
+      watched.sha,
+      "-R",
+      watched.repo,
       "--json",
-      "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
+      "databaseId,attempt,name,workflowName,status,conclusion,url,event,createdAt,updatedAt",
     ], ctx);
+    return runs && relevantRuns(runs, watched);
+  }
+
+  // Scheduled runs land on whatever commit is the tip, and on a merge commit a
+  // manual dispatch is usually someone else's deploy. Neither reports on the
+  // watched change.
+  function relevantRuns(runs: WorkflowRun[], watched: WatchedSha): WorkflowRun[] {
+    if (state.orchestrationSessionId) return runs;
+    return runs.filter((run) => {
+      const event = run.event?.toLowerCase();
+      if (!event) return true;
+      if (watched.mergedPr) return MERGE_RUN_EVENTS.includes(event);
+      return event !== "schedule";
+    });
+  }
+
+  function runsSettled(runs: WorkflowRun[]): boolean {
+    const latest = Math.max(
+      ...runs.map((run) => Date.parse(run.updatedAt ?? "")).filter((time) => Number.isFinite(time)),
+    );
+    return !Number.isFinite(latest) || Date.now() - latest >= MERGE_SETTLE_MS;
   }
 
   function isApprovalWaitingCheck(check: Check): boolean {
@@ -1292,7 +1607,14 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function buildShaChecksMessage(pending: PendingShaUpdate): string {
-    return `CI finished for SHA ${pending.sha.slice(0, 7)}.\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff (e.g. IaC), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the run logs) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the runs passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
+    if (pending.mergedPr && !state.orchestrationSessionId) {
+      return `CI finished for the merge commit of PR #${pending.mergedPr.number} (SHA ${pending.sha.slice(0, 7)}).\n\nInspect this commit's workflow runs with gh and confirm that your change deployed and passed its post-deploy checks. If a run produced a generated diff (e.g. IaC), read it from the run logs (e.g. \`gh run view\`) and confirm it matches the change you merged. Other changes on the default branch can also fail these runs: fix failures your PR caused, and summarize the rest without changing them.\n\nPR: ${pending.mergedPr.url}\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
+    }
+    const headline =
+      pending.branch && !state.orchestrationSessionId
+        ? `CI finished for SHA ${pending.sha.slice(0, 7)} on your branch ${pending.branch}.`
+        : `CI finished for SHA ${pending.sha.slice(0, 7)}.`;
+    return `${headline}\n\nPlease inspect the workflow runs/results with gh, determine whether anything needs to be fixed, and take appropriate action. If they failed, diagnose and fix them.\n\nA passing run is not sufficient on its own. If any run involves a generated diff (e.g. IaC), do not treat a green result as done: fetch and read the actual diff/output from that step (e.g. \`gh run view\`, the run logs) and verify the generated changes match the changes you intended. Confirm there are no unintended or surprising changes before closing the loop. If the diff contains anything you did not intend, treat it as a problem to investigate and fix rather than a pass.\n\nOnce you have confirmed the runs passed AND any generated diffs are correct and intentional, briefly summarize that.\n\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
   }
 
   function buildPendingMessage(
@@ -1455,6 +1777,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     ) {
       state.pendingShaUpdate = undefined;
     }
+    // A merge commit reports once; afterwards the session is back to watching
+    // only its PRs and feature branch.
+    if (
+      delivery.pendingShaUpdate?.mergedPr &&
+      mergeWatchActive() &&
+      state.watchedSha?.repo === delivery.pendingShaUpdate.repo &&
+      state.watchedSha.sha === delivery.pendingShaUpdate.sha
+    ) {
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+    }
 
     const deliveredWorkerIds = new Set((delivery.pendingWorkerSettlements ?? []).map(workerSettlementIdentity));
     state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
@@ -1489,16 +1822,26 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function pollPr(watched: WatchedPrState, ctx: ExtensionContext): Promise<PrPollResult> {
-    const latest = await execJson<{
-      headRefOid: string;
-      headRefName?: string;
-      headRepository?: { nameWithOwner?: string };
-      state: string;
-      author?: { login?: string };
-      mergeable?: string;
-    }>("gh", ["pr", "view", watched.pr.url, "--json", "headRefOid,headRefName,headRepository,state,author,mergeable"], ctx);
+    const latest = await execJson<Omit<PrViewResult, "number" | "url" | "headRefName"> & { headRefName?: string }>(
+      "gh",
+      [
+        "pr",
+        "view",
+        watched.pr.url,
+        "--json",
+        "headRefOid,headRefName,headRepository,state,author,mergeable,mergeCommit,mergedAt",
+      ],
+      ctx,
+    );
 
     if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
+    if (latest.state === "MERGED") {
+      return {
+        addedCount: 0,
+        remove: true,
+        merged: { sha: latest.mergeCommit?.oid, mergedAt: latest.mergedAt ?? undefined },
+      };
+    }
     if (latest.state !== "OPEN") return { addedCount: 0, remove: true };
 
     if (latest.author?.login) watched.pr.authorLogin = latest.author.login;
@@ -1583,6 +1926,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           const result = await pollPr(watched, ctx);
           addedCount += result.addedCount;
           if (result.error) errors.push(result.error);
+          if (result.merged) handleMergedPr(watched.pr, result.merged);
           if (result.remove) removePr(watched.pr);
         } catch (error) {
           errors.push(error instanceof Error ? error.message : String(error));
@@ -1628,6 +1972,17 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const runs = await fetchRunsForSha(ctx);
     if (!runs) return 0;
+    const mergeWatch = mergeWatchActive();
+    if (
+      mergeWatch &&
+      runs.length === 0 &&
+      state.watchedSha.watchedAt !== undefined &&
+      Date.now() - state.watchedSha.watchedAt > MERGE_WATCH_TIMEOUT_MS
+    ) {
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+      return 0;
+    }
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
     const deliveredKeys = notifiedRunKeys(state.watchedSha);
@@ -1637,6 +1992,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.pendingShaUpdate = undefined;
     }
     if (!allRunsTerminal) return 0;
+    if (mergeWatch && !runsSettled(runs)) return 0;
 
     const pendingKeys = pendingRunKeys(state.watchedSha);
     const knownKeys = new Set([...deliveredKeys, ...pendingKeys]);
@@ -1646,7 +2002,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     // Preserve undelivered outcomes even when this snapshot omits their runs.
     const bufferedKey = `${state.watchedSha.sha}:${[...new Set([...pendingKeys, ...currentKeys])].sort().join(";")}`;
     state.watchedSha.notifiedChecksKey = bufferedKey;
-    state.pendingShaUpdate = { repo: state.watchedSha.repo, sha: state.watchedSha.sha, runsKey: bufferedKey };
+    state.pendingShaUpdate = {
+      repo: state.watchedSha.repo,
+      sha: state.watchedSha.sha,
+      runsKey: bufferedKey,
+      branch: state.watchedSha.branch,
+      mergedPr: state.watchedSha.mergedPr,
+    };
     return 1;
   }
 
@@ -1656,6 +2018,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function isActivationCommand(command: string): boolean {
     return /(^|[;&|\n]\s*)gh\s+pr\s+(create|view|ready|edit|checkout)\b/.test(command);
+  }
+
+  function isStackActivation(command: string): boolean {
+    return /(^|[;&|\n]\s*)gh\s+stack\s+(link|submit|push|sync)\b/.test(command);
+  }
+
+  function isStackMerge(command: string): boolean {
+    return /(^|[;&|\n]\s*)gh\s+stack\s+merge\b/.test(command);
   }
 
   function isGitPush(command: string): boolean {
@@ -1733,17 +2103,25 @@ export default function prWatch(pi: ExtensionAPI): void {
     const savedPrs = [...state.watchedPrs];
     const savedSha = state.watchedSha;
     if (!state.orchestrationSessionId) state.watchedSha = undefined;
-    for (const watched of savedPrs) await discover(ctx, "startup", false, watched.pr.url, true);
+    for (const watched of savedPrs) {
+      await discover(ctx, "startup", false, watched.pr.url, { alreadyEnrolled: true });
+    }
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
 
     let shaSyncError: string | undefined;
     if (state.orchestrationSessionId) {
       shaSyncError = (await syncWatchedSha(ctx)).error;
-    } else if (savedSha) {
+    } else if (savedSha && !mergeWatchActive()) {
       state.watchedSha = structuredClone(savedSha);
       const shaSync = await syncWatchedSha(ctx);
       shaSyncError = shaSync.error;
-      if (!shaSync.changed && !shaSync.error && state.watchedSha && !(await baselineCurrentShaState(ctx))) {
+      if (
+        !shaSync.changed &&
+        !shaSync.error &&
+        state.watchedSha &&
+        !state.watchedSha.mergedPr &&
+        !(await baselineCurrentShaState(ctx))
+      ) {
         shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
       }
     }
@@ -1788,7 +2166,24 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (isActivationCommand(command)) {
-      await discover(ctx, "gh pr command", true, pullRequestUrlFromText(output));
+      const target = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0] ?? pullRequestUrlFromText(output);
+      await discover(ctx, "gh pr command", true, target);
+      return;
+    }
+
+    // gh stack pushes branches and opens PRs itself, so neither a git push nor
+    // a gh pr command appears. Every PR it names is enrolled.
+    if (isStackActivation(command)) {
+      const urls = pullRequestUrlsFromText(output);
+      const urlNumbers = new Set(urls.map((url) => String(prCoordinatesFromUrl(url)?.number)));
+      const targets = [
+        ...urls,
+        ...commandTargets(command, "stack", ["link"]).filter((target) => !urlNumbers.has(target)),
+      ];
+      if (targets.length === 0) await discover(ctx, "gh stack command", false);
+      for (const target of targets) {
+        await discover(ctx, "gh stack command", true, target, { ignoreUnresolved: true });
+      }
       return;
     }
 
@@ -1797,8 +2192,13 @@ export default function prWatch(pi: ExtensionAPI): void {
       return;
     }
 
-    if (isPrMerge(command)) {
-      await discover(ctx, "gh pr merge", false);
+    if (isPrMerge(command) || isStackMerge(command)) {
+      const group = isPrMerge(command) ? "pr" : "stack";
+      await discover(ctx, `gh ${group} merge`, false, commandTargets(command, group, ["merge"])[0], {
+        allowMergeWatch: true,
+        // A bare gh stack merge number may name a stack rather than a PR.
+        ignoreUnresolved: group === "stack",
+      });
       return;
     }
 
@@ -1928,7 +2328,12 @@ export default function prWatch(pi: ExtensionAPI): void {
               .join("\n")
           : "none";
       const watchedSha = state.watchedSha
-        ? `SHA ${state.watchedSha.sha}\nrepo: ${state.watchedSha.repo}`
+        ? [
+            `SHA ${state.watchedSha.sha}`,
+            `repo: ${state.watchedSha.repo}`,
+            ...(state.watchedSha.mergedPr ? [`merge commit of: ${state.watchedSha.mergedPr.url}`] : []),
+            ...(!state.watchedSha.mergedPr && state.watchedSha.branch ? [`branch: ${state.watchedSha.branch}`] : []),
+          ].join("\n")
         : "none";
       const pendingSummary = [
         ...state.pendingPrUpdates.map((pending) => {

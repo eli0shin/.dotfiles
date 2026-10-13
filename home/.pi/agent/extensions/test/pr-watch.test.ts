@@ -7,9 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import prWatch, {
+  commandTargets,
   prIdentityKey,
   prStatusIdentity,
   pullRequestUrlFromText,
+  pullRequestUrlsFromText,
   shouldTrackActivity,
 } from "../pr-watch.ts";
 
@@ -28,6 +30,8 @@ type PrFixture = {
   authorLogin: string;
   headRepo: string;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  mergeCommitSha?: string;
+  mergedAt?: string;
 };
 
 function createHarness() {
@@ -78,9 +82,9 @@ function createHarness() {
   let inboxCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
-  let currentBranch = "main";
-  let localSha = "main-sha";
-  let remoteBranchSha = "main-sha";
+  let currentBranch = "local-feature";
+  let localSha = "tip-sha";
+  let remoteBranchSha = "tip-sha";
   let repoAvailable = true;
   let selfLoginAvailable = true;
   let activitiesAvailable = true;
@@ -122,7 +126,11 @@ function createHarness() {
       execCalls.push({ command, args });
       if (command === "gh" && args[0] === "repo") {
         return repoAvailable
-          ? { code: 0, stdout: JSON.stringify({ nameWithOwner: "eli0shin/repos" }), stderr: "" }
+          ? {
+              code: 0,
+              stdout: JSON.stringify({ nameWithOwner: "eli0shin/repos", defaultBranchRef: { name: "main" } }),
+              stderr: "",
+            }
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {
@@ -142,6 +150,8 @@ function createHarness() {
             author: { login: pr.authorLogin },
             headRepository: { nameWithOwner: pr.headRepo },
             mergeable: pr.mergeable,
+            mergeCommit: pr.mergeCommitSha ? { oid: pr.mergeCommitSha } : null,
+            mergedAt: pr.mergedAt ?? null,
           }),
           stderr: "",
         };
@@ -360,6 +370,7 @@ function createHarness() {
   }
 
   return {
+    withFakeTimer,
     handlers,
     commands,
     execCalls,
@@ -515,7 +526,7 @@ test("status line prefixes only PRs from other repositories", async () => {
   const harness = createHarness();
   await harness.startSession();
   await harness.push();
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 
   await harness.activate(104);
   assert.equal(harness.statuses.at(-1), "PR watch: #104");
@@ -536,7 +547,7 @@ test("associated workers publish ordinary PR watch membership regardless of loca
     await harness.startSession();
     await harness.push();
     assert.equal(process.env.PI_PARENT_ORCHESTRATION_SESSION_ID, undefined);
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.deepEqual(
       (await harness.readWorkerSnapshot("session-123", "worker-session")).watchedPrs,
       [],
@@ -562,7 +573,7 @@ test("ordinary sessions do not publish worker snapshots", async () => {
   delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
   await harness.startSession();
   await harness.push();
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
   await harness.activate(104);
 
   await assert.rejects(harness.readWorkerSnapshot("session-123", "worker-session"));
@@ -999,7 +1010,7 @@ test("watches the session branch SHA and a PR created from another worktree", as
   await harness.shutdown();
 
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
 
 test("restores concurrent session-branch SHA and worktree PR watches on resume", async () => {
@@ -1013,7 +1024,7 @@ test("restores concurrent session-branch SHA and worktree PR watches on resume",
   await harness.shutdown();
 
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
 
 test("does not watch a SHA separately when its session branch has an open PR", async () => {
@@ -1128,45 +1139,43 @@ test("with no watched PRs, PR watch uses the current checkout branch tip", async
 
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
   assert.equal(
     harness.execCalls.some(
       ({ command, args }) =>
-        command === "gh" && args[0] === "api" && args[1] === "repos/eli0shin/repos/commits/main",
+        command === "gh" && args[0] === "api" && args[1] === "repos/eli0shin/repos/commits/local-feature",
     ),
     true,
   );
 });
 
-test("a failed SHA baseline after the session-branch PR closes remains retryable", async () => {
+test("a merged PR switches to its merge commit and keeps a failed run lookup retryable", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("remove-collapse-command");
   harness.setCurrentSha("abc104");
   await harness.startSession();
   await harness.activate(104);
   harness.prs.get(104)!.state = "MERGED";
+  harness.prs.get(104)!.mergeCommitSha = "merge-104-sha";
   harness.setRunsAvailable(false);
 
   await harness.runPoll();
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "abc104");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merge-104-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.mergedPr?.number, 104);
+  assert.equal(harness.statuses.at(-1), "PR watch: #104 merge merge-1");
 
   harness.setRunsAvailable(true);
-  harness.runs.push({
-    databaseId: 120,
-    attempt: 1,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/120",
-  });
+  harness.runs.push(completedRun(120, "Terraform"));
   await harness.runPoll();
   await harness.shutdown();
 
-  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA abc104/);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for the merge commit of PR #104 \(SHA merge-1\)/);
+  assert.match(harness.sentMessages[0] ?? "", /fix failures your PR caused/);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined, "a merge commit reports once");
 });
 
-test("a worktree PR keeps a failed restored SHA baseline retryable", async () => {
+test("a merged session-branch PR does not fall back to watching its branch tip", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("remove-collapse-command");
   harness.setCurrentSha("abc104");
@@ -1174,26 +1183,19 @@ test("a worktree PR keeps a failed restored SHA baseline retryable", async () =>
   await harness.activate(104);
   await harness.activate(105);
   harness.prs.get(104)!.state = "MERGED";
-  harness.setRunsAvailable(false);
+  harness.prs.get(104)!.mergeCommitSha = "merge-104-sha";
+  harness.runs.push(completedRun(119, "Terraform"));
 
   await harness.runPoll();
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "abc104");
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
 
-  harness.setRunsAvailable(true);
-  harness.runs.push({
-    databaseId: 119,
-    attempt: 1,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/119",
-  });
   await harness.runPoll();
   await harness.shutdown();
 
-  assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA abc104/);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  assert.equal(harness.sentMessages.length, 1);
 });
 
 test("an open worktree PR does not block CI for a changed session branch SHA", async () => {
@@ -1226,7 +1228,7 @@ test("SHA watch follows the remote branch tip when local HEAD is stale", async (
   harness.setLocalSha("stale-local-sha");
   await harness.startSession();
   await harness.push();
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 
   harness.setCurrentSha("remote-merge-sha");
   harness.runs.push({
@@ -1269,7 +1271,7 @@ test("gh pr merge starts SHA watch for the current branch", async () => {
   await harness.shutdown();
 
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
 
 test("gh run rerun starts SHA watch when nothing is being watched", async () => {
@@ -1281,7 +1283,7 @@ test("gh run rerun starts SHA watch when nothing is being watched", async () => 
   await harness.shutdown();
 
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
 
 test("gh run rerun does not add a second watch when a PR is already watched", async () => {
@@ -1333,7 +1335,7 @@ test("ordinary SHA watch reports a failed startup baseline", async () => {
         version: 4,
         mode: "active",
         watchedPrs: [],
-        watchedSha: { repo: "eli0shin/repos", sha: "main-sha" },
+        watchedSha: { repo: "eli0shin/repos", sha: "tip-sha" },
         pendingPrUpdates: [],
         recentGhOutputs: [],
       },
@@ -1344,7 +1346,7 @@ test("ordinary SHA watch reports a failed startup baseline", async () => {
   await harness.startSession("resume");
   await harness.shutdown();
 
-  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not baseline workflow runs for SHA main-sha/);
+  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not baseline workflow runs for SHA tip-sha/);
 });
 
 test("SHA watch reports a branch-tip lookup failure and retains its current SHA", async () => {
@@ -1356,8 +1358,8 @@ test("SHA watch reports a branch-tip lookup failure and retains its current SHA"
   await harness.runPoll();
   await harness.shutdown();
 
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
-  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch main/);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch local-feature/);
 });
 
 function completedRun(databaseId: number, name = "CI") {
@@ -1383,7 +1385,7 @@ test("SHA watch does not notify again when completed runs disappear and return",
   try {
     await harness.runPoll();
     assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA main-sh/);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha/);
 
     harness.runs.splice(0, 1);
     await harness.runPoll();
@@ -1599,6 +1601,259 @@ test("SHA watch notifies when a rerun reaches the same conclusion", async () => 
   );
 });
 
+async function runBash(harness: ReturnType<typeof createHarness>, command: string, output = ""): Promise<void> {
+  await harness.withFakeTimer(() =>
+    harness.handlers.get("tool_result")?.(
+      { toolName: "bash", input: { command }, content: [{ type: "text", text: output }] },
+      harness.ctx,
+    ),
+  );
+}
+
+function mergePr(harness: ReturnType<typeof createHarness>, number: number, sha: string, mergedAt?: string): void {
+  const pr = harness.prs.get(number)!;
+  pr.state = "MERGED";
+  pr.mergeCommitSha = sha;
+  pr.mergedAt = mergedAt;
+}
+
+test("reads PR targets from command arguments and skips flag values", () => {
+  assert.deepEqual(commandTargets("cd /repo && gh pr view 650 --json number,url | head -50", "pr", ["view"]), ["650"]);
+  assert.deepEqual(commandTargets("gh pr edit --body-file /tmp/pr.md 746", "pr", ["edit"]), ["746"]);
+  assert.deepEqual(commandTargets("gh pr view -R owner/repo 5", "pr", ["view"]), [
+    "https://github.com/owner/repo/pull/5",
+  ]);
+  assert.deepEqual(commandTargets('gh pr edit --title "Fix #123 crash" --body "Closes #123; see 4" 45', "pr", ["edit"]), [
+    "45",
+  ]);
+  assert.deepEqual(commandTargets("gh pr ready --body 'Bump retries to 3' && gh pr view 9", "pr", ["ready", "view"]), [
+    "9",
+  ]);
+  assert.deepEqual(commandTargets("gh pr merge 820 --squash --match-head-commit abc 2>&1", "pr", ["merge"]), ["820"]);
+  assert.deepEqual(commandTargets("gh stack link --base main auth-layer 42 --remote origin", "stack", ["link"]), [
+    "auth-layer",
+    "42",
+  ]);
+});
+
+test("collects every PR URL in command output", () => {
+  assert.deepEqual(pullRequestUrlsFromText(`${pr104Url}\n${pr105Url}\n${pr104Url}\n`), [pr104Url, pr105Url]);
+});
+
+test("gh pr create uses its output URL even when its title names another PR", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, 'gh pr create --title "Follow up #105" --body "Stacked on 105"', `${pr104Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+});
+
+test("a merge commit looks up runs in the merged PR's repository", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  harness.prs.get(104)!.url = "https://github.com/another-owner/another-repo/pull/104";
+  await harness.startSession();
+  await harness.activate(104);
+  mergePr(harness, 104, "merge-104-sha");
+
+  try {
+    await harness.runPoll();
+  } finally {
+    await harness.shutdown();
+  }
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "another-owner/another-repo");
+  assert.equal(
+    harness.execCalls.some(
+      ({ command, args }) =>
+        command === "gh" && args[0] === "run" && args.includes("merge-104-sha") && args.includes("another-owner/another-repo"),
+    ),
+    true,
+  );
+});
+
+test("ordinary sessions do not watch the default branch tip", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+
+  await harness.push();
+  await harness.rerun();
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  assert.equal(
+    harness.execCalls.some(({ command, args }) => command === "gh" && args[1] === "repos/eli0shin/repos/commits/main"),
+    false,
+  );
+});
+
+test("a worktree PR watched from the default branch checkout does not also watch the default branch", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+
+  await harness.activate(104);
+  harness.setCurrentSha("someone-elses-merge");
+  harness.runs.push(completedRun(130));
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  assert.equal(harness.sentMessages.length, 0);
+});
+
+test("resume drops a saved default-branch SHA watch", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  harness.setBranchEntries([
+    {
+      type: "custom",
+      customType: "pr-watch-state",
+      data: {
+        version: 4,
+        mode: "active",
+        watchedPrs: [],
+        watchedSha: { repo: "eli0shin/repos", sha: "tip-sha" },
+        pendingPrUpdates: [],
+        recentGhOutputs: [],
+      },
+    },
+  ]);
+
+  await harness.startSession("resume");
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("gh pr view with a PR number watches that PR rather than the current branch", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+
+  await runBash(harness, "cd ~/code/repos && gh pr view 105 --json title,body,files | head -50", '{"title":"x"}');
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("gh stack submit enrolls every PR in its output", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, "cd ~/code/repos-stack && gh stack submit --auto 2>&1", `Created ${pr104Url}\nCreated ${pr105Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104, 105]);
+});
+
+test("gh stack link enrolls the PRs named by its arguments and skips a stack number", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, "gh stack link 7 104 105", "Stack updated\n");
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104, 105]);
+  assert.equal(harness.savedStates.at(-1)?.lastError, undefined);
+});
+
+for (const command of ["gh pr merge 104 --squash --delete-branch", "gh stack merge 104 --yes --squash"]) {
+  test(`${command.split(" ").slice(0, 3).join(" ")} watches the merge commit of your PR`, async () => {
+    const harness = createHarness();
+    harness.setCurrentBranch("main");
+    await harness.startSession();
+    mergePr(harness, 104, "merge-104-sha");
+
+    await runBash(harness, command, "Merged\n");
+    await harness.shutdown();
+
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merge-104-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.mergedPr?.url, pr104Url);
+  });
+}
+
+test("a merged PR you did not author does not watch its merge commit", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  harness.prs.get(104)!.authorLogin = "teammate";
+  await harness.startSession();
+  await harness.activate(104);
+  mergePr(harness, 104, "merge-104-sha");
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("a merge commit waits for chained runs before reporting", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+  await harness.activate(104);
+  mergePr(harness, 104, "merge-104-sha");
+  const deploy = { ...completedRun(140, "Deploy"), event: "push", updatedAt: new Date().toISOString() };
+  harness.runs.push(deploy);
+
+  try {
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 0, "a just-finished run may still start a workflow_run");
+
+    deploy.updatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    harness.runs.push({ ...completedRun(141, "Post-deploy verify"), event: "workflow_run", updatedAt: deploy.updatedAt });
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /merge commit of PR #104/);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("a merge commit ignores scheduled and manually dispatched runs", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+  await harness.activate(104);
+  mergePr(harness, 104, "merge-104-sha");
+  harness.runs.push(
+    { ...completedRun(150), event: "push" },
+    { ...completedRun(151, "Reconcile previews"), event: "schedule", status: "in_progress", conclusion: "" },
+    { ...completedRun(152, "Deploy production"), event: "workflow_dispatch", status: "in_progress", conclusion: "" },
+  );
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+});
+
+test("a feature branch tip ignores scheduled runs", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.push();
+  harness.runs.push({ ...completedRun(160, "Nightly"), event: "schedule" });
+
+  try {
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 0);
+
+    harness.runs.push({ ...completedRun(161), event: "push" });
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha on your branch local-feature\./);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
 test("standard PR watch notifies when failing CI finishes", async () => {
   const harness = createHarness();
   await harness.activate(104);
@@ -1746,6 +2001,7 @@ test("conflict notification does not tell a reviewer to modify another author's 
 
 test("orchestration watches a changed current SHA and reports already-complete CI in the same poll", async () => {
   const harness = createHarness();
+  harness.setCurrentBranch("main");
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
   await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
@@ -1763,7 +2019,7 @@ test("orchestration watches a changed current SHA and reports already-complete C
   try {
     await harness.startSession();
     assert.equal(harness.sentMessages.length, 0, "the first observed SHA must be baselined");
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
 
     harness.setCurrentSha("merged-sha");
@@ -1807,7 +2063,7 @@ test("orchestration retries and baselines its first SHA observation", async () =
     harness.setCurrentTargetAvailable(true);
     await harness.runPoll();
 
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.equal(harness.sentMessages.length, 0);
     assert.equal(
       harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "repo").length >= 2,
@@ -1841,7 +2097,7 @@ test("orchestration retries a failed first-SHA baseline without reporting existi
     harness.setRunsAvailable(true);
     await harness.runPoll();
 
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.equal(harness.sentMessages.length, 0);
   } finally {
     await harness.shutdown();
@@ -1876,7 +2132,7 @@ test("orchestration preserves its SHA baseline across session resume", async () 
     await harness.runPoll();
 
     assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA main-sh\./);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha\./);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -2197,7 +2453,7 @@ test("reset preserves orchestration mode and reports a branch-tip failure", asyn
     await harness.shutdown();
 
     assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "session-123");
-    assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch main/);
+    assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch local-feature/);
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
@@ -2364,7 +2620,7 @@ test("persisted orchestration session wins and restores the process environment"
     await harness.startSession();
 
     assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "persisted-session");
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
     assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "persisted-session");
     assert.equal(
@@ -2877,7 +3133,7 @@ test("closing a PR or manually removing it discards its pending updates", async 
   harness.prs.get(104)!.state = "MERGED";
   await harness.runPoll();
   assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
-  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 
   const secondHarness = createHarness();
   await secondHarness.activate(104);
@@ -2886,5 +3142,5 @@ test("closing a PR or manually removing it discards its pending updates", async 
   await secondHarness.runPoll();
   await secondHarness.commands.get("pr-watch")?.handler("remove 104", secondHarness.ctx);
   assert.deepEqual(secondHarness.savedStates.at(-1)?.pendingPrUpdates, []);
-  assert.equal(secondHarness.savedStates.at(-1)?.watchedSha?.sha, "main-sha");
+  assert.equal(secondHarness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
