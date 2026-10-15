@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+# Save a screenshot to the macOS screenshot folder and copy it to the clipboard.
+# `screencapture -c` copies only image data, which Finder cannot paste and
+# terminals do not paste with Cmd+V. The clipboard gets the saved file and its
+# PNG data, so Finder, Pi, and image-aware apps can all paste the screenshot.
+#
+# Usage: screenshot [screencapture options], for example `screenshot -i`.
+set -uo pipefail
+
+SCREENCAPTURE_BIN=${SCREENCAPTURE_BIN:-/usr/sbin/screencapture}
+OSASCRIPT_BIN=${OSASCRIPT_BIN:-/usr/bin/osascript}
+
+dir=$(defaults read com.apple.screencapture location 2>/dev/null) || dir="$HOME/Desktop"
+dir=${dir/#\~/$HOME}
+mkdir -p "$dir" || exit 1
+
+file="$dir/Screenshot $(date '+%Y-%m-%d at %-I.%M.%S %p').png"
+"$SCREENCAPTURE_BIN" -t png "$@" "$file" || exit 1
+
+# Interactive captures leave no file when the selection is cancelled.
+[[ -s "$file" ]] || exit 0
+
+"$OSASCRIPT_BIN" -l JavaScript - "$file" <<'JXA' >/dev/null || exit 1
+ObjC.import('AppKit')
+function run(argv) {
+    const url = $.NSURL.fileURLWithPath(argv[0])
+    const png = $.NSData.dataWithContentsOfFile(argv[0])
+    const item = $.NSPasteboardItem.alloc.init
+    item.setStringForType(url.absoluteString, 'public.file-url')
+    item.setDataForType(png, 'public.png')
+    const pasteboard = $.NSPasteboard.generalPasteboard
+    pasteboard.clearContents
+    if (!pasteboard.writeObjects($([item]))) {
+        throw new Error('Failed to write screenshot to the clipboard')
+    }
+}
+JXA

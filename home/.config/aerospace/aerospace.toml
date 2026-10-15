@@ -116,6 +116,6 @@ cmd-shift-0 = "move-node-to-workspace 10; workspace 10"
 cmd-alt-f = "fullscreen --no-outer-gaps"
 
 # The workspace bindings replace the native screenshot shortcuts.
-ctrl-shift-3 = "exec-and-forget screencapture -c"
-ctrl-shift-4 = "exec-and-forget screencapture -i -c"
+ctrl-shift-3 = "exec-and-forget $HOME/.local/bin/screenshot"
+ctrl-shift-4 = "exec-and-forget $HOME/.local/bin/screenshot -i"
 ctrl-shift-5 = "exec-and-forget open -a Screenshot"
