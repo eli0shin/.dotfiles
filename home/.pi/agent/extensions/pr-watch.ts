@@ -28,13 +28,14 @@ type MergedPr = {
   mergedAt?: string;
 };
 
-// Outside an orchestration, a watched SHA is either the tip of the session's
-// feature branch or, when mergedPr is set, the merge commit of a watched PR.
+// Outside an orchestration, watch a feature branch tip or a fixed commit from
+// a direct default-branch push or a watched PR's merge.
 type WatchedSha = {
   repo: string;
   sha: string;
   branch?: string;
   mergedPr?: MergedPr;
+  pushed?: boolean;
   watchedAt?: number;
   notifiedChecksKey?: string;
   notifiedRunKeys?: string[];
@@ -56,6 +57,7 @@ type PendingShaUpdate = {
   runsKey: string;
   branch?: string;
   mergedPr?: MergedPr;
+  pushed?: boolean;
 };
 
 type WorkerSettlement = {
@@ -212,10 +214,10 @@ const MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS = 100;
 const MAX_MERGED_BRANCHES = 20;
 // Chained workflow_run runs (e.g. post-deploy verification) start shortly after
 // the run they follow, so a merge commit waits this long after its last run
-// update before reporting.
-const MERGE_SETTLE_MS = 3 * 60_000;
-const MERGE_WATCH_TIMEOUT_MS = 30 * 60_000;
-const MERGE_RUN_EVENTS = ["push", "workflow_run"];
+// update before reporting. Direct default-branch pushes use the same policy.
+const FIXED_SHA_SETTLE_MS = 3 * 60_000;
+const FIXED_SHA_WATCH_TIMEOUT_MS = 30 * 60_000;
+const FIXED_SHA_RUN_EVENTS = ["push", "workflow_run"];
 // gh pr create takes no PR argument; its output URL identifies the new PR.
 const PR_TARGET_SUBCOMMANDS = ["view", "ready", "edit", "checkout"];
 const VALUE_FLAGS = new Set([
@@ -905,19 +907,18 @@ export default function prWatch(pi: ExtensionAPI): void {
     return { watchable: branch !== defaultBranch };
   }
 
-  function mergeWatchActive(): boolean {
-    return !state.orchestrationSessionId && Boolean(state.watchedSha?.mergedPr);
+  function fixedShaWatchActive(): boolean {
+    return !state.orchestrationSessionId && Boolean(state.watchedSha?.mergedPr || state.watchedSha?.pushed);
   }
 
   function clearBranchTipWatch(): boolean {
-    if (!state.watchedSha || mergeWatchActive()) return false;
+    if (!state.watchedSha || fixedShaWatchActive()) return false;
     state.watchedSha = undefined;
     state.pendingShaUpdate = undefined;
     return true;
   }
 
-  // Outside an orchestration, the merge commit of a PR you authored is the only
-  // default-branch SHA PR Watch reports. A later merge replaces an earlier one.
+  // A later merge or direct default-branch push replaces the previous fixed SHA.
   function startMergeWatch(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
     if (state.orchestrationSessionId || state.workerOrchestrationSessionId) return false;
     if (!merged.sha || !state.selfLogin || pr.authorLogin !== state.selfLogin) return false;
@@ -947,7 +948,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     reason: string,
     notify: boolean,
   ): Promise<boolean> {
-    if (mergeWatchActive()) {
+    if (fixedShaWatchActive()) {
       startPolling(ctx);
       setStatus(ctx);
       return true;
@@ -1000,6 +1001,60 @@ export default function prWatch(pi: ExtensionAPI): void {
     startPolling(ctx);
     setStatus(ctx);
     if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
+    return true;
+  }
+
+  async function watchPushedDefaultBranch(
+    ctx: ExtensionContext,
+    command: string,
+    output: string,
+  ): Promise<boolean> {
+    if (state.orchestrationSessionId) return false;
+    const pushes = commandSegments(command).filter((tokens) => tokens[0] === "git" && tokens[1] === "push");
+    // A dry run prints the same ref updates as a real push.
+    if (pushes.some((tokens) => tokens.some((token) => token === "--dry-run" || /^-[^-]*n/.test(token)))) return false;
+
+    const repo = await ensureCurrentRepo(ctx);
+    if (!repo) return false;
+    const branch = await defaultBranchFor(repo, ctx);
+    if (!branch) return false;
+    // Git reports the new commit in ordinary and --porcelain update summaries.
+    // Prefer that immutable ID: a later command can move HEAD or the source ref,
+    // and another user's push can move the remote tip before this handler runs.
+    let pushedRef: string | undefined;
+    for (const line of output.split("\n")) {
+      const porcelain = line.match(/^([ *+=!-])\t([^:\t]+):([^\t]+)\t(.*)$/);
+      if (porcelain && ![" ", "+", "*"].includes(porcelain[1] ?? "")) continue;
+      if (/\[(?:(?:remote )?rejected|remote failure|deleted)\]/.test(line)) continue;
+      const ordinary = line.match(/(\S+)\s+->\s+(\S+)/);
+      const source = porcelain?.[2] ?? ordinary?.[1];
+      const destination = porcelain?.[3] ?? ordinary?.[2];
+      if (!source || source === "(none)" || (destination !== branch && destination !== `refs/heads/${branch}`)) continue;
+      const newCommit = line.match(/\b[0-9a-f]{4,64}\.{2,3}([0-9a-f]{4,64})\b/i)?.[1];
+      // New-branch output has no commit ID; resolve its local source instead.
+      pushedRef = newCommit ?? source;
+    }
+    if (!pushedRef) return false;
+    const result = await pi.exec("git", ["rev-parse", "--verify", "--end-of-options", `${pushedRef}^{commit}`], {
+      timeout: 30_000,
+    });
+    const sha = result.stdout.trim();
+    if (result.code !== 0 || !sha) {
+      state.lastError = `Could not resolve the pushed commit for branch ${branch}`;
+      save();
+      setStatus(ctx);
+      return true;
+    }
+
+    if (state.watchedSha?.repo !== repo || state.watchedSha.sha !== sha || !state.watchedSha.pushed) {
+      state.watchedSha = { repo, sha, branch, pushed: true, watchedAt: Date.now() };
+      state.pendingShaUpdate = undefined;
+    }
+    // Unlike branch-tip activation, do not baseline away CI that already finished.
+    state.lastError = undefined;
+    save();
+    startPolling(ctx);
+    setStatus(ctx);
     return true;
   }
 
@@ -1182,7 +1237,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
-    if (mergeWatchActive()) return { changed: false };
+    if (fixedShaWatchActive()) return { changed: false };
     const repo = await ensureCurrentRepo(ctx);
     if (!repo) return { changed: false, error: "Could not resolve the current GitHub repository" };
     const current = await currentBranchName();
@@ -1247,7 +1302,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     return runs.filter((run) => {
       const event = run.event?.toLowerCase();
       if (!event) return true;
-      if (watched.mergedPr) return MERGE_RUN_EVENTS.includes(event);
+      if (watched.mergedPr || watched.pushed) return FIXED_SHA_RUN_EVENTS.includes(event);
       return event !== "schedule";
     });
   }
@@ -1256,7 +1311,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const latest = Math.max(
       ...runs.map((run) => Date.parse(run.updatedAt ?? "")).filter((time) => Number.isFinite(time)),
     );
-    return !Number.isFinite(latest) || Date.now() - latest >= MERGE_SETTLE_MS;
+    return !Number.isFinite(latest) || Date.now() - latest >= FIXED_SHA_SETTLE_MS;
   }
 
   function isApprovalWaitingCheck(check: Check): boolean {
@@ -1610,6 +1665,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (pending.mergedPr && !state.orchestrationSessionId) {
       return `CI finished for the merge commit of PR #${pending.mergedPr.number} (SHA ${pending.sha.slice(0, 7)}).\n\nInspect this commit's workflow runs with gh and confirm that your change deployed and passed its post-deploy checks. If a run produced a generated diff (e.g. IaC), read it from the run logs (e.g. \`gh run view\`) and confirm it matches the change you merged. Other changes on the default branch can also fail these runs: fix failures your PR caused, and summarize the rest without changing them.\n\nPR: ${pending.mergedPr.url}\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
     }
+    if (pending.pushed && !state.orchestrationSessionId) {
+      return `CI finished for SHA ${pending.sha.slice(0, 7)} pushed to ${pending.branch ?? "the default branch"}.\n\nInspect this commit's workflow runs with gh and confirm that your change deployed and passed its post-deploy checks. If a run produced a generated diff (e.g. IaC), read it from the run logs (e.g. \`gh run view\`) and confirm it matches the change you pushed. Other changes on the default branch can also fail these runs: fix failures your push caused, and summarize the rest without changing them.\n\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
+    }
     const headline =
       pending.branch && !state.orchestrationSessionId
         ? `CI finished for SHA ${pending.sha.slice(0, 7)} on your branch ${pending.branch}.`
@@ -1777,11 +1835,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     ) {
       state.pendingShaUpdate = undefined;
     }
-    // A merge commit reports once; afterwards the session is back to watching
-    // only its PRs and feature branch.
+    // A fixed commit reports once; afterwards watch only PRs and feature branches.
     if (
-      delivery.pendingShaUpdate?.mergedPr &&
-      mergeWatchActive() &&
+      delivery.pendingShaUpdate &&
+      fixedShaWatchActive() &&
       state.watchedSha?.repo === delivery.pendingShaUpdate.repo &&
       state.watchedSha.sha === delivery.pendingShaUpdate.sha
     ) {
@@ -1972,12 +2029,12 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const runs = await fetchRunsForSha(ctx);
     if (!runs) return 0;
-    const mergeWatch = mergeWatchActive();
+    const fixedWatch = fixedShaWatchActive();
     if (
-      mergeWatch &&
+      fixedWatch &&
       runs.length === 0 &&
       state.watchedSha.watchedAt !== undefined &&
-      Date.now() - state.watchedSha.watchedAt > MERGE_WATCH_TIMEOUT_MS
+      Date.now() - state.watchedSha.watchedAt > FIXED_SHA_WATCH_TIMEOUT_MS
     ) {
       state.watchedSha = undefined;
       state.pendingShaUpdate = undefined;
@@ -1992,7 +2049,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.pendingShaUpdate = undefined;
     }
     if (!allRunsTerminal) return 0;
-    if (mergeWatch && !runsSettled(runs)) return 0;
+    if (fixedWatch && !runsSettled(runs)) return 0;
 
     const pendingKeys = pendingRunKeys(state.watchedSha);
     const knownKeys = new Set([...deliveredKeys, ...pendingKeys]);
@@ -2008,6 +2065,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       runsKey: bufferedKey,
       branch: state.watchedSha.branch,
       mergedPr: state.watchedSha.mergedPr,
+      pushed: state.watchedSha.pushed,
     };
     return 1;
   }
@@ -2111,7 +2169,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     let shaSyncError: string | undefined;
     if (state.orchestrationSessionId) {
       shaSyncError = (await syncWatchedSha(ctx)).error;
-    } else if (savedSha && !mergeWatchActive()) {
+    } else if (savedSha && !fixedShaWatchActive()) {
       state.watchedSha = structuredClone(savedSha);
       const shaSync = await syncWatchedSha(ctx);
       shaSyncError = shaSync.error;
@@ -2119,7 +2177,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         !shaSync.changed &&
         !shaSync.error &&
         state.watchedSha &&
-        !state.watchedSha.mergedPr &&
+        !fixedShaWatchActive() &&
         !(await baselineCurrentShaState(ctx))
       ) {
         shaSyncError = `Could not baseline workflow runs for SHA ${state.watchedSha.sha}`;
@@ -2188,7 +2246,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (isGitPush(command)) {
-      await discover(ctx, "git push", false);
+      if (!(await watchPushedDefaultBranch(ctx, command, output))) await discover(ctx, "git push", false);
       return;
     }
 

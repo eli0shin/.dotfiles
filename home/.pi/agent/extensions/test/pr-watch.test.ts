@@ -91,6 +91,7 @@ function createHarness() {
   let shaAvailable = true;
   let branchTipAvailable = true;
   let runsAvailable = true;
+  let gitDirectory: string | undefined;
 
   function prNumberFromArgs(args: string[]): number | undefined {
     for (const arg of args) {
@@ -124,6 +125,10 @@ function createHarness() {
     },
     async exec(command: string, args: string[]) {
       execCalls.push({ command, args });
+      if (command === "git" && gitDirectory) {
+        const result = spawnSync(command, args, { cwd: gitDirectory, encoding: "utf8" });
+        return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+      }
       if (command === "gh" && args[0] === "repo") {
         return repoAvailable
           ? {
@@ -265,7 +270,7 @@ function createHarness() {
         {
           toolName: "bash",
           input: { command: "git push" },
-          content: [{ type: "text", text: "main -> main" }],
+          content: [{ type: "text", text: `${currentBranch} -> ${currentBranch}` }],
         },
         ctx,
       ),
@@ -421,6 +426,9 @@ function createHarness() {
     },
     setLocalSha(sha: string) {
       localSha = sha;
+    },
+    setGitDirectory(directory: string) {
+      gitDirectory = directory;
     },
     setCurrentTargetAvailable(value: boolean) {
       repoAvailable = value;
@@ -1674,12 +1682,39 @@ test("a merge commit looks up runs in the merged PR's repository", async () => {
   );
 });
 
-test("ordinary sessions do not watch the default branch tip", async () => {
+test("a chained direct push to main watches the pushed SHA without following later commits", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");
   await harness.startSession();
 
-  await harness.push();
+  try {
+    await runBash(
+      harness,
+      'git add terraform/envs/homelab/jellyfin_proxbox8.tf && git commit -m "Expand Jellyfin media\n volume by 500 GiB" && git push origin main',
+      "old-sha..tip-sha  main -> main\n",
+    );
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+
+    harness.setCurrentSha("someone-elses-merge");
+    harness.runs.push({ ...completedRun(129), event: "push" });
+    await harness.runPoll();
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha/);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+    await harness.runPoll();
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+    assert.equal(harness.sentMessages.length, 1);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("ordinary sessions do not follow the default branch tip on startup or rerun", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+
   await harness.rerun();
   await harness.shutdown();
 
@@ -1689,6 +1724,130 @@ test("ordinary sessions do not watch the default branch tip", async () => {
     false,
   );
 });
+
+test("a direct push pins the local source even when the remote default branch has moved", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("local-feature");
+  harness.setLocalSha("pushed-sha");
+  harness.setCurrentSha("someone-elses-merge");
+  await harness.startSession();
+
+  await runBash(harness, "git push origin HEAD:main", "old-sha..pushed-sha HEAD -> main\n");
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "pushed-sha");
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.branch, "main");
+  assert.ok(harness.execCalls.some(({ command, args }) => command === "git" && args.includes("HEAD^{commit}")));
+});
+
+for (const porcelain of [false, true]) {
+  test(`a ${porcelain ? "porcelain" : "normal"} push watches the actual commit after switching branches`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "pr-watch-git-"));
+    const directory = join(root, "repo");
+    const remote = join(root, "remote.git");
+    await mkdir(directory);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git("init", "--bare", remote);
+    git("init", "-b", "main");
+    git("config", "user.name", "PR Watch Test");
+    git("config", "user.email", "pr-watch@example.invalid");
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Initial commit");
+    git("remote", "add", "origin", remote);
+    git("push", "-u", "origin", "main");
+    git("branch", "other");
+    git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Pushed change");
+    const pushedSha = git("rev-parse", "HEAD");
+    const command = `git push ${porcelain ? "--porcelain " : ""}origin HEAD:main && git switch other`;
+    const result = spawnSync("bash", ["-c", command], { cwd: directory, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.notEqual(git("rev-parse", "HEAD"), pushedSha);
+
+    const harness = createHarness();
+    harness.setGitDirectory(directory);
+    await harness.startSession();
+    try {
+      await runBash(harness, command, `${result.stdout}\n${result.stderr}`);
+      assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, pushedSha);
+      assert.equal(harness.savedStates.at(-1)?.watchedSha?.pushed, true);
+    } finally {
+      await harness.shutdown();
+    }
+  });
+}
+
+test("a direct push reports already-complete CI and survives resume without following the remote tip", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+  harness.runs.push({ ...completedRun(131), event: "push" });
+
+  try {
+    await harness.push();
+    harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }]);
+    harness.setCurrentSha("someone-elses-merge");
+    await harness.startSession("resume");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha pushed to main/);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("a later direct push replaces the previous fixed SHA", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+  await harness.activate(104);
+  mergePr(harness, 104, "merge-104-sha");
+  await harness.runPoll();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merge-104-sha");
+
+  await harness.push();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+  harness.setLocalSha("next-push");
+  await harness.push();
+  await harness.shutdown();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "next-push");
+});
+
+test("a direct push waits for chained runs and ignores unrelated workflow events", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.startSession();
+  await harness.push();
+  const deploy = { ...completedRun(132, "Deploy"), event: "push", updatedAt: new Date().toISOString() };
+  harness.runs.push(
+    deploy,
+    { ...completedRun(133, "Nightly"), event: "schedule", status: "in_progress", conclusion: "" },
+    { ...completedRun(134, "Manual"), event: "workflow_dispatch", status: "in_progress", conclusion: "" },
+  );
+
+  try {
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 0);
+    deploy.updatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    harness.runs.push({ ...completedRun(135, "Verify"), event: "workflow_run", updatedAt: deploy.updatedAt });
+    await harness.runPoll();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+for (const command of ["git push --dry-run origin main", "git push -n origin main"]) {
+  test(`${command} does not start a fixed SHA watch`, async () => {
+    const harness = createHarness();
+    harness.setCurrentBranch("main");
+    await harness.startSession();
+    await runBash(harness, command, "old-sha..tip-sha main -> main\n");
+    await harness.shutdown();
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  });
+}
 
 test("a worktree PR watched from the default branch checkout does not also watch the default branch", async () => {
   const harness = createHarness();
