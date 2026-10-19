@@ -1,6 +1,6 @@
 ---
 name: jira-acli
-description: Reads and lightly updates Jira Cloud work items through Atlassian CLI (`acli`), including metadata, ADF descriptions, comments, attachments, and adding reference links as comments. Use when the user asks to read, inspect, summarize, triage, comment on, or update a Jira issue/work item via acli, especially keys like `FCC-114`.
+description: Read and update Jira work items through Atlassian CLI (`acli`). Use when the user asks to read, inspect, summarize, triage, comment on, or update a Jira issue/work item via acli, especially keys like `FCC-114`.
 ---
 
 # Jira via acli
@@ -81,7 +81,30 @@ acli jira workitem transition --key FCC-114 --status "<status>" --yes
 
 To abandon a ticket, transition it to `Abandoned`. For any other status, use the exact name the user gives; `acli` cannot list a ticket's allowed transitions, so when the name is unknown, ask rather than guess.
 
-Before changing Jira state or fields, confirm with the user. Adding a requested comment/link is low-risk, but still report exactly what was added.
+Before changing Jira state or fields, confirm with the user.
+
+## Fields acli can't edit: REST API with acli's token
+
+`acli jira workitem edit` can't set `parent` (moving a ticket to another epic), and its `--from-json` rejects the field. Call the Jira REST API with acli's own OAuth token, which lives in the macOS keychain as gzipped JSON behind a `go-keyring-base64:` prefix:
+
+```bash
+profile=$(awk '/^current_profile:/ {print $2}' ~/.config/acli/jira_config.yaml)  # <cloud_id>:<account_id>
+cloud_id=${profile%%:*}
+token=$(security find-generic-password -s acli -a "oauth:$profile" -w | python3 -c '
+import sys, json, base64, gzip
+print(json.loads(gzip.decompress(base64.b64decode(sys.stdin.read().strip().split(":", 1)[1])))["access_token"])')
+
+curl -sS -o /dev/null -w '%{http_code}\n' -X PUT \
+  "https://api.atlassian.com/ex/jira/$cloud_id/rest/api/3/issue/FCC-1383" \
+  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  -d '{"fields":{"parent":{"key":"FCC-1474"}}}'
+unset token
+```
+
+- The base URL is the OAuth gateway, `https://api.atlassian.com/ex/jira/<cloud_id>`, not the site URL.
+- A successful `PUT` returns `204`. Confirm with `acli jira workitem view <key> --fields parent --json`.
+- The same token works for any other REST call acli lacks. Keep it out of output and logs.
+- On a `401`, the token has expired: run `acli jira auth login`, then read it again. Adding a requested comment/link is low-risk, but still report exactly what was added.
 
 ## Attachments
 
