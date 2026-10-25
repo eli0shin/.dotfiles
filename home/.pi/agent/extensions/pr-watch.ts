@@ -191,6 +191,8 @@ type DiscoverOptions = {
   allowMergeWatch?: boolean;
   // Stack arguments may be stack numbers, which do not resolve as PRs.
   ignoreUnresolved?: boolean;
+  // The user named this PR, so a PR that is not enrolled is reported.
+  explicit?: boolean;
 };
 
 type BranchResult = { ok: true; branch: string } | { ok: false; error: string };
@@ -906,15 +908,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     );
   }
 
-  // An orchestrator watches its landing branch. Every other session watches
-  // only feature branches: the default branch moves with everyone's merges, and
-  // a merged branch is covered by its merge commit.
+  // Branch-tip watches cover only feature branches: the default branch moves
+  // with everyone's merges, and a merged branch is covered by its merge commit.
   async function branchTipIsWatchable(
     repo: string,
     branch: string,
     ctx: ExtensionContext,
   ): Promise<{ watchable: boolean; error?: string }> {
-    if (state.orchestrationSessionId) return { watchable: true };
     if (state.mergedBranches?.includes(mergedBranchKey(repo, branch))) return { watchable: false };
     const defaultBranch = await defaultBranchFor(repo, ctx);
     if (!defaultBranch) return { watchable: false, error: `Could not resolve the default branch of ${repo}` };
@@ -922,7 +922,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function fixedShaWatchActive(): boolean {
-    return !state.orchestrationSessionId && Boolean(state.watchedSha?.mergedPr || state.watchedSha?.pushed);
+    return Boolean(state.watchedSha?.mergedPr || state.watchedSha?.pushed);
   }
 
   function clearBranchTipWatch(): boolean {
@@ -933,8 +933,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   // A later merge or direct default-branch push replaces the previous fixed SHA.
+  // An orchestrator reaches this only for its worker PRs.
   function startMergeWatch(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
-    if (state.orchestrationSessionId || state.workerOrchestrationSessionId) return false;
+    if (state.workerOrchestrationSessionId) return false;
     if (!merged.sha || !state.selfLogin || pr.authorLogin !== state.selfLogin) return false;
 
     const current = state.watchedSha?.mergedPr;
@@ -1102,6 +1103,19 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (pr?.state === "OPEN") {
+      // An orchestrator watches only worker PRs. Viewing any other PR must not
+      // enroll it, or its finished CI reads as a worker PR event.
+      const coordinates = { repo: repositoryFromPrUrl(pr.url) ?? repoName, number: pr.number };
+      if (state.orchestrationSessionId && !isOrchestrationMember(coordinates)) {
+        if (options.explicit) {
+          ctx.ui.notify(
+            `PR #${pr.number} is not a worker PR; an orchestration watches only its workers' PRs, so it was not added.`,
+            "info",
+          );
+        }
+        return false;
+      }
+
       await refreshSelfLogin(ctx);
 
       const watchedPr: WatchedPr = {
@@ -1140,7 +1154,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       return true;
     }
 
-    if (pr?.state === "MERGED" && !state.orchestrationSessionId) {
+    if (pr?.state === "MERGED") {
       const mergedPr: WatchedPr = {
         repo: repositoryFromPrUrl(pr.url) ?? repoName,
         number: pr.number,
@@ -1153,11 +1167,20 @@ export default function prWatch(pi: ExtensionAPI): void {
       const wasWatched = state.watchedPrs.some(
         (candidate) => prIdentityKey(candidate.pr) === prIdentityKey(mergedPr),
       );
-      if (wasWatched || options.allowMergeWatch) {
+      const mayWatchMerge =
+        wasWatched ||
+        (options.allowMergeWatch && (!state.orchestrationSessionId || isOrchestrationMember(mergedPr)));
+      if (mayWatchMerge) {
         await refreshSelfLogin(ctx);
         const merged = { sha: pr.mergeCommit?.oid, mergedAt: pr.mergedAt ?? undefined };
         if (handleMergedPr(mergedPr, merged)) {
           removePr(mergedPr);
+          // A worker snapshot can still list the merged PR; do not rediscover it.
+          if (state.orchestrationSessionId) {
+            state.resolvedOrchestrationPrUrls = [
+              ...new Set([...(state.resolvedOrchestrationPrUrls ?? []), pr.url]),
+            ];
+          }
           state.lastError = undefined;
           save();
           startPolling(ctx);
@@ -1200,6 +1223,16 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (state.orchestrationSessionId) return false;
     return watchCurrentBranch(ctx, repoName, reason, notify);
+  }
+
+  function isOrchestrationMember(pr: Pick<WatchedPr, "repo" | "number">): boolean {
+    const key = prIdentityKey(pr);
+    return (
+      state.watchedPrs.some((watched) => prIdentityKey(watched.pr) === key) ||
+      Object.values(state.workerSnapshots ?? {}).some((snapshot) =>
+        snapshot.watchedPrs.some((member) => prIdentityKey(member) === key),
+      )
+    );
   }
 
   function reconcilePendingPr(pr: WatchedPr): void {
@@ -1252,16 +1285,16 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
     if (fixedShaWatchActive()) return { changed: false };
+    // An orchestrator watches only the merge commits of its worker PRs.
+    if (state.orchestrationSessionId) return { changed: clearBranchTipWatch() };
     const repo = await ensureCurrentRepo(ctx);
     if (!repo) return { changed: false, error: "Could not resolve the current GitHub repository" };
     const current = await currentBranchName();
     if (!current.ok) return { changed: false, error: current.error };
-    if (!state.orchestrationSessionId) {
-      if (hasWatchedPrForBranch(repo, current.branch)) return { changed: clearBranchTipWatch() };
-      const watchability = await branchTipIsWatchable(repo, current.branch, ctx);
-      if (watchability.error) return { changed: false, error: watchability.error };
-      if (!watchability.watchable) return { changed: clearBranchTipWatch() };
-    }
+    if (hasWatchedPrForBranch(repo, current.branch)) return { changed: clearBranchTipWatch() };
+    const watchability = await branchTipIsWatchable(repo, current.branch, ctx);
+    if (watchability.error) return { changed: false, error: watchability.error };
+    if (!watchability.watchable) return { changed: clearBranchTipWatch() };
     const branchTip = await remoteBranchTip(repo, current.branch);
     if (!branchTip.ok) return { changed: false, error: branchTip.error };
     const sha = branchTip.sha;
@@ -1271,7 +1304,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.watchedSha = { repo, sha, branch: branchTip.branch };
     state.pendingShaUpdate = undefined;
     if (firstObservation && !(await baselineCurrentShaState(ctx))) {
-      if (state.orchestrationSessionId) state.watchedSha = undefined;
       return { changed: false, error: `Could not baseline workflow runs for SHA ${sha}` };
     }
     return { changed: true };
@@ -1312,7 +1344,6 @@ export default function prWatch(pi: ExtensionAPI): void {
   // manual dispatch is usually someone else's deploy. Neither reports on the
   // watched change.
   function relevantRuns(runs: WorkflowRun[], watched: WatchedSha): WorkflowRun[] {
-    if (state.orchestrationSessionId) return runs;
     return runs.filter((run) => {
       const event = run.event?.toLowerCase();
       if (!event) return true;
@@ -1676,7 +1707,10 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function buildShaChecksMessage(pending: PendingShaUpdate): string {
-    if (pending.mergedPr && !state.orchestrationSessionId) {
+    if (pending.mergedPr && state.orchestrationSessionId) {
+      return `CI finished for the merge commit of worker PR #${pending.mergedPr.number} (SHA ${pending.sha.slice(0, 7)}).\n\n${pending.mergedPr.url}`;
+    }
+    if (pending.mergedPr) {
       return `CI finished for the merge commit of PR #${pending.mergedPr.number} (SHA ${pending.sha.slice(0, 7)}).\n\nInspect this commit's workflow runs with gh and confirm that your change deployed and passed its post-deploy checks. If a run produced a generated diff (e.g. IaC), read it from the run logs (e.g. \`gh run view\`) and confirm it matches the change you merged. Other changes on the default branch can also fail these runs: fix failures your PR caused, and summarize the rest without changing them.\n\nPR: ${pending.mergedPr.url}\nRepo: ${pending.repo}\nSHA: ${pending.sha}`;
     }
     if (pending.pushed && !state.orchestrationSessionId) {
@@ -1990,9 +2024,10 @@ export default function prWatch(pi: ExtensionAPI): void {
       await discoverWorkerPr(ctx);
       const shaSync = await syncWatchedSha(ctx);
       let addedCount = 0;
-      const errors = await reconcileOrchestrationMembership(ctx);
-      if (shaSync.error) errors.unshift(shaSync.error);
+      const errors = shaSync.error ? [shaSync.error] : [];
 
+      // Poll watched PRs before reconciling membership: a worker can drop a
+      // merged PR from its snapshot before this session observes the merge.
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
@@ -2004,6 +2039,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           errors.push(error instanceof Error ? error.message : String(error));
         }
       }
+      errors.push(...(await reconcileOrchestrationMembership(ctx)));
 
       if (!state.watchedSha && !state.orchestrationSessionId) {
         if (state.watchedPrs.length > 0) {
@@ -2296,7 +2332,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         if (hasTargets()) {
           if (state.watchedPrs.length > 0) await ensureCurrentRepo(ctx);
-          if (state.orchestrationSessionId && !state.watchedSha) await syncWatchedSha(ctx);
           startPolling(ctx);
           await poll(ctx);
         } else {
@@ -2332,7 +2367,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         }
         state.mode = "active";
         save();
-        await discover(ctx, "manual add", true, target);
+        await discover(ctx, "manual add", true, target, { explicit: true });
         flushPending(ctx);
         return;
       }
@@ -2376,8 +2411,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         if (state.orchestrationSessionId) {
           const errors = await reconcileOrchestrationMembership(ctx);
-          const shaSync = await syncWatchedSha(ctx);
-          if (shaSync.error) errors.unshift(shaSync.error);
           state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
           save();
           startPolling(ctx);

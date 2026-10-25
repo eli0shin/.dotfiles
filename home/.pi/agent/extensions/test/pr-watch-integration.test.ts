@@ -203,7 +203,7 @@ esac
 `);
       await executable("pi", `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} worker\n`);
       session = await startSession(repo, root);
-      assert.equal(watchState(session).watchedSha.branch, "main");
+      assert.equal(watchState(session).watchedSha, undefined);
       await runCommand(session, JSON.stringify(spawnWorker) + " ticket-one");
       if (automatic) {
         // Release the worker only after the parent is idle. From this point the
@@ -227,7 +227,7 @@ esac
       await timer.stop();
       await session.waitForIdle();
       const state = watchState(session);
-      assert.equal(state.watchedSha.branch, "main");
+      assert.equal(state.watchedSha, undefined);
       assert.deepEqual(state.watchedPrs.map(({ pr }: any) => pr.number), [104]);
       assert.deepEqual(state.pendingWorkerSettlements, []);
       assert.equal(state.lastError, undefined);

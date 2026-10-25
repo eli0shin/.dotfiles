@@ -18,6 +18,7 @@ Never implement ticket changes yourself. After spawning a worker:
 - Never block the orchestration loop with `gh pr watch`, `gh run watch`, repeated `sleep`/status loops, or manual watching of GitHub, CI, worker sessions, or worker worktrees. One-shot state retrieval is not polling: use `gh pr list`, `gh pr view`, `gh run view`, and equivalent metadata queries whenever needed to reconcile state, respond to the user, or direct a review.
 - Never read a worker diff, changed-file contents, or worker worktree yourself; delegate code inspection to `run_code_review`. You may read changed-file paths and commit metadata for the merge compatibility gate below, but never patches or file contents. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
 - Never edit, commit, or push a worker branch.
+- Start and restart every worker with `spawn-worker`. It is the only launch that links the worker's PRs to this session's PR Watch; a worker started any other way is invisible to it.
 - Send instructions to a worker only with `message-worker`. Never type into a worker's terminal with `herdr agent prompt`, `herdr pane send-text`, `herdr pane run`, or `tmux send-keys`.
 - Never tell a worker about merge conflicts or failed CI. PR Watch notifies the worker of both automatically.
 
@@ -62,6 +63,17 @@ Add context only for a task-specific decision or constraint absent from the tick
 
 Do not claim worker tickets; the worker skill owns that step. This step is complete when every currently executable frontier ticket has a worker. Then yield.
 
+## Spawn a task worker
+
+When the user asks for work that has no ticket, spawn a task worker on a new branch named for the work:
+
+```bash
+~/.agents/skills/orchestrator/scripts/spawn-worker --branch <branch-name> --task "<task>"
+printf '%s\n' "<task>" | ~/.agents/skills/orchestrator/scripts/spawn-worker --branch <branch-name>
+```
+
+The task is the worker's whole assignment, standing in for a ticket: state the goal and the decisions and constraints settled with the user. The worker already has its skill and repository instructions, so the task carries no workflow. A task PR follows the same dispatch, review, and merge flow as a ticket PR; use the branch name wherever this skill says `<ticket-name>`.
+
 ## Report PR status
 
 When the user asks for current PR status, fetch each relevant PR with `gh pr view` before answering.
@@ -77,6 +89,7 @@ Classify the event:
 - **Failed or cancelled CI:** PR Watch does not send this event to you; the worker receives it.
 - **Merge conflict:** PR Watch does not send this event to you; the worker receives it.
 - **Successful CI-finished event for a new PR head:** call `run_code_review`. The worker does not receive this event.
+- **CI finished for a merge commit:** PR Watch reports the landing-branch runs of the most recently merged worker PR's merge commit once; a later merge replaces one still settling. Inspect them with `gh run view`. Spawn a worker to fix a failure the merged change caused; report other failures to the user.
 
 Before review, confirm the successful checks belong to the current head. Apply the merge compatibility gate below when the PR is otherwise ready to merge.
 
@@ -121,7 +134,7 @@ The gate is complete only for the head and landing SHAs checked. Confirm both ar
 
 ## Resolve a merge
 
-After each merge, follow the repository's demonstrated tracker resolution process without redesigning it:
+After each merge, follow the repository's demonstrated tracker resolution process without redesigning it. A task worker has no ticket, so skip steps 2–5 for it:
 
 1. Update the landing-branch worktree with a fast-forward-only pull.
 2. Append the required concise resolution and merged PR/commit evidence to the ticket.
@@ -137,6 +150,6 @@ This step is complete when tracker evidence is recorded, the worker is cleaned u
 
 ## Recovery
 
-After interruption, resume in the landing-branch worktree, then use `repos list`, tracker state, `gh pr list`, and one-shot `gh pr view` calls to reconstruct tickets, workers, PR heads, comments, checks, and mergeability. Let PR Watch restore worker-published membership, but do not assume it replayed events that occurred during the interruption. Resume only workers that still need changes using ordinary agent continuation in the existing `repos` session. When you must start a worker session by hand, create or reuse its worktree and Herdr workspace with `repos work <branch>`, then start the worker in that workspace. Never use `herdr workspace create`. Recovery does not relax the boundary against inspecting or modifying worker changes directly.
+After interruption, resume in the landing-branch worktree, then use `repos list`, tracker state, `gh pr list`, and one-shot `gh pr view` calls to reconstruct tickets, workers, PR heads, comments, checks, and mergeability. Let PR Watch restore worker-published membership, but do not assume it replayed events that occurred during the interruption. Resume only workers that still need changes using ordinary agent continuation in the existing `repos` session. When a worker session must be restarted, run `spawn-worker` again with the same ticket name or `--branch`; it reuses the existing worktree and workspace and links the new session to this orchestration. Recovery does not relax the boundary against inspecting or modifying worker changes directly.
 
 The run is complete when the requested effort has no unresolved executable tickets, required container bookkeeping is resolved, and all completed ticket changes have landed on the landing branch.

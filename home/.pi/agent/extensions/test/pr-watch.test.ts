@@ -2158,140 +2158,96 @@ test("conflict notification does not tell a reviewer to modify another author's 
   assert.doesNotMatch(harness.sentMessages[0] ?? "", /Use repos to resolve/);
 });
 
-test("orchestration watches a changed current SHA and reports already-complete CI in the same poll", async () => {
+test("orchestration does not watch its landing branch tip", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
   await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
-  const run = {
-    databaseId: 900,
-    attempt: 1,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/900",
-  };
-  harness.runs.push(run);
+  harness.runs.push({ ...completedRun(900), event: "push" });
 
   try {
     await harness.startSession();
-    assert.equal(harness.sentMessages.length, 0, "the first observed SHA must be baselined");
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
-    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
-
-    harness.setCurrentSha("merged-sha");
-    run.databaseId = 901;
-    run.url = "https://github.com/eli0shin/repos/actions/runs/901";
+    harness.setCurrentSha("landed-sha");
+    harness.runs.push({ ...completedRun(901, "Nightly"), event: "schedule" });
     await harness.runPoll();
 
-    assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA merged-/);
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+    assert.equal(harness.sentMessages.length, 0);
     assert.equal(
-      harness.execCalls.some(
-        ({ command, args }) => command === "gh" && args[0] === "run" && args.includes("merged-sha"),
+      harness.execCalls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1]?.includes("/commits/")),
+      false,
+    );
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+for (const snapshot of ["still lists", "already dropped"] as const) {
+  test(`orchestration reports the merge commit of a merged worker PR once when the worker snapshot ${snapshot} it`, async () => {
+    const harness = createHarness();
+    harness.setCurrentBranch("main");
+    const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+    process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+    await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+
+    try {
+      await harness.startSession();
+      mergePr(harness, 104, "merge-104-sha");
+      // The worker's own poll can see the merge first and drop the PR.
+      if (snapshot === "already dropped") await harness.writeWorkerSnapshot("session-123", "worker-one", []);
+      harness.runs.push(
+        { ...completedRun(910), event: "push" },
+        { ...completedRun(911, "Nightly"), event: "schedule", status: "in_progress", conclusion: "" },
+      );
+      await harness.runPoll();
+
+      assert.equal(harness.sentMessages.length, 1);
+      assert.match(harness.sentMessages[0] ?? "", /CI finished for the merge commit of worker PR #104 \(SHA merge-1\)\./);
+      assert.doesNotMatch(harness.sentMessages[0] ?? "", /confirm that your change deployed/);
+      assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+
+      // A snapshot that still lists the merged PR must not start a second watch.
+      harness.runs.push({ ...completedRun(912, "Post-deploy verify"), event: "workflow_run" });
+      await harness.runPoll();
+      await harness.runPoll();
+      assert.equal(harness.sentMessages.length, 1);
+      assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+    } finally {
+      await harness.shutdown();
+      if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+      else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+    }
+  });
+}
+
+test("orchestration merging a non-worker PR does not watch its merge commit", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+
+  try {
+    await harness.startSession();
+    mergePr(harness, 105, "merge-105-sha");
+    await harness.withFakeTimer(() =>
+      harness.handlers.get("tool_result")?.(
+        {
+          toolName: "bash",
+          input: { command: "gh pr merge 105 --squash" },
+          content: [{ type: "text", text: "" }],
+        },
+        harness.ctx,
       ),
-      true,
     );
-  } finally {
-    await harness.shutdown();
-    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
-    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
-  }
-});
+    harness.runs.push({ ...completedRun(920), event: "push" });
+    await harness.runPoll();
 
-test("orchestration retries and baselines its first SHA observation", async () => {
-  const harness = createHarness();
-  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
-  harness.setCurrentTargetAvailable(false);
-  harness.runs.push({
-    databaseId: 910,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/910",
-  });
-
-  try {
-    await harness.startSession();
     assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
-
-    harness.setCurrentTargetAvailable(true);
-    await harness.runPoll();
-
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
     assert.equal(harness.sentMessages.length, 0);
-    assert.equal(
-      harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "repo").length >= 2,
-      true,
-    );
-  } finally {
-    await harness.shutdown();
-    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
-    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
-  }
-});
-
-test("orchestration retries a failed first-SHA baseline without reporting existing CI", async () => {
-  const harness = createHarness();
-  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
-  harness.setRunsAvailable(false);
-  harness.runs.push({
-    databaseId: 920,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/920",
-  });
-
-  try {
-    await harness.startSession();
-    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
-
-    harness.setRunsAvailable(true);
-    await harness.runPoll();
-
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
-    assert.equal(harness.sentMessages.length, 0);
-  } finally {
-    await harness.shutdown();
-    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
-    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
-  }
-});
-
-test("orchestration preserves its SHA baseline across session resume", async () => {
-  const harness = createHarness();
-  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
-  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
-  const run = {
-    databaseId: 930,
-    attempt: 1,
-    name: "Terraform",
-    workflowName: "Terraform",
-    status: "completed",
-    conclusion: "success",
-    url: "https://github.com/eli0shin/repos/actions/runs/930",
-  };
-  harness.runs.push(run);
-
-  try {
-    await harness.startSession();
-    const savedState = structuredClone(harness.savedStates.at(-1));
-    harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: savedState }]);
-    run.databaseId = 931;
-    run.url = "https://github.com/eli0shin/repos/actions/runs/931";
-
-    await harness.startSession("resume");
-    await harness.runPoll();
-
-    assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA tip-sha\./);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -2566,7 +2522,7 @@ for (const discovery of ["direct command", "wrapped command", "startup", "poll",
     let worker: ReturnType<typeof createHarness> | undefined;
     try {
       await parent.startSession();
-      assert.equal(parent.savedStates.at(-1)?.watchedSha?.branch, "main");
+      assert.equal(parent.savedStates.at(-1)?.watchedSha, undefined);
       delete process.env.PI_ORCHESTRATION_SESSION_ID;
       process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
       const activeWorker = createHarness({ stateRoot });
@@ -2606,6 +2562,32 @@ for (const discovery of ["direct command", "wrapped command", "startup", "poll",
     }
   });
 }
+
+test("orchestrator viewing a non-worker PR does not enroll it or report its CI", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  harness.checks.set(105, [terminalCheck("105")]);
+  await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
+
+  try {
+    await harness.startSession();
+    await harness.activate(105, "view");
+    await harness.runPoll();
+
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+    assert.equal(harness.sentMessages.length, 0);
+    assert.equal(harness.notifications.some((message) => /not a worker PR/.test(message)), false);
+
+    await harness.commands.get("pr-watch")?.handler("add 105", harness.ctx);
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+    assert.match(harness.notifications.at(-1) ?? "", /PR #105 is not a worker PR; .* it was not added\./);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
 
 test("orchestration startup unions worker snapshots across repositories", async () => {
   const harness = createHarness();
@@ -2652,10 +2634,11 @@ test("worker snapshot discovery stays silent while the orchestrator is busy", as
   }
 });
 
-test("reset preserves orchestration mode and reports a branch-tip failure", async () => {
+test("reset preserves orchestration mode and worker PR membership without a branch-tip watch", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  await harness.writeWorkerSnapshot("session-123", "worker-one", [104]);
 
   try {
     await harness.startSession();
@@ -2663,8 +2646,11 @@ test("reset preserves orchestration mode and reports a branch-tip failure", asyn
     await harness.commands.get("pr-watch")?.handler("reset", harness.ctx);
     await harness.shutdown();
 
-    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "session-123");
-    assert.match(harness.savedStates.at(-1)?.lastError ?? "", /Could not resolve the GitHub tip of branch local-feature/);
+    const saved = harness.savedStates.at(-1);
+    assert.equal(saved?.orchestrationSessionId, "session-123");
+    assert.deepEqual(saved?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+    assert.equal(saved?.watchedSha, undefined);
+    assert.equal(saved?.lastError, undefined);
   } finally {
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
@@ -2831,7 +2817,7 @@ test("persisted orchestration session wins and restores the process environment"
     await harness.startSession();
 
     assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "persisted-session");
-    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+    assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
     assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
     assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "persisted-session");
     assert.equal(

@@ -149,6 +149,8 @@ test("spawn-worker launches a full-TUI OpenCode worker with only the OpenCode pa
 case "$*" in
   "branch --show-current") echo main ;;
   "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo /work/repo/.git ;;
+  show-ref*|ls-remote*) exit 1 ;;
   *) echo abc123 ;;
 esac
 `);
@@ -238,7 +240,7 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
   await executable(join(fakeBin, "tickets"), `#!/bin/sh\nprintf 'tickets %s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
   await executable(
     join(fakeBin, "git"),
-    `#!/bin/sh\nprintf 'git %s\\n' "$*" >> ${JSON.stringify(calls)}\ncase "$*" in\n  "branch --show-current") printf 'integration/epic\\n' ;;\n  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") printf 'origin/integration/epic\\n' ;;\n  "rev-parse HEAD"|"rev-parse @{upstream}") printf 'abc123\\n' ;;\nesac\n`,
+    `#!/bin/sh\nprintf 'git %s\\n' "$*" >> ${JSON.stringify(calls)}\ncase "$*" in\n  "branch --show-current") printf 'integration/epic\\n' ;;\n  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") printf 'origin/integration/epic\\n' ;;\n  "rev-parse HEAD"|"rev-parse @{upstream}") printf 'abc123\\n' ;;\n  "rev-parse --path-format=absolute --git-common-dir") printf '/work/configured-repo/.git\\n' ;;\n  show-ref*|ls-remote*) exit 1 ;;\nesac\n`,
   );
   await executable(
     join(fakeBin, "repos"),
@@ -282,9 +284,11 @@ test("spawn-worker adds explicit context to the exact ticket handoff", async () 
         "git rev-parse HEAD\n" +
         "git rev-parse @{upstream}\n" +
         "tickets show 042-implement-widget\n" +
-        "tmux <list-sessions> <-F> <#{session_name}>\n" +
+        "git show-ref --verify --quiet refs/heads/042-implement-widget\n" +
+        "git ls-remote --exit-code --heads origin refs/heads/042-implement-widget\n" +
         "repos stack --no-focus 042-implement-widget\n" +
-        "tmux <list-sessions> <-F> <#{session_name}>\n" +
+        "git rev-parse --path-format=absolute --git-common-dir\n" +
+        "tmux <has-session> <-t> <=configured-repo@042-implement-widget:>\n" +
         "tmux <send-keys> <-l> <-t> <configured-repo@042-implement-widget:0> <--> " +
         "<bash LAUNCHER>\n" +
         "tmux <send-keys> <-t> <configured-repo@042-implement-widget:0> <Enter>\n",
@@ -321,7 +325,7 @@ test("spawn-worker launches Pi in the new Herdr Managed Workspace", async () => 
   await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
   await executable(
     join(fakeBin, "git"),
-    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\nesac\n",
+    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\n  \"rev-parse --path-format=absolute --git-common-dir\") printf '/work/repo/.git\\n' ;;\nesac\n",
   );
   await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(workspaceCreated)}\n`);
   await executable(
@@ -438,13 +442,15 @@ test("spawn-worker delivers long context without sending it through terminal inp
 case "$*" in
   "branch --show-current") echo main ;;
   "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo /work/repo/.git ;;
+  show-ref*|ls-remote*) exit 1 ;;
   *) echo abc123 ;;
 esac
 `);
     await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(created)}\n`);
     await executable(join(fakeBin, "tmux"), `#!/bin/sh
-if [ "$1" = list-sessions ]; then
-  if [ -f ${JSON.stringify(created)} ]; then echo repo@ticket-one; fi
+if [ "$1" = has-session ]; then
+  test -f ${JSON.stringify(created)}
 elif [ "$2" = -l ]; then
   printf '%s' "$6" > ${JSON.stringify(commandFile)}
   exit "\${FAIL_DISPATCH:-0}"
@@ -505,39 +511,54 @@ printf '%s' "$1" > ${JSON.stringify(received)}
   }
 });
 
-test("spawn-worker fails without a second handoff when repos resumes an existing tmux session", async () => {
-  const { root, fakeBin } = await fixture();
-  const reposRan = join(root, "repos-ran");
-  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
-  await executable(
-    join(fakeBin, "git"),
-    "#!/bin/sh\ncase \"$*\" in\n  \"branch --show-current\") printf 'main\\n' ;;\n  \"rev-parse --abbrev-ref --symbolic-full-name @{upstream}\") printf 'origin/main\\n' ;;\n  \"rev-parse HEAD\"|\"rev-parse @{upstream}\") printf 'abc123\\n' ;;\nesac\n",
-  );
-  await executable(
-    join(fakeBin, "tmux"),
-    "#!/bin/sh\nif [ \"$1\" = \"list-sessions\" ]; then printf 'example@042-implement-widget\\n'; fi\n",
-  );
-  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(reposRan)}\n`);
-
-  try {
-    const result = spawnSync(
-      spawnWorker,
-      ["042-implement-widget"],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH}`,
-          PI_ORCHESTRATION_SESSION_ID: "session-123",
-        },
-      },
+test("spawn-worker --branch hands off a task without a ticket", async () => {
+  for (const input of ["argument", "stdin"] as const) {
+    const { root, fakeBin } = await fixture();
+    const calls = join(root, "calls");
+    const sessionCreated = join(root, "session-created");
+    await executable(join(fakeBin, "tickets"), `#!/bin/sh\nprintf 'tickets %s\\n' "$*" >> ${JSON.stringify(calls)}\nexit 1\n`);
+    await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") echo main ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo /work/repo/.git ;;
+  show-ref*|ls-remote*) exit 1 ;;
+  *) echo abc123 ;;
+esac
+`);
+    await executable(
+      join(fakeBin, "repos"),
+      `#!/bin/sh\nprintf 'repos %s\\n' "$*" >> ${JSON.stringify(calls)}\ntouch ${JSON.stringify(sessionCreated)}\n`,
+    );
+    await executable(
+      join(fakeBin, "tmux"),
+      `#!/bin/sh\nprintf 'tmux' >> ${JSON.stringify(calls)}\nfor arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done\nprintf '\\n' >> ${JSON.stringify(calls)}\nif [ "$1" = "has-session" ]; then test -f ${JSON.stringify(sessionCreated)}; fi\n`,
     );
 
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /repos did not create exactly one new worker session/);
-    await readFile(reposRan);
-  } finally {
-    await rm(root, { recursive: true, force: true });
+    try {
+      const task = "Make the cache server wait for its Pod Identity association.\nKeep the PR a draft.";
+      const result = spawnSync(
+        spawnWorker,
+        input === "argument" ? ["--branch", "fcc-1619/pod-identity", "--task", `  ${task}  `] : ["--branch", "fcc-1619/pod-identity"],
+        {
+          encoding: "utf8",
+          input: input === "stdin" ? `\n${task}\n` : "Piped text must be ignored.\n",
+          env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, PI_ORCHESTRATION_SESSION_ID: "session-123" },
+        },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      const log = await readFile(calls, "utf8");
+      assert.doesNotMatch(log, /^tickets /m);
+      assert.match(log, /^repos stack --no-focus fcc-1619\/pod-identity$/m);
+      assert.equal(
+        await readInitialPrompt(log),
+        "/skill:ticket-worker \n\nBranch: fcc-1619/pod-identity\nWorker identity: repo@fcc-1619-pod-identity\nPR base: main\n\n" +
+          `Task:\n${task}`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -554,6 +575,11 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       { args: [] as string[], sessionId: "session-123" },
       { args: ["one", "two"], sessionId: "session-123" },
       { args: ["one"], sessionId: undefined },
+      { args: ["--branch"], sessionId: "session-123" },
+      { args: ["--branch", "fix-cache"], sessionId: "session-123" },
+      { args: ["--branch", "fix-cache", "--task", "  "], sessionId: "session-123" },
+      { args: ["--branch", "fix-cache", "--context", "Fix it."], sessionId: "session-123" },
+      { args: ["--branch", "--task", "Fix it."], sessionId: "session-123" },
     ];
     for (const fixtureCase of cases) {
       const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };

@@ -9,7 +9,10 @@ metadata:
 
 # Ticket Worker
 
-Implement the handed-off ticket. Follow the repository’s tracker instructions: confirm the ticket is unassigned, set `Assigned-To` to the supplied worker identity, and move it to `in-progress`.
+Implement the handed-off ticket or task.
+
+- A **Ticket** handoff names a tracker ticket. Follow the repository’s tracker instructions: confirm the ticket is unassigned or already assigned to the supplied worker identity, set `Assigned-To` to that identity, and move it to `in-progress`.
+- A **Task** handoff has no tracker ticket. Its task text is the assignment; treat it as the ticket everywhere below.
 
 Work only on this ticket. Follow its accepted contracts and the repository’s existing skills and conventions. Run the relevant checks and `run_code_review`.
 

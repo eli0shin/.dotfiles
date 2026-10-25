@@ -4,26 +4,44 @@ set -o pipefail
 
 usage() {
   echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
+  echo "       spawn-worker --branch <branch-name> [--task <text>]" >&2
   exit 2
 }
 
-if [[ $# -ne 1 && $# -ne 3 ]]; then
+# A ticket handoff names a tracker ticket, which is also the branch; its text
+# is optional steering. A task handoff has no ticket, so its text is the task.
+if [[ ${1:-} == --branch ]]; then
+  if [[ $# -ne 2 && $# -ne 4 ]] || [[ $# -eq 4 && $3 != "--task" ]]; then
+    usage
+  fi
+  ticket=""
+  branch=$2
+  text_arg_position=4
+else
+  if [[ $# -ne 1 && $# -ne 3 ]] || [[ $# -eq 3 && $2 != "--context" ]]; then
+    usage
+  fi
+  ticket=$1
+  branch=$1
+  text_arg_position=3
+fi
+if [[ -z $branch || $branch == -* ]]; then
   usage
 fi
-if [[ $# -eq 3 && $2 != "--context" ]]; then
-  usage
-fi
-
-ticket=$1
-context=""
-if [[ $# -eq 3 ]]; then
-  context=$3
+# Without its flag, the text comes from piped stdin.
+text=""
+if [[ $# -eq $text_arg_position ]]; then
+  text=${!text_arg_position}
 elif [[ ! -t 0 ]]; then
-  context=$(cat)
+  text=$(cat)
 fi
 shopt -s extglob
-context=${context##+([[:space:]])}
-context=${context%%+([[:space:]])}
+text=${text##+([[:space:]])}
+text=${text%%+([[:space:]])}
+if [[ -z $ticket && -z $text ]]; then
+  echo "spawn-worker --branch requires a task from --task or stdin" >&2
+  exit 2
+fi
 
 if [[ -n ${OPENCODE_ORCHESTRATION_SESSION_ID:-} ]]; then
   orchestration_session_id=$OPENCODE_ORCHESTRATION_SESSION_ID
@@ -54,27 +72,29 @@ if [[ $head_sha != "$upstream_sha" ]]; then
   exit 2
 fi
 
-tickets show "$ticket" || exit
+if [[ -n $ticket ]]; then
+  tickets show "$ticket" || exit
+fi
 
 workspace_manager=tmux
 if [[ ${HERDR_ENV:-} == 1 ]]; then
   workspace_manager=herdr
 fi
 
-# An existing branch or worktree means the ticket is being recovered: reuse it
+# An existing branch or worktree means the worker is being recovered: reuse it
 # with `repos work`, which also reuses or creates its Managed Workspace.
 remote=${upstream%%/*}
-if git show-ref --verify --quiet "refs/heads/$ticket" ||
-  git ls-remote --exit-code --heads "$remote" "refs/heads/$ticket" >/dev/null 2>&1; then
-  repos work --no-focus "$ticket" || exit
+if git show-ref --verify --quiet "refs/heads/$branch" ||
+  git ls-remote --exit-code --heads "$remote" "refs/heads/$branch" >/dev/null 2>&1; then
+  repos work --no-focus "$branch" || exit
 else
-  repos stack --no-focus "$ticket" || exit
+  repos stack --no-focus "$branch" || exit
 fi
 
 # repos names the workspace <repo>@<branch>, with "/" in the branch as "-".
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir) || exit
 repo_name=$(basename "$(dirname "$common_dir")")
-worker_identity="$repo_name@${ticket//\//-}"
+worker_identity="$repo_name@${branch//\//-}"
 
 if [[ $workspace_manager == herdr ]]; then
   pane_id=$(python3 -c '
@@ -90,14 +110,19 @@ if not panes:
 print(panes[0])
 ' "$worker_identity") || exit
 elif ! tmux has-session -t "=$worker_identity:" 2>/dev/null; then
-  echo "repos did not create worker session $worker_identity for $ticket" >&2
+  echo "repos did not create worker session $worker_identity for $branch" >&2
   exit 1
 fi
 
-printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s' \
-  '/skill:ticket-worker' "$ticket" "$worker_identity" "$landing_branch"
-if [[ -n $context ]]; then
-  printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$context"
+if [[ -n $ticket ]]; then
+  printf -v prompt '%s \n\nTicket: %s\nWorker identity: %s\nPR base: %s' \
+    '/skill:ticket-worker' "$ticket" "$worker_identity" "$landing_branch"
+  if [[ -n $text ]]; then
+    printf -v prompt '%s\n\nContext:\n%s' "$prompt" "$text"
+  fi
+else
+  printf -v prompt '%s \n\nBranch: %s\nWorker identity: %s\nPR base: %s\n\nTask:\n%s' \
+    '/skill:ticket-worker' "$branch" "$worker_identity" "$landing_branch" "$text"
 fi
 
 # A new pane can still have canonical terminal input enabled. Long commands
