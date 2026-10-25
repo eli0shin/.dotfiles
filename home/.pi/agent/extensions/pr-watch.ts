@@ -2397,7 +2397,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "watch_pr",
     label: "Watch PR",
-    description: "Explicitly watch an open PR in this Pi session (regular, worker, or orchestrator), overriding automatic enrollment and worker-membership restrictions. Enables/resumes watching. Normal CI/feedback routing still applies. Persists across reloads until unwatch_pr or /pr-watch reset.",
+    description: "Watch a PR in this Pi session, overriding automatic watch rules.",
     parameters: prParameters,
     executionMode: "sequential",
     async execute(_id, { pr }, _signal, _onUpdate, ctx) {
@@ -2407,7 +2407,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "unwatch_pr",
     label: "Stop watching PR",
-    description: "Explicitly stop watching a PR in this Pi session, even if not currently watched. Clears its buffered updates and merge-commit watch and prevents commands, worker discovery, and orchestration snapshots from re-enrolling it across reloads. Other PR and branch SHA watches are unchanged. Use watch_pr to opt back in.",
+    description: "Stop watching a PR in this Pi session and prevent automatic re-enrollment.",
     parameters: prParameters,
     executionMode: "sequential",
     async execute(_id, { pr }, _signal, _onUpdate, ctx) {
