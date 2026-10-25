@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 type WatchedPr = {
   repo: string;
@@ -101,6 +102,8 @@ type WatchState = {
   version: 4;
   mode: WatchMode;
   watchedPrs: WatchedPrState[];
+  // Explicit session-local membership decisions take precedence over discovery.
+  prOverrides?: Record<string, "watch" | "ignore">;
   watchedSha?: WatchedSha;
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
@@ -191,7 +194,7 @@ type DiscoverOptions = {
   allowMergeWatch?: boolean;
   // Stack arguments may be stack numbers, which do not resolve as PRs.
   ignoreUnresolved?: boolean;
-  // The user named this PR, so a PR that is not enrolled is reported.
+  // Explicit opt-in overrides automatic enrollment rules, but requires an open PR.
   explicit?: boolean;
 };
 
@@ -208,7 +211,7 @@ type ShaSyncResult = {
 
 const CUSTOM_STATE = "pr-watch-state";
 const NOTIFICATION_TYPE = "pr-watch-harness";
-const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
+const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
 const POLL_INTERVAL_MS = 60_000;
 const INBOX_POLL_INTERVAL_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
@@ -735,7 +738,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     const resolved = new Set(state.resolvedOrchestrationPrUrls);
 
     for (const watched of [...state.watchedPrs]) {
-      if (!desired.has(prIdentityKey(watched.pr))) removePr(watched.pr);
+      if (!desired.has(prIdentityKey(watched.pr)) && state.prOverrides?.[prIdentityKey(watched.pr)] !== "watch") {
+        removePr(watched.pr);
+      }
     }
     for (const pr of desired.values()) {
       if (resolved.has(pr.url)) continue;
@@ -1102,21 +1107,24 @@ export default function prWatch(pi: ExtensionAPI): void {
       return false;
     }
 
-    if (pr?.state === "OPEN") {
-      // An orchestrator watches only worker PRs. Viewing any other PR must not
-      // enroll it, or its finished CI reads as a worker PR event.
-      const coordinates = { repo: repositoryFromPrUrl(pr.url) ?? repoName, number: pr.number };
-      if (state.orchestrationSessionId && !isOrchestrationMember(coordinates)) {
-        if (options.explicit) {
-          ctx.ui.notify(
-            `PR #${pr.number} is not a worker PR; an orchestration watches only its workers' PRs, so it was not added.`,
-            "info",
-          );
-        }
+    const coordinates = pr && { repo: repositoryFromPrUrl(pr.url) ?? repoName, number: pr.number };
+    if (coordinates && !options.explicit && state.prOverrides?.[prIdentityKey(coordinates)] === "ignore") return false;
+    if (options.explicit && pr?.state !== "OPEN") {
+      state.lastError = `PR ${prTarget} is not open; it was not added to PR watch`;
+      save();
+      return false;
+    }
+
+    if (pr?.state === "OPEN" && coordinates) {
+      // Automatic enrollment in an orchestration is limited to worker PRs.
+      const key = prIdentityKey(coordinates);
+      if (options.explicit) (state.prOverrides ??= {})[key] = "watch";
+      if (state.orchestrationSessionId && state.prOverrides?.[key] !== "watch" && !isOrchestrationMember(coordinates)) {
         return false;
       }
 
       await refreshSelfLogin(ctx);
+      if (state.prOverrides?.[key] === "ignore") return false;
 
       const watchedPr: WatchedPr = {
         repo: repositoryFromPrUrl(pr.url) ?? repoName,
@@ -1138,6 +1146,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.watchedPrs.push(watched);
         await baselinePrState(watched, ctx);
       }
+      if (!isWatchedPr(watched)) return false;
       reconcileMergeability(watched, pr.mergeable, true);
       reconcilePendingPr(watchedPr);
 
@@ -1251,6 +1260,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     const key = prIdentityKey(pr);
     state.watchedPrs = state.watchedPrs.filter((candidate) => prIdentityKey(candidate.pr) !== key);
     state.pendingPrUpdates = state.pendingPrUpdates.filter((candidate) => prIdentityKey(candidate.pr) !== key);
+  }
+
+  function isWatchedPr(watched: WatchedPrState): boolean {
+    return state.watchedPrs.includes(watched) && state.prOverrides?.[prIdentityKey(watched.pr)] !== "ignore";
   }
 
   async function currentBranchName(): Promise<BranchResult> {
@@ -1448,6 +1461,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function baselinePrState(watched: WatchedPrState, ctx: ExtensionContext): Promise<void> {
     const checks = await fetchChecks(watched, ctx);
+    if (!isWatchedPr(watched)) return;
     if (checks) {
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
       const checksNotifiable = checksAreNotifiable(checks);
@@ -1469,14 +1483,16 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     }
     const activities = await fetchActivities(watched, ctx);
+    if (!isWatchedPr(watched)) return;
     watched.seenActivityIds = (activities ?? []).map((activity) => activity.id);
     reconcilePendingFeedback(watched, activities);
   }
 
   async function baselineCurrentShaState(ctx: ExtensionContext): Promise<boolean> {
-    if (!state.watchedSha) return false;
+    const watched = state.watchedSha;
+    if (!watched) return false;
     const runs = await fetchRunsForSha(ctx);
-    if (!runs) return false;
+    if (!runs || state.watchedSha !== watched) return false;
     const runsKey = runsCompletionKey(state.watchedSha.sha, runs);
     const allRunsTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const previousKeys = notifiedRunKeys(state.watchedSha);
@@ -1939,6 +1955,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       ctx,
     );
 
+    if (!isWatchedPr(watched)) return { addedCount: 0 };
     if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
     if (latest.state === "MERGED") {
       return {
@@ -1969,6 +1986,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     const checks = await fetchChecks(watched, ctx);
+    if (!isWatchedPr(watched)) return { addedCount: 0 };
     if (checks) {
       const checksNotifiable = checksAreNotifiable(checks);
       const checksKey = checksCompletionKey(watched.pr.headSha, checks);
@@ -1990,6 +2008,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     const currentActivities = await fetchActivities(watched, ctx);
+    if (!isWatchedPr(watched)) return { addedCount: 0 };
     if (!currentActivities) {
       reconcilePendingFeedback(watched);
       return { addedCount };
@@ -2031,6 +2050,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
+          if (!isWatchedPr(watched)) continue;
           addedCount += result.addedCount;
           if (result.error) errors.push(result.error);
           if (result.merged) handleMergedPr(watched.pr, result.merged);
@@ -2076,10 +2096,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function pollSha(ctx: ExtensionContext): Promise<number> {
-    if (!state.watchedSha) return 0;
+    const watched = state.watchedSha;
+    if (!watched) return 0;
 
     const runs = await fetchRunsForSha(ctx);
-    if (!runs) return 0;
+    if (!runs || state.watchedSha !== watched) return 0;
     const fixedWatch = fixedShaWatchActive();
     if (
       fixedWatch &&
@@ -2320,6 +2341,80 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (isRunRerun(command) && !hasTargets()) await discover(ctx, "gh run rerun", false);
   });
 
+  function validatePrTarget(target: string): string {
+    const trimmed = target.trim();
+    if (/^#?[1-9]\d*$/.test(trimmed)) return trimmed.replace(/^#/, "");
+    if (/^https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/[1-9]\d*\/?$/.test(trimmed)) return trimmed;
+    throw new Error("Expected a PR number or full pull request URL");
+  }
+
+  async function watchPr(target: string, ctx: ExtensionContext): Promise<string> {
+    target = validatePrTarget(target);
+    const previousMode = state.mode;
+    state.mode = "active";
+    if (!(await discover(ctx, "explicit opt-in", false, target, { explicit: true }))) {
+      state.mode = previousMode;
+      save();
+      setStatus(ctx);
+      throw new Error(state.lastError ?? `Could not watch PR ${target}`);
+    }
+    flushPending(ctx);
+    return `Watching PR ${target}. Explicit opt-in overrides automatic membership rules for this session.`;
+  }
+
+  async function unwatchPr(target: string, ctx: ExtensionContext): Promise<string> {
+    target = validatePrTarget(target);
+    const repo = repositoryFromPrUrl(target) ?? await ensureCurrentRepo(ctx);
+    if (!repo) throw new Error("Could not resolve the current GitHub repository; use a full PR URL");
+    const pr = { repo, number: Number(target.match(/(\d+)\/?$/)?.[1]) };
+    (state.prOverrides ??= {})[prIdentityKey(pr)] = "ignore";
+    removePr(pr);
+    if (state.watchedSha?.mergedPr && prIdentityKey({
+      repo: state.watchedSha.repo, number: state.watchedSha.mergedPr.number,
+    }) === prIdentityKey(pr)) {
+      state.watchedSha = undefined;
+      state.pendingShaUpdate = undefined;
+    }
+    save();
+    await publishWorkerSnapshot(ctx);
+    if (state.mode !== "off" && !state.orchestrationSessionId) {
+      if (state.watchedPrs.length > 0) {
+        await syncWatchedSha(ctx);
+      } else {
+        const current = await ensureCurrentRepo(ctx);
+        if (current) await watchCurrentBranch(ctx, current, "no PRs are watched", false);
+      }
+      save();
+    }
+    if (!hasTargets()) stopPolling(ctx);
+    setStatus(ctx);
+    return `Stopped watching PR ${repo}#${pr.number}. Automatic discovery cannot re-add it until explicit opt-in or /pr-watch reset.`;
+  }
+
+  const prParameters = Type.Object({
+    pr: Type.String({ description: "PR number in the current repository, or full pull request URL" }),
+  });
+  pi.registerTool({
+    name: "watch_pr",
+    label: "Watch PR",
+    description: "Explicitly watch an open PR in this Pi session (regular, worker, or orchestrator), overriding automatic enrollment and worker-membership restrictions. Enables/resumes watching. Normal CI/feedback routing still applies. Persists across reloads until unwatch_pr or /pr-watch reset.",
+    parameters: prParameters,
+    executionMode: "sequential",
+    async execute(_id, { pr }, _signal, _onUpdate, ctx) {
+      return { content: [{ type: "text", text: await watchPr(pr, ctx) }], details: undefined };
+    },
+  });
+  pi.registerTool({
+    name: "unwatch_pr",
+    label: "Stop watching PR",
+    description: "Explicitly stop watching a PR in this Pi session, even if not currently watched. Clears its buffered updates and merge-commit watch and prevents commands, worker discovery, and orchestration snapshots from re-enrolling it across reloads. Other PR and branch SHA watches are unchanged. Use watch_pr to opt back in.",
+    parameters: prParameters,
+    executionMode: "sequential",
+    async execute(_id, { pr }, _signal, _onUpdate, ctx) {
+      return { content: [{ type: "text", text: await unwatchPr(pr, ctx) }], details: undefined };
+    },
+  });
+
   pi.registerCommand("pr-watch", {
     description: "Watch PRs for CI completion and relevant feedback",
     handler: async (args, ctx) => {
@@ -2365,39 +2460,20 @@ export default function prWatch(pi: ExtensionAPI): void {
           ctx.ui.notify("Usage: /pr-watch add <number-or-url>", "warning");
           return;
         }
-        state.mode = "active";
-        save();
-        await discover(ctx, "manual add", true, target, { explicit: true });
-        flushPending(ctx);
+        try {
+          ctx.ui.notify(await watchPr(target, ctx), "info");
+        } catch (error) {
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+        }
         return;
       }
 
       if (action === "remove") {
-        const number = Number(target.match(/\d+$/)?.[0]);
-        if (!Number.isInteger(number) || number <= 0) {
-          ctx.ui.notify("Usage: /pr-watch remove <number-or-url>", "warning");
-          return;
+        try {
+          ctx.ui.notify(await unwatchPr(target, ctx), "info");
+        } catch (error) {
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
         }
-        const repo = repositoryFromPrUrl(target);
-        const watched = state.watchedPrs.find(
-          (candidate) => candidate.pr.number === number && (!repo || candidate.pr.repo.toLowerCase() === repo.toLowerCase()),
-        );
-        const existed = Boolean(watched);
-        if (watched) removePr(watched.pr);
-        save();
-        await publishWorkerSnapshot(ctx);
-        if (state.mode !== "off" && !state.orchestrationSessionId) {
-          if (state.watchedPrs.length > 0) {
-            await syncWatchedSha(ctx);
-          } else {
-            const repo = await ensureCurrentRepo(ctx);
-            if (repo) await watchCurrentBranch(ctx, repo, "no PRs are watched", false);
-          }
-          save();
-        }
-        if (!hasTargets()) stopPolling(ctx);
-        setStatus(ctx);
-        ctx.ui.notify(existed ? `Removed PR #${number} from PR watch.` : `PR #${number} was not being watched.`, "info");
         return;
       }
 
@@ -2465,6 +2541,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         `pending updates: ${pendingCount()}`,
         ...(pendingSummary.length > 0 ? pendingSummary : []),
         `watched PRs:\n${watchedPrs}`,
+        `explicit PR overrides: ${Object.entries(state.prOverrides ?? {}).map(([pr, decision]) => `${pr}: ${decision}`).join(", ") || "none"}`,
         `watched SHA: ${watchedSha}`,
         `recent gh outputs: ${state.recentGhOutputs.length}`,
         `self login: ${state.selfLogin ?? "unknown"}`,

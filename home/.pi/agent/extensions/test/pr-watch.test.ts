@@ -38,7 +38,14 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
   const stateRoot = options.stateRoot ?? mkdtempSync(join(tmpdir(), "pr-watch-test-"));
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+  const tools = new Map<string, { execute: (id: string, params: { pr: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
+  let execGate: {
+    matches: (command: string, args: string[]) => boolean;
+    started: () => void;
+    released: Promise<void>;
+    result: { code: number; stdout: string; stderr: string };
+  } | undefined;
   const sentMessages: string[] = [];
   const sentMessageOptions: unknown[] = [];
   const savedStates: any[] = [];
@@ -109,6 +116,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }): void {
       commands.set(name, command);
     },
+    registerTool(tool: any): void {
+      tools.set(tool.name, tool);
+    },
     appendEntry(_customType: string, data: unknown): void {
       savedStates.push(structuredClone(data));
     },
@@ -125,6 +135,13 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     },
     async exec(command: string, args: string[]) {
       execCalls.push({ command, args });
+      if (execGate?.matches(command, args)) {
+        const gate = execGate;
+        execGate = undefined;
+        gate.started();
+        await gate.released;
+        return gate.result;
+      }
       if (command === "git" && gitDirectory) {
         const result = spawnSync(command, args, { cwd: gitDirectory, encoding: "utf8" });
         return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
@@ -378,7 +395,20 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     withFakeTimer,
     handlers,
     commands,
+    async callTool(name: "watch_pr" | "unwatch_pr", pr: string) {
+      const tool = tools.get(name);
+      assert.ok(tool, `${name} must be registered`);
+      return withFakeTimer(() => tool.execute("manual-watch", { pr }, undefined, undefined, ctx));
+    },
     execCalls,
+    pauseExec(matches: (command: string, args: string[]) => boolean, payload: unknown) {
+      let started!: () => void;
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { started = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      execGate = { matches, started, released, result: { code: 0, stdout: JSON.stringify(payload), stderr: "" } };
+      return { started: pending, release };
+    },
     sentMessages,
     sentMessageOptions,
     savedStates,
@@ -2580,8 +2610,9 @@ test("orchestrator viewing a non-worker PR does not enroll it or report its CI",
     assert.equal(harness.notifications.some((message) => /not a worker PR/.test(message)), false);
 
     await harness.commands.get("pr-watch")?.handler("add 105", harness.ctx);
-    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
-    assert.match(harness.notifications.at(-1) ?? "", /PR #105 is not a worker PR; .* it was not added\./);
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104, 105]);
+    assert.match(harness.notifications.at(-1) ?? "", /Explicit opt-in overrides automatic membership rules/);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -2657,7 +2688,7 @@ test("reset preserves orchestration mode and worker PR membership without a bran
   }
 });
 
-test("worker snapshots re-add a manually removed orchestration PR", async () => {
+test("worker snapshots cannot re-add an explicitly removed orchestration PR", async () => {
   const harness = createHarness();
   const original = process.env.PI_ORCHESTRATION_SESSION_ID;
   process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
@@ -2668,7 +2699,8 @@ test("worker snapshots re-add a manually removed orchestration PR", async () => 
     await harness.commands.get("pr-watch")?.handler("remove 104", harness.ctx);
     await harness.runPoll();
 
-    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+    assert.equal(harness.savedStates.at(-1)?.prOverrides["eli0shin/repos#104"], "ignore");
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -3300,6 +3332,193 @@ test("persisted delivery marker prevents duplicate delivery after restart", asyn
   assert.equal(harness.sentMessages.length, 0);
   assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
   assert.equal(harness.savedStates.at(-1)?.pendingDelivery, undefined);
+});
+
+for (const role of ["regular", "worker", "orchestrator"] as const) {
+  test(`explicit PR tools override automatic membership and survive reload for ${role}`, async () => {
+    const original = { ...process.env };
+    delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    if (role === "orchestrator") process.env.PI_ORCHESTRATION_SESSION_ID = "manual-tools";
+    if (role === "worker") process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "manual-tools";
+    const harness = createHarness();
+    harness.setCurrentBranch("remove-collapse-command");
+    try {
+      if (role === "orchestrator") await harness.writeWorkerSnapshot("manual-tools", "worker-one", [104]);
+      await harness.startSession();
+      await harness.callTool("unwatch_pr", "104");
+      await harness.activate(104, "view");
+      await harness.push();
+      await harness.runPoll();
+      await harness.settleAgent();
+      assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+
+      harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }]);
+      await harness.startSession("reload");
+      await harness.activate(104);
+      await harness.runPoll();
+      assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+      if (role === "worker") {
+        assert.deepEqual((await harness.readWorkerSnapshot("manual-tools", "worker-session")).watchedPrs, []);
+      }
+
+      // Orchestrators must retain this non-worker PR even with no snapshot owner.
+      const result = await harness.callTool("watch_pr", pr105Url);
+      assert.match(result.content[0].text, /Watching PR/);
+      await harness.runPoll();
+      harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }]);
+      await harness.startSession("reload");
+      await harness.runPoll();
+      assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+      assert.equal(harness.savedStates.at(-1)?.prOverrides["eli0shin/repos#104"], "ignore");
+      assert.equal(harness.savedStates.at(-1)?.prOverrides["eli0shin/repos#105"], "watch");
+      if (role === "worker") {
+        assert.deepEqual((await harness.readWorkerSnapshot("manual-tools", "worker-session")).watchedPrs.map((pr: any) => pr.number), [105]);
+      }
+
+      await harness.callTool("watch_pr", "#104");
+      await harness.runPoll();
+      assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number).sort(), [104, 105]);
+    } finally {
+      await harness.shutdown();
+      for (const name of ["PI_ORCHESTRATION_SESSION_ID", "PI_PARENT_ORCHESTRATION_SESSION_ID", "PI_PR_WATCH_STATE_DIR"]) {
+        if (original[name] === undefined) delete process.env[name];
+        else process.env[name] = original[name];
+      }
+    }
+  });
+}
+
+test("explicit opt-out works before enrollment, clears pending PR updates, and reset clears overrides", async () => {
+  const harness = createHarness();
+  await harness.callTool("unwatch_pr", "104");
+  await harness.activate(104);
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+  await harness.callTool("watch_pr", "104");
+  harness.setIdle(false);
+  harness.checks.set(104, [terminalCheck("104")]);
+  await harness.runPoll();
+  assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates.length, 1);
+  await harness.callTool("unwatch_pr", "104");
+  harness.setIdle(true);
+  await harness.settleAgent();
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+  assert.equal(harness.sentMessages.length, 0);
+  await harness.commands.get("pr-watch")?.handler("reset", harness.ctx);
+  assert.equal(harness.savedStates.at(-1)?.prOverrides, undefined);
+  await harness.activate(104);
+  assert.equal(harness.savedStates.at(-1)?.watchedPrs.length, 1);
+  await harness.shutdown();
+});
+
+test("explicit opt-out uses repository identity, not the first matching PR number", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  harness.prs.get(104)!.url = "https://github.com/other/repo/pull/104";
+  await harness.activate(104);
+  assert.equal(harness.savedStates.at(-1)?.watchedPrs.length, 2);
+  await harness.callTool("unwatch_pr", "104");
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.repo), ["other/repo"]);
+  harness.setCurrentTargetAvailable(false);
+  await harness.callTool("unwatch_pr", "https://github.com/OTHER/REPO/pull/104/");
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+  assert.equal(harness.savedStates.at(-1)?.prOverrides["other/repo#104"], "ignore");
+  await harness.shutdown();
+});
+
+test("watch tool resumes off and paused modes, while invalid or closed targets fail", async () => {
+  const harness = createHarness();
+  await harness.commands.get("pr-watch")?.handler("off", harness.ctx);
+  for (const name of ["watch_pr", "unwatch_pr"] as const) {
+    for (const target of ["", "garbage104", "0", "-1", "https://github.com/owner/repo/issues/104"]) {
+      await assert.rejects(harness.callTool(name, target), /Expected a PR number/);
+    }
+  }
+  harness.prs.get(104)!.state = "CLOSED";
+  await assert.rejects(harness.callTool("watch_pr", "104"), /not open/);
+  assert.equal(harness.savedStates.at(-1)?.mode, "off");
+  assert.equal(harness.savedStates.at(-1)?.prOverrides, undefined);
+  harness.unavailablePrs.add(105);
+  await assert.rejects(harness.callTool("watch_pr", "105"), /Could not resolve PR/);
+  assert.equal(harness.savedStates.at(-1)?.mode, "off");
+  harness.prs.get(104)!.state = "OPEN";
+  await harness.callTool("watch_pr", "104");
+  assert.equal(harness.savedStates.at(-1)?.mode, "active");
+  await harness.commands.get("pr-watch")?.handler("pause", harness.ctx);
+  await harness.callTool("watch_pr", "104");
+  assert.equal(harness.savedStates.at(-1)?.mode, "active");
+  await harness.shutdown();
+});
+
+test("explicit opt-out cancels a PR's merge-commit watch without restarting it on merge commands", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await harness.callTool("watch_pr", "104");
+  harness.prs.get(104)!.state = "MERGED";
+  harness.prs.get(104)!.mergeCommitSha = "merged104";
+  await harness.runPoll();
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merged104");
+  await harness.callTool("unwatch_pr", "104");
+  await harness.withFakeTimer(() => harness.handlers.get("tool_result")?.({
+    toolName: "bash", input: { command: "gh pr merge 104" }, content: [],
+  }, harness.ctx));
+  assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
+  await harness.shutdown();
+});
+
+test("opt-out during snapshot enrollment cannot recreate buffered CI", { timeout: 5_000 }, async () => {
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "enrollment-race";
+  const harness = createHarness();
+  let gate: ReturnType<typeof harness.pauseExec> | undefined;
+  try {
+    await harness.startSession();
+    harness.setIdle(false);
+    await harness.writeWorkerSnapshot("enrollment-race", "worker-one", [104]);
+    gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "checks", [terminalCheck("104")]);
+    const polling = harness.runPoll();
+    await gate.started;
+    await harness.callTool("unwatch_pr", "104");
+    gate.release();
+    await polling;
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    gate?.release();
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("opt-out during merge CI polling cannot attribute old runs to the replacement SHA", { timeout: 5_000 }, async () => {
+  const harness = createHarness();
+  await harness.callTool("watch_pr", "104");
+  harness.setIdle(false);
+  harness.prs.get(104)!.state = "MERGED";
+  harness.prs.get(104)!.mergeCommitSha = "merged104";
+  harness.runs.push({ databaseId: 2, status: "in_progress", event: "push" });
+  const gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "run" && args.includes("merged104"), [
+    { databaseId: 1, status: "completed", conclusion: "success", event: "push" },
+  ]);
+  try {
+    const polling = harness.runPoll();
+    await gate.started;
+    await harness.callTool("unwatch_pr", "104");
+    gate.release();
+    await polling;
+    assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+    assert.equal(harness.savedStates.at(-1)?.pendingShaUpdate, undefined);
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    gate.release();
+    await harness.shutdown();
+  }
 });
 
 test("new head SHA and deleted feedback prune stale pending updates", async () => {

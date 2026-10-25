@@ -70,16 +70,19 @@ async function startSession(cwd: string, root: string): Promise<AgentSession> {
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
   const { session } = await createAgentSession({
     cwd, agentDir, settingsManager, resourceLoader,
-    sessionManager: SessionManager.inMemory(cwd), tools: ["bash"],
+    sessionManager: SessionManager.inMemory(cwd), tools: ["bash", "watch_pr", "unwatch_pr"],
   });
   await session.bindExtensions({ mode: "print", onError: (error) => { throw new Error(JSON.stringify(error)); } });
   return session;
 }
 
-// Only the model response is scripted. Pi executes the bash tool and dispatches
+// Only the model response is scripted. Pi executes the tools and dispatches
 // its real tool_result/agent_settled events; the test never invokes PR Watch hooks.
-async function runCommand(session: AgentSession, command: string): Promise<void> {
-  const toolCall = { type: "toolCall", name: "bash", id: "fixture-command", arguments: { command } };
+async function runCommand(session: AgentSession, command: string, toolName = "bash"): Promise<void> {
+  const toolCall = {
+    type: "toolCall", name: toolName, id: `fixture-command-${session.messages.length}`,
+    arguments: toolName === "bash" ? { command } : { pr: command },
+  };
   const model = session.modelRuntime.getModel("openai", "gpt-4o");
   assert.ok(model);
   session.agent.state.model = model;
@@ -101,7 +104,7 @@ async function runCommand(session: AgentSession, command: string): Promise<void>
   }) as any;
   await session.prompt("Execute the command");
   const result = [...session.messages].reverse().find((message) => message.role === "toolResult" && message.toolCallId === toolCall.id);
-  assert.ok(result?.role === "toolResult", "Pi must execute the actual bash call");
+  assert.ok(result?.role === "toolResult", `Pi must execute the actual ${toolName} call`);
   assert.equal(result.isError, false, JSON.stringify(result.content));
 }
 
@@ -231,6 +234,15 @@ esac
       assert.deepEqual(state.watchedPrs.map(({ pr }: any) => pr.number), [104]);
       assert.deepEqual(state.pendingWorkerSettlements, []);
       assert.equal(state.lastError, undefined);
+
+      await runCommand(session, "104", "unwatch_pr");
+      for (const poll of [...timer.polls]) await poll();
+      assert.deepEqual(watchState(session).watchedPrs, []);
+      assert.equal(watchState(session).prOverrides["owner/repo#104"], "ignore");
+      await runCommand(session, "104", "watch_pr");
+      for (const poll of [...timer.polls]) await poll();
+      assert.deepEqual(watchState(session).watchedPrs.map(({ pr }: any) => pr.number), [104]);
+      assert.equal(watchState(session).prOverrides["owner/repo#104"], "watch");
     } finally {
       await timer.stop();
       if (session) await stopSession(session);
