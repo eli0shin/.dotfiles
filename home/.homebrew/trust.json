@@ -18,6 +18,7 @@
   "trustedformulae": [
     "atlassian/acli/acli",
     "cameroncooke/axe/axe",
+    "danielhopkins/formulae/apple-tools",
     "datadog/lapdog/lapdog",
     "felixkratz/formulae/sketchybar",
     "hashicorp/tap/terraform",

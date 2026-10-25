@@ -5,6 +5,7 @@ tap "sst/tap", trusted: true
 tap "jnsahaj/lumen", trusted: true
 tap "FelixKratz/formulae", trusted: true
 tap "plannotator/tap", trusted: true
+tap "danielhopkins/formulae", trusted: true
 
 brew "ast-grep"
 brew "bash"
@@ -80,6 +81,7 @@ if OS.mac?
   brew "pngpaste"
   brew "nginx", restart_service: :changed
   brew "felixkratz/formulae/sketchybar"
+  brew "danielhopkins/formulae/apple-tools"
 
   cask "claude"
   cask "chatgpt"
