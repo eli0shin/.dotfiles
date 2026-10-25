@@ -27,6 +27,7 @@
     "tilt-dev/tap/tilt"
   ],
   "trustedcasks": [
+    "kitlangton/tap/scrawl",
     "nikitabobko/tap/aerospace",
     "nkzw-tech/tap/codiff"
   ]

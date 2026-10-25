@@ -237,6 +237,15 @@
       "pluginName": "mattpocock-skills",
       "installedAt": "2026-10-05T12:48:55.700Z",
       "updatedAt": "2026-10-05T12:48:55.700Z"
+    },
+    "scrawl": {
+      "source": "kitlangton/scrawl",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/kitlangton/scrawl.git",
+      "skillPath": "skills/scrawl/SKILL.md",
+      "skillFolderHash": "afddc05003828078d088586e829c1938d3b731f9",
+      "installedAt": "2026-10-25T16:54:19.503Z",
+      "updatedAt": "2026-10-25T16:54:19.503Z"
     }
   },
   "dismissed": {
