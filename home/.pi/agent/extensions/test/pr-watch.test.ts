@@ -34,8 +34,8 @@ type PrFixture = {
   mergedAt?: string;
 };
 
-function createHarness() {
-  const stateRoot = mkdtempSync(join(tmpdir(), "pr-watch-test-"));
+function createHarness(options: { stateRoot?: string; sessionId?: string } = {}) {
+  const stateRoot = options.stateRoot ?? mkdtempSync(join(tmpdir(), "pr-watch-test-"));
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
@@ -139,7 +139,7 @@ function createHarness() {
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {
-        const number = prNumberFromArgs(args) ?? -1;
+        const number = prNumberFromArgs(args) ?? [...prs.values()].find((pr) => pr.branch === args[2])?.number ?? -1;
         const pr = prs.get(number);
         if (!pr || unavailablePrs.has(number)) {
           return { code: 1, stdout: "", stderr: "no pull request found" };
@@ -217,7 +217,7 @@ function createHarness() {
     isIdle: () => idle,
     sessionManager: {
       getBranch: () => branchEntries,
-      getSessionId: () => "worker-session",
+      getSessionId: () => options.sessionId ?? "worker-session",
     },
   };
 
@@ -2554,6 +2554,58 @@ test("version 3 state is not migrated", async () => {
   assert.equal(harness.savedStates.at(-1)?.mode, "active");
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
 });
+
+for (const discovery of ["direct command", "wrapped command", "startup", "poll", "unrelated PR"] as const) {
+  test(`orchestrator on main discovers its worker PR via ${discovery}`, async () => {
+    const original = { ...process.env };
+    const stateRoot = mkdtempSync(join(tmpdir(), "pr-watch-parent-worker-"));
+    delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+    const parent = createHarness({ stateRoot, sessionId: "parent-session" });
+    parent.setCurrentBranch("main");
+    let worker: ReturnType<typeof createHarness> | undefined;
+    try {
+      await parent.startSession();
+      assert.equal(parent.savedStates.at(-1)?.watchedSha?.branch, "main");
+      delete process.env.PI_ORCHESTRATION_SESSION_ID;
+      process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+      const activeWorker = createHarness({ stateRoot });
+      worker = activeWorker;
+      activeWorker.setCurrentBranch("remove-collapse-command");
+      if (discovery !== "startup") activeWorker.unavailablePrs.add(104);
+      await activeWorker.startSession();
+      if (discovery === "unrelated PR") await activeWorker.activate(105, "view");
+      activeWorker.unavailablePrs.delete(104);
+      if (discovery === "direct command") await activeWorker.activate(104);
+      if (discovery === "wrapped command" || discovery === "unrelated PR") {
+        await activeWorker.withFakeTimer(async () => {
+          await activeWorker.handlers.get("tool_result")?.({
+            toolName: "bash",
+            input: { command: "sh -c 'gh pr create --base main'" },
+            content: [{ type: "text", text: pr104Url }],
+          }, activeWorker.ctx);
+          await activeWorker.settleAgent();
+        });
+      }
+      if (discovery === "poll") await activeWorker.runPoll();
+      const snapshot = await activeWorker.readWorkerSnapshot("session-123", "worker-session");
+      const expectedPrs = discovery === "unrelated PR" ? [104, 105] : [104];
+      assert.deepEqual(snapshot.watchedPrs.map((pr: any) => pr.number).sort(), expectedPrs);
+      await parent.runPoll();
+      assert.deepEqual(parent.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number).sort(), expectedPrs);
+      parent.checks.set(104, [terminalCheck("104")]);
+      await parent.runPoll();
+      assert.match(parent.sentMessages.at(-1) ?? "", /CI finished for worker PR #104/);
+    } finally {
+      await parent.shutdown();
+      await worker?.shutdown();
+      for (const name of ["PI_ORCHESTRATION_SESSION_ID", "PI_PARENT_ORCHESTRATION_SESSION_ID", "PI_PR_WATCH_STATE_DIR"]) {
+        if (original[name] === undefined) delete process.env[name];
+        else process.env[name] = original[name];
+      }
+    }
+  });
+}
 
 test("orchestration startup unions worker snapshots across repositories", async () => {
   const harness = createHarness();

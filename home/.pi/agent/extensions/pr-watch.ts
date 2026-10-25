@@ -463,7 +463,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "pr-watch", "orchestrations");
 
   function hasTargets(): boolean {
-    return state.watchedPrs.length > 0 || Boolean(state.watchedSha) || Boolean(state.orchestrationSessionId);
+    return (
+      state.watchedPrs.length > 0 || Boolean(state.watchedSha) ||
+      Boolean(state.orchestrationSessionId || state.workerOrchestrationSessionId)
+    );
   }
 
   function prCoordinatesFromUrl(url: string): { repo: string; number: number } | undefined {
@@ -622,6 +625,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.lastError = `Could not resolve worker branch: ${result.stderr.trim() || "the current checkout has no branch"}`;
     save();
     return false;
+  }
+
+  // Worker membership must not depend on recognizing the shell command that
+  // opened the PR. Recover existing PRs and retry discovery until one appears.
+  async function discoverWorkerPr(ctx: ExtensionContext): Promise<void> {
+    if (!state.workerOrchestrationSessionId || state.mode === "off") return;
+    if (!(await refreshWorkerBranch())) return;
+    const repo = await ensureCurrentRepo(ctx);
+    const branch = state.workerBranch;
+    if (!repo || !branch || hasWatchedPrForBranch(repo, branch)) return;
+    await discover(ctx, "worker branch", false, branch, { ignoreUnresolved: true });
   }
 
   async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
@@ -1973,6 +1987,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     try {
       reconcileDelivery(ctx);
       await refreshSelfLogin(ctx);
+      await discoverWorkerPr(ctx);
       const shaSync = await syncWatchedSha(ctx);
       let addedCount = 0;
       const errors = await reconcileOrchestrationMembership(ctx);
@@ -2164,6 +2179,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const watched of savedPrs) {
       await discover(ctx, "startup", false, watched.pr.url, { alreadyEnrolled: true });
     }
+    await discoverWorkerPr(ctx);
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
 
     let shaSyncError: string | undefined;
@@ -2200,6 +2216,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("agent_settled", async (_event, ctx) => {
     if (state.workerOrchestrationSessionId) {
+      await discoverWorkerPr(ctx);
       await captureWorkerSettlement(ctx);
       await publishWorkerSnapshot(ctx, true);
       await receiveOrchestratorMessages(ctx);
