@@ -26,6 +26,7 @@
   },
   {
     "command": "pi",
+    "check": "command -v pi >/dev/null 2>&1 && grep -q '^export PI_MANAGED_INSTALL_ROOT$' \"$(command -v pi)\"",
     "install": "curl -fsSL https://pi.dev/install.sh | bash",
     "update": "pi update --all"
   },
