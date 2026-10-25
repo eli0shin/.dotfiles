@@ -62,7 +62,6 @@ brew "pnpm"
 brew "plannotator/tap/plannotator-tui"
 brew "agent-browser"
 brew "arp-scan"
-brew "jnsahaj/lumen/lumen"
 brew "git-delta"
 brew "libgit2"
 brew "yq"
@@ -93,9 +92,8 @@ if OS.mac?
   cask "t3-code"
   cask "logitune"
   cask "superwhisper"
-  cask "kitlangton-hex"
   cask "kitlangton/tap/scrawl"
-  # cask "macparakeet"
+  cask "anomalyco/tap/hex"
 end
 
 cask "codex"
