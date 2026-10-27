@@ -2,6 +2,7 @@
   "trustedtaps": [
     "anomalyco/tap",
     "atlassian/acli",
+    "danielhopkins/formulae",
     "felixkratz/formulae",
     "hashicorp/tap",
     "https://github.com/anomalyco/homebrew-tap.git",
