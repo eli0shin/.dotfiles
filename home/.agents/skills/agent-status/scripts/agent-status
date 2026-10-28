@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Report every agent running in herdr and its PR watch.
+
+  agent-status            Markdown table: Workspace | Tab | Watching | Role
+  agent-status --signals  JSON triage signals for every agent
+
+PR watch state is the newest `pr-watch-state` entry on the session's active
+branch, the entry the pr-watch extension restores on resume.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+PR_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+RUN_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/actions/runs/(\d+)")
+NOW = datetime.now(timezone.utc)
+
+
+def herdr(*args):
+    out = subprocess.run(["herdr", *args], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)["result"]
+
+
+def gh(*args):
+    return subprocess.run(["gh", *args], capture_output=True, text=True)
+
+
+def gh_json(*args):
+    result = gh(*args)
+    if result.returncode != 0:
+        return {"error": result.stderr.strip()[:300]}
+    return json.loads(result.stdout)
+
+
+def minutes_since(timestamp):
+    # gh writes an unset time as Go's zero time.
+    if not timestamp or timestamp.startswith("0001-01-01"):
+        return None
+    try:
+        then = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return round((NOW - then).total_seconds() / 60)
+
+
+def message_text(message):
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.get("text", "") for part in content or [] if part.get("type") == "text")
+
+
+def load_session(session_file):
+    """Walk the active branch from the leaf: newest watch state and last messages."""
+    entries = []
+    try:
+        with open(session_file) as f:
+            for line in f:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        return {}
+    by_id = {e["id"]: e for e in entries if e.get("id")}
+    session = {}
+    entry = next((e for e in reversed(entries) if e.get("id")), None)
+    while entry and not {"state", "last_user", "last_assistant"} <= session.keys():
+        if entry.get("type") == "custom" and entry.get("customType") == "pr-watch-state":
+            session.setdefault("state", entry.get("data"))
+        elif entry.get("type") == "message":
+            message = entry.get("message") or {}
+            role = message.get("role")
+            session.setdefault("last_activity_at", entry.get("timestamp"))
+            text = message_text(message).strip()
+            if role == "user" and text:
+                session.setdefault("last_user", {"at": entry.get("timestamp"), "text": text})
+            elif role == "assistant" and text:
+                session.setdefault("last_assistant", {"at": entry.get("timestamp"), "text": text})
+        entry = by_id.get(entry.get("parentId"))
+    return session
+
+
+def pr_label(pr):
+    match = PR_URL.search(pr.get("url") or "")
+    if match:
+        return f"{match.group(1).split('/')[-1]}#{match.group(2)}"
+    repo = (pr.get("repo") or "").split("/")[-1]
+    return f"{repo}#{pr.get('number')}"
+
+
+def is_named(label):
+    return bool(label) and not label.isdigit()
+
+
+def collect():
+    agents = herdr("agent", "list")["agents"]
+    workspaces = herdr("workspace", "list")["workspaces"]
+    tabs = {t["tab_id"]: t for t in herdr("tab", "list")["tabs"]}
+    ws_label = {w["workspace_id"]: w.get("label") or w["workspace_id"] for w in workspaces}
+    ws_order = {w["workspace_id"]: i for i, w in enumerate(workspaces)}
+    this_session = os.environ.get("PI_SESSION_FILE")
+
+    rows = []
+    for agent in agents:
+        tab = tabs.get(agent["tab_id"], {})
+        session_file = (agent.get("agent_session") or {}).get("value")
+        session = load_session(session_file) if agent.get("agent") == "pi" and session_file else {}
+        rows.append({
+            "agent": agent,
+            "workspace": ws_label.get(agent["workspace_id"], agent["workspace_id"]),
+            "tab_label": tab.get("label") or "",
+            "tab_number": tab.get("number", 0),
+            "session": session,
+            "state": session.get("state") or {},
+            "this": bool(session_file) and session_file == this_session,
+        })
+    rows.sort(key=lambda r: (ws_order.get(r["agent"]["workspace_id"], len(ws_order)), r["tab_number"]))
+
+    # A worker points at its orchestrator by the orchestrator's named tab,
+    # falling back to the orchestrator's workspace.
+    orchestrators = {}
+    for r in rows:
+        orch_id = r["state"].get("orchestrationSessionId")
+        if orch_id:
+            orchestrators[orch_id] = r["tab_label"] if is_named(r["tab_label"]) else r["workspace"]
+
+    # An orchestration's ticket is the Jira key its keyed worker branches share.
+    # The orchestrator's snapshots cover finished workers whose panes are gone.
+    branches = {}
+    for r in rows:
+        state = r["state"]
+        if state.get("orchestrationSessionId"):
+            snapshots = (state.get("workerSnapshots") or {}).values()
+            branches.setdefault(state["orchestrationSessionId"], []).extend(s.get("branch") for s in snapshots)
+        if state.get("workerOrchestrationSessionId"):
+            branches.setdefault(state["workerOrchestrationSessionId"], []).append(state.get("workerBranch"))
+    tickets = {}
+    for orch_id, names in branches.items():
+        key_sets = [keys for keys in (set(re.findall(r"[A-Z]+-\d+", (b or "").upper())) for b in names) if keys]
+        tickets[orch_id] = sorted(set.intersection(*key_sets)) if key_sets else []
+
+    for r in rows:
+        state = r["state"]
+        watching = [pr_label(w["pr"]) for w in state.get("watchedPrs", [])]
+        sha = state.get("watchedSha")
+        if not watching and sha:
+            merged = sha.get("mergedPr")
+            watching = [f"merge of #{merged['number']}" if merged else f"SHA {sha['sha'][:7]}"]
+        r["watching"] = watching
+        if state.get("orchestrationSessionId"):
+            r["role"] = "orchestrator"
+            r["ticket"] = tickets.get(state["orchestrationSessionId"], [])
+        elif state.get("workerOrchestrationSessionId"):
+            r["role"] = "worker"
+            r["orchestrator"] = orchestrators.get(state["workerOrchestrationSessionId"], "unknown orchestrator")
+        elif watching:
+            r["role"] = "standalone"
+        else:
+            r["role"] = None
+    return rows
+
+
+def print_table(rows):
+    print("| Workspace | Tab | Watching | Role |")
+    print("|---|---|---|---|")
+    for r in rows:
+        state = r["state"]
+        tab = r["tab_label"] + (" (this session)" if r["this"] else "")
+        watched = ", ".join(r["watching"]) or "—"
+        if state.get("mode") in ("off", "paused"):
+            watched += f" (watch {state['mode']})"
+        if r["role"] == "orchestrator":
+            role = "**orchestrator**" + (f" ({', '.join(r['ticket'])})" if r["ticket"] else "")
+        elif r["role"] == "worker":
+            role = f"worker → {r['orchestrator']}"
+        else:
+            role = r["role"] or "—"
+        print(f"| {r['workspace']} | {tab} | {watched} | {role} |")
+
+
+def pr_details(url):
+    fields = "number,url,state,isDraft,mergedAt,author,reviewDecision,mergeable,reviewRequests,updatedAt"
+    pr = gh_json("pr", "view", url, "--json", fields)
+    if "error" in pr:
+        return {"url": url, "error": pr["error"]}
+    author = (pr.get("author") or {}).get("login")
+
+    # `gh pr checks` keeps only the latest run of each check, so superseded
+    # and concurrency-cancelled runs drop out. Read its JSON whatever the
+    # exit code, since gh can exit non-zero with valid check output.
+    failed, pending, pending_ages = [], [], []
+    passed = 0
+    checks = gh("pr", "checks", url, "--json", "name,state,bucket,startedAt")
+    try:
+        check_list = json.loads(checks.stdout) if checks.stdout.strip() else []
+    except json.JSONDecodeError:
+        check_list = []
+    for check in check_list:
+        bucket = check.get("bucket")
+        if bucket == "pending":
+            pending.append(check.get("name"))
+            age = minutes_since(check.get("startedAt"))
+            if age is not None:
+                pending_ages.append(age)
+        elif bucket in ("fail", "cancel"):
+            failed.append(f"{check.get('name')} ({(check.get('state') or bucket).lower()})")
+        else:
+            passed += 1
+
+    # GraphQL logins carry no bot flag, so take reviewer types from REST.
+    match = PR_URL.search(pr["url"])
+    reviews = gh(
+        "api", f"repos/{match.group(1)}/pulls/{match.group(2)}/reviews", "--paginate",
+        "--jq", ".[] | {login: .user.login, type: .user.type, state: .state}",
+    )
+    human_reviews = {}
+    for line in reviews.stdout.splitlines() if reviews.returncode == 0 else []:
+        review = json.loads(line)
+        if review["login"] != author and review["type"] != "Bot":
+            human_reviews[review["login"]] = review["state"]
+    return {
+        "url": pr["url"],
+        "label": pr_label(pr),
+        "author": author,
+        "state": pr.get("state"),
+        "draft": pr.get("isDraft"),
+        "merged_at": pr.get("mergedAt"),
+        "review_decision": pr.get("reviewDecision") or None,
+        "human_reviews": human_reviews,
+        "review_requests": [q.get("login") or q.get("name") for q in pr.get("reviewRequests") or []],
+        "mergeable": pr.get("mergeable"),
+        "checks": {
+            "passed": passed,
+            "failed": failed,
+            "pending": pending,
+            "oldest_pending_minutes": max(pending_ages) if pending_ages else None,
+        },
+        "updated_minutes_ago": minutes_since(pr.get("updatedAt")),
+    }
+
+
+def run_details(repo, run_id):
+    run = gh_json("run", "view", run_id, "-R", repo, "--json", "url,status,conclusion,workflowName,jobs")
+    if "error" in run:
+        return {"url": f"https://github.com/{repo}/actions/runs/{run_id}", "error": run["error"]}
+    return {
+        "url": run.get("url"),
+        "workflow": run.get("workflowName"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion") or None,
+        "waiting_jobs": [j["name"] for j in run.get("jobs") or [] if j.get("status") == "waiting"],
+    }
+
+
+def tail(text, limit):
+    return text if len(text) <= limit else "…" + text[-limit:]
+
+
+def print_signals(rows):
+    pr_urls, run_refs = set(), set()
+    for r in rows:
+        r["watched_urls"] = [w["pr"]["url"] for w in r["state"].get("watchedPrs", []) if w["pr"].get("url")]
+        text = (r["session"].get("last_assistant") or {}).get("text", "")
+        r["linked_pr_urls"] = sorted({f"https://github.com/{m[0]}/pull/{m[1]}" for m in PR_URL.findall(text)} - set(r["watched_urls"]))
+        r["linked_run_refs"] = sorted(set(RUN_URL.findall(text)))
+        pr_urls.update(r["watched_urls"], r["linked_pr_urls"])
+        run_refs.update(r["linked_run_refs"])
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        prs = dict(zip(sorted(pr_urls), pool.map(pr_details, sorted(pr_urls))))
+        runs = dict(zip(sorted(run_refs), pool.map(lambda ref: run_details(*ref), sorted(run_refs))))
+
+    out = []
+    for r in rows:
+        agent, session, state = r["agent"], r["session"], r["state"]
+        last_user = session.get("last_user")
+        last_assistant = session.get("last_assistant")
+        signal = {
+            "workspace": r["workspace"],
+            "tab": r["tab_label"],
+            "pane_id": agent["pane_id"],
+            "workspace_id": agent["workspace_id"],
+            "cwd": agent.get("cwd"),
+            "agent": agent.get("agent"),
+            "herdr_status": agent.get("agent_status"),
+            "this_session": r["this"],
+            "session_file": (agent.get("agent_session") or {}).get("value"),
+            "role": r["role"],
+            "watch_mode": state.get("mode"),
+            "idle_minutes": minutes_since(session.get("last_activity_at")),
+            "last_user": last_user and {
+                "minutes_ago": minutes_since(last_user["at"]),
+                "text": tail(last_user["text"], 800),
+            },
+            "last_assistant": last_assistant and {
+                "minutes_ago": minutes_since(last_assistant["at"]),
+                "chars": len(last_assistant["text"]),
+                "text": tail(last_assistant["text"], 2500),
+            },
+            "watched_prs": [prs[url] for url in r["watched_urls"]],
+            "linked_prs": [prs[url] for url in r["linked_pr_urls"]],
+            "linked_runs": [runs[ref] for ref in r["linked_run_refs"]],
+        }
+        if r["role"] == "orchestrator":
+            signal["ticket"] = r["ticket"]
+            signal["pending_worker_settlements"] = len(state.get("pendingWorkerSettlements") or [])
+        if r["role"] == "worker":
+            settlement = state.get("latestWorkerSettlement") or {}
+            signal["orchestrator"] = r["orchestrator"]
+            signal["branch"] = state.get("workerBranch")
+            # PR Watch forwards a worker's finished turn to the orchestrator
+            # only when the worker watches no PR; otherwise the orchestrator
+            # waits for PR events and never sees the worker stop.
+            signal["last_turn_reaches_orchestrator"] = bool(settlement) and not settlement.get("hadWatchedPr")
+        out.append(signal)
+    json.dump(out, sys.stdout, indent=2)
+    print()
+
+
+def main():
+    rows = collect()
+    if sys.argv[1:] == ["--signals"]:
+        print_signals(rows)
+    elif not sys.argv[1:]:
+        print_table(rows)
+    else:
+        print("Usage: agent-status [--signals]", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (subprocess.CalledProcessError, FileNotFoundError) as error:
+        print(f"agent-status: command failed: {error}", file=sys.stderr)
+        sys.exit(1)
