@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Click a Block Kit button on a Slack message as yourself, the same way the Slack web
+# client does (undocumented `blocks.actions` API, using slackcli's stored browser session).
+#
+#   slack-click-button <channel-id> <message-ts> <action-id> [--yes]
+#
+# Without --yes it prints the button it would click and the request, then exits.
+set -euo pipefail
+export SLACKCLI_NO_UPDATE_NOTIFIER=1
+
+[[ $# -ge 3 ]] || { echo "Usage: $0 <channel-id> <message-ts> <action-id> [--yes]" >&2; exit 2; }
+channel="$1" ts="$2" action_id="$3" yes="${4:-}"
+
+creds=~/.config/slackcli/workspaces.json
+ws=$(jq -r '.default_workspace' "$creds")
+[[ $(jq -r --arg ws "$ws" '.workspaces[$ws].auth_type' "$creds") == browser ]] \
+  || { echo "slackcli default workspace must use browser auth (xoxc/xoxd)" >&2; exit 1; }
+base=$(jq -r --arg ws "$ws" '.workspaces[$ws].workspace_url | rtrimstr("/")' "$creds")
+
+msg=$(slackcli conversations get "$channel" "$ts" --json | jq '.message') \
+  || { echo "Could not fetch message $channel/$ts" >&2; exit 1; }
+[[ "$msg" != null && -n "$msg" ]] || { echo "Message $channel/$ts not found" >&2; exit 1; }
+
+service_id=$(jq -r '.bot_id // empty' <<<"$msg")
+[[ -n "$service_id" ]] || { echo "Message has no bot_id; not an app message" >&2; exit 1; }
+
+# Find the button and the block that holds it (an actions block or a section accessory).
+action=$(jq -c --arg id "$action_id" '
+  first(.blocks[]? as $b
+    | ((if $b.type == "actions" then $b.elements[] else ($b.accessory // empty) end)
+       | select(.type == "button" and .action_id == $id)
+       | . + {block_id: $b.block_id}))
+  // empty' <<<"$msg")
+if [[ -z "$action" ]]; then
+  echo "No button with action_id=$action_id on that message. Buttons present:" >&2
+  jq -r '.blocks[]? | (if .type == "actions" then .elements[] else (.accessory // empty) end)
+    | select(.type == "button") | "  \(.action_id)  (\(.text.text))"' <<<"$msg" >&2
+  exit 1
+fi
+
+container=$(jq -cn --arg ts "$ts" --arg ch "$channel" --arg thread "$(jq -r '.thread_ts // empty' <<<"$msg")" '
+  {type: "message", message_ts: $ts, channel_id: $ch, is_ephemeral: false}
+  + (if $thread != "" then {thread_ts: $thread} else {} end)')
+actions="[$action]"
+
+echo "Button:    $(jq -r '"\(.text.text)  action_id=\(.action_id)  value=\(.value // "")"' <<<"$action")"
+echo "Endpoint:  $base/api/blocks.actions"
+echo "service_id=$service_id"
+echo "container=$container"
+echo "actions=$actions"
+if [[ "$yes" != --yes ]]; then
+  echo "Dry run. Re-run with --yes to click."
+  exit 0
+fi
+
+xoxc=$(jq -r --arg ws "$ws" '.workspaces[$ws].xoxc_token' "$creds")
+xoxd=$(jq -r --arg ws "$ws" '.workspaces[$ws].xoxd_token | @uri' "$creds")
+resp=$(curl -sS "$base/api/blocks.actions" \
+  -H "Cookie: d=$xoxd" \
+  --data-urlencode "token=$xoxc" \
+  --data-urlencode "service_id=$service_id" \
+  --data-urlencode "actions=$actions" \
+  --data-urlencode "container=$container" \
+  --data-urlencode "client_token=web-$(date +%s)000")
+unset xoxc xoxd
+echo "Response:  $resp"
+jq -e '.ok == true' >/dev/null <<<"$resp"
