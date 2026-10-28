@@ -3,10 +3,28 @@
 set -o pipefail
 
 usage() {
-  echo "Usage: spawn-worker <ticket-name> [--context <text>]" >&2
-  echo "       spawn-worker --branch <branch-name> [--task <text>]" >&2
+  echo "Usage: spawn-worker [--repo <path>] <ticket-name> [--context <text>]" >&2
+  echo "       spawn-worker [--repo <path>] --branch <branch-name> [--task <text>]" >&2
   exit 2
 }
+
+# --repo names the checkout the worker stacks on; it defaults to the current
+# directory. Its checked-out branch is the worker's landing branch.
+repo=""
+args=()
+while [[ $# -gt 0 ]]; do
+  if [[ $1 == --repo ]]; then
+    if [[ $# -lt 2 || -z $2 || -n $repo ]]; then
+      usage
+    fi
+    repo=$2
+    shift 2
+  else
+    args+=("$1")
+    shift
+  fi
+done
+set -- "${args[@]}"
 
 # A ticket handoff names a tracker ticket, which is also the branch; its text
 # is optional steering. A task handoff has no ticket, so its text is the task.
@@ -40,6 +58,11 @@ text=${text##+([[:space:]])}
 text=${text%%+([[:space:]])}
 if [[ -z $ticket && -z $text ]]; then
   echo "spawn-worker --branch requires a task from --task or stdin" >&2
+  exit 2
+fi
+
+if [[ -n $repo ]] && ! cd -- "$repo"; then
+  echo "spawn-worker --repo requires an existing checkout: $repo" >&2
   exit 2
 fi
 

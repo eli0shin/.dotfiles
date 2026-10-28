@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 
 # Queue a message for the Pi worker of one ticket. The worker's PR Watch
-# delivers it as a harness notification when the worker is idle, so the
-# message never interrupts a worker turn.
+# steers it into the worker's running turn, or starts a turn if the worker
+# is idle, so a correction does not wait for a long run to finish.
 
 set -o pipefail
 
 usage() {
-  echo "Usage: message-worker <ticket-name> [<message>]" >&2
-  echo "       printf '%s\\n' <message> | message-worker <ticket-name>" >&2
+  echo "Usage: message-worker [--repo <path>] <ticket-name> [<message>]" >&2
+  echo "       printf '%s\\n' <message> | message-worker [--repo <path>] <ticket-name>" >&2
   exit 2
 }
+
+# Workers in different repos can share a branch name. --repo picks the repo;
+# without it, the current directory's repo is preferred.
+repo=""
+if [[ ${1:-} == --repo ]]; then
+  if [[ $# -lt 2 || -z $2 ]]; then
+    usage
+  fi
+  repo=$2
+  shift 2
+fi
 
 if [[ $# -ne 1 && $# -ne 2 ]]; then
   usage
@@ -32,7 +43,13 @@ fi
 
 state_root=${PI_PR_WATCH_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pi/pr-watch/orchestrations}
 
-python3 - "$state_root" "$PI_ORCHESTRATION_SESSION_ID" "$ticket" "$message" <<'PY'
+git_common_dir=$(git -C "${repo:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [[ -n $repo && -z $git_common_dir ]]; then
+  echo "message-worker --repo requires a Git checkout: $repo" >&2
+  exit 2
+fi
+
+python3 - "$state_root" "$PI_ORCHESTRATION_SESSION_ID" "$ticket" "$message" "$git_common_dir" "${repo:+explicit}" <<'PY'
 import json
 import os
 import sys
@@ -41,7 +58,7 @@ import time
 import uuid
 from urllib.parse import quote
 
-state_root, orchestration_id, ticket, text = sys.argv[1:5]
+state_root, orchestration_id, ticket, text, git_common_dir, repo_mode = sys.argv[1:7]
 text = text.strip()
 if not text:
     raise SystemExit("message-worker requires a non-empty message")
@@ -70,10 +87,25 @@ for name in names:
         and isinstance(snapshot.get("workerSessionId"), str)
         and isinstance(snapshot.get("revision"), (int, float))
     ):
-        workers.append((snapshot["revision"], snapshot["workerSessionId"]))
+        common = snapshot.get("gitCommonDir")
+        workers.append((snapshot["revision"], snapshot["workerSessionId"], common if isinstance(common, str) else None))
+
+if git_common_dir:
+    in_repo = [worker for worker in workers if worker[2] == git_common_dir]
+    if in_repo:
+        workers = in_repo
+    elif repo_mode:
+        # Snapshots from workers started before repo tracking carry no repo.
+        workers = [worker for worker in workers if worker[2] is None]
 
 if not workers:
-    raise SystemExit(f"no Pi worker found on branch {ticket}")
+    where = f" in {os.path.dirname(git_common_dir)}" if repo_mode else ""
+    raise SystemExit(f"no Pi worker found on branch {ticket}{where}")
+
+repos = {worker[2] for worker in workers}
+if len(repos) > 1:
+    names = ", ".join(sorted(os.path.dirname(common) if common else "unknown" for common in repos))
+    raise SystemExit(f"workers on branch {ticket} in several repos ({names}); pass --repo <path>")
 
 # A respawned worker leaves the old session's snapshot behind. The live worker
 # publishes a new revision on each start and settle, so the newest one wins.
@@ -91,5 +123,5 @@ except BaseException:
     os.unlink(temporary)
     raise
 
-print(f"Queued message {message_id} for worker {ticket}; it arrives when the worker is idle.")
+print(f"Queued message {message_id} for worker {ticket}; it steers the worker's current turn, or starts one if the worker is idle.")
 PY

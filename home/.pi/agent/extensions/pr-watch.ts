@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { orchestratorInstructions } from "./orchestrator.ts";
 
 type WatchedPr = {
   repo: string;
@@ -94,6 +95,8 @@ type WorkerWatchSnapshot = {
   workerSessionId: string;
   revision: number;
   branch: string;
+  // Lets message-worker tell apart workers on the same branch in different repos.
+  gitCommonDir?: string;
   watchedPrs: Array<Pick<WatchedPr, "repo" | "number" | "url">>;
   latestSettlement?: WorkerSettlement;
 };
@@ -330,6 +333,7 @@ function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
   return (
     typeof value.branch === "string" &&
     Boolean(value.branch) &&
+    (value.gitCommonDir === undefined || typeof value.gitCommonDir === "string") &&
     (value.latestSettlement === undefined || isWorkerSettlement(value.latestSettlement))
   );
 }
@@ -457,12 +461,27 @@ export default function prWatch(pi: ExtensionAPI): void {
   let inboxQueue = Promise.resolve(0);
   let polling = false;
   let deliveryAttemptedId: string | undefined;
+  // Set between agent_start and agent_settled. ctx.isIdle() is also false
+  // during a manual compaction, when steering would start a run instead.
+  let agentRunning = false;
+  let steeredMessages: Array<{ marker: string; messages: OrchestratorMessage[] }> = [];
   let lastPublishedMembership: string | undefined;
   let currentRepo: string | undefined;
   let currentDefaultBranch: string | undefined;
   let currentRepoLookup: Promise<string | undefined> | undefined;
   const defaultBranches = new Map<string, string>();
   let snapshotPublishQueue = Promise.resolve();
+  let workerGitCommonDir: Promise<string | undefined> | undefined;
+
+  // Exported for spawn-worker and orchestrator.ts. session_shutdown puts back
+  // the value found at session_start, so a launch request carries over to the
+  // next session in this process but a promoted or restored ID does not.
+  let orchestrationEnvironmentAtStart: string | undefined;
+
+  function exportOrchestrationSessionId(): void {
+    if (state.orchestrationSessionId) process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
+    else delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  }
   const coordinationRoot =
     process.env.PI_PR_WATCH_STATE_DIR ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "pr-watch", "orchestrations");
@@ -507,8 +526,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   // The orchestrator's message-worker script writes one JSON file per message.
-  // Messages move into the persisted state before their files are removed, so
-  // they use the same idle-only delivery as other PR Watch notifications.
+  // Messages move into the persisted state before their files are removed.
+  // flushPending steers them into a running turn, or batches them with other
+  // PR Watch notifications when the worker is idle.
   function receiveOrchestratorMessages(ctx: ExtensionContext): Promise<number> {
     inboxQueue = inboxQueue.then(async () => {
       const orchestrationId = state.workerOrchestrationSessionId;
@@ -594,6 +614,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         workerSessionId,
         revision: Date.now(),
         branch: state.workerBranch,
+        gitCommonDir: await resolveWorkerGitCommonDir(),
         watchedPrs: state.watchedPrs.map(({ pr }) => ({
           repo: pr.repo,
           number: pr.number,
@@ -615,6 +636,17 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     });
     await snapshotPublishQueue;
+  }
+
+  function resolveWorkerGitCommonDir(): Promise<string | undefined> {
+    workerGitCommonDir ??= pi
+      .exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: 30_000 })
+      .then((result) => {
+        const directory = result.stdout.trim();
+        return result.code === 0 && directory.startsWith("/") ? directory : undefined;
+      })
+      .catch(() => undefined);
+    return workerGitCommonDir;
   }
 
   async function refreshWorkerBranch(): Promise<boolean> {
@@ -1765,7 +1797,10 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function sessionHasDelivery(ctx: ExtensionContext, delivery: PendingDelivery): boolean {
-    const marker = deliveryMarker(delivery.id);
+    return sessionHasMarker(ctx, deliveryMarker(delivery.id));
+  }
+
+  function sessionHasMarker(ctx: ExtensionContext, marker: string): boolean {
     return ctx.sessionManager.getBranch().some((entry) => {
       if (entry.type === "custom_message" && entry.customType === NOTIFICATION_TYPE) {
         const content = typeof entry.content === "string" ? entry.content : textContent(entry.content);
@@ -1809,8 +1844,74 @@ export default function prWatch(pi: ExtensionAPI): void {
     return true;
   }
 
+  // A correction from the orchestrator must reach a worker mid-run, so it
+  // steers the running turn. Pi queues the message once sendMessage returns;
+  // that counts as delivery. Messages already in an idle batch stay there.
+  function steerOrchestratorMessages(ctx: ExtensionContext): void {
+    if (!agentRunning || ctx.isIdle()) return;
+    const batched = new Set((state.pendingDelivery?.pendingOrchestratorMessages ?? []).map((message) => message.id));
+    const messages = (state.pendingOrchestratorMessages ?? []).filter((message) => !batched.has(message.id));
+    if (messages.length === 0) return;
+
+    const marker = `<!-- pr-watch-steer:${randomUUID()} -->`;
+    try {
+      pi.sendMessage(
+        {
+          customType: NOTIFICATION_TYPE,
+          content: `${buildBatchMessage(messages.map(buildOrchestratorMessage))}\n\n${marker}`,
+          display: true,
+        },
+        // triggerTurn starts a run if this one settled in the meantime.
+        { triggerTurn: true, deliverAs: "steer" },
+      );
+    } catch (error) {
+      state.lastError = error instanceof Error ? error.message : String(error);
+      save();
+      setStatus(ctx);
+      return;
+    }
+    markOrchestratorMessagesDelivered(new Set(messages.map((message) => message.id)));
+    steeredMessages.push({ marker, messages });
+    state.lastNotifyAt = Date.now();
+    save();
+    setStatus(ctx);
+  }
+
+  // Aborting a run clears Pi's steering queue without restoring extension
+  // messages to the editor. A steer that never reached the transcript by the
+  // time the run settles goes back to pending, so this settle resends it.
+  // Other aborts, such as /compact mid-run, keep Pi's queue, and the worker
+  // then gets the message twice. A duplicate beats a lost correction.
+  function requeueDroppedSteers(ctx: ExtensionContext): void {
+    const dropped = steeredMessages
+      .filter(({ marker }) => !sessionHasMarker(ctx, marker))
+      .flatMap(({ messages }) => messages);
+    steeredMessages = [];
+    if (dropped.length === 0) return;
+
+    const ids = new Set(dropped.map((message) => message.id));
+    const pending = (state.pendingOrchestratorMessages ?? []).filter((message) => !ids.has(message.id));
+    state.pendingOrchestratorMessages = [...dropped, ...pending];
+    state.deliveredOrchestratorMessageIds = (state.deliveredOrchestratorMessageIds ?? []).filter((id) => !ids.has(id));
+    save();
+    setStatus(ctx);
+  }
+
+  function markOrchestratorMessagesDelivered(ids: Set<string>): void {
+    state.pendingOrchestratorMessages = (state.pendingOrchestratorMessages ?? []).filter(
+      (message) => !ids.has(message.id),
+    );
+    state.deliveredOrchestratorMessageIds = [
+      ...new Set([...(state.deliveredOrchestratorMessageIds ?? []), ...ids]),
+    ].slice(-MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS);
+  }
+
   function flushPending(ctx: ExtensionContext): void {
-    if (state.mode !== "active" || !ctx.isIdle()) return;
+    if (state.mode !== "active") return;
+    if (!ctx.isIdle()) {
+      steerOrchestratorMessages(ctx);
+      return;
+    }
     if (state.pendingDelivery && !deliveryAttemptedId && !deliveryStillPending(state.pendingDelivery)) {
       state.pendingDelivery = undefined;
       save();
@@ -1918,13 +2019,9 @@ export default function prWatch(pi: ExtensionAPI): void {
       ...new Set([...(state.resolvedWorkerSettlementIds ?? []), ...deliveredWorkerIds]),
     ];
 
-    const deliveredMessageIds = new Set((delivery.pendingOrchestratorMessages ?? []).map((message) => message.id));
-    state.pendingOrchestratorMessages = (state.pendingOrchestratorMessages ?? []).filter(
-      (message) => !deliveredMessageIds.has(message.id),
+    markOrchestratorMessagesDelivered(
+      new Set((delivery.pendingOrchestratorMessages ?? []).map((message) => message.id)),
     );
-    state.deliveredOrchestratorMessageIds = [
-      ...new Set([...(state.deliveredOrchestratorMessageIds ?? []), ...deliveredMessageIds]),
-    ].slice(-MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS);
 
     state.pendingDelivery = undefined;
     deliveryAttemptedId = undefined;
@@ -2179,7 +2276,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     stopInboxPolling();
     state = initialState();
     deliveryAttemptedId = undefined;
+    agentRunning = false;
+    steeredMessages = [];
     lastPublishedMembership = undefined;
+    orchestrationEnvironmentAtStart = process.env.PI_ORCHESTRATION_SESSION_ID;
     const requestedOrchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
     const requestedWorkerOrchestrationSessionId = process.env[WORKER_ORCHESTRATION_ENV]?.trim() || undefined;
     const shouldEnrollInRequestedOrchestration =
@@ -2210,11 +2310,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
     state.pendingWorkerSettlements ??= [];
     state.pendingOrchestratorMessages ??= [];
-    if (state.orchestrationSessionId) {
-      process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
-    } else {
-      delete process.env.PI_ORCHESTRATION_SESSION_ID;
-    }
+    exportOrchestrationSessionId();
     if (state.workerOrchestrationSessionId) {
       await refreshWorkerBranch();
       await receiveOrchestratorMessages(ctx);
@@ -2269,9 +2365,18 @@ export default function prWatch(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     stopPolling();
     stopInboxPolling();
+    if (orchestrationEnvironmentAtStart === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = orchestrationEnvironmentAtStart;
+  });
+
+  pi.on("agent_start", async (_event, ctx) => {
+    agentRunning = true;
+    flushPending(ctx);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    agentRunning = false;
+    requeueDroppedSteers(ctx);
     if (state.workerOrchestrationSessionId) {
       await discoverWorkerPr(ctx);
       await captureWorkerSettlement(ctx);
@@ -2391,6 +2496,27 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `Stopped watching PR ${repo}#${pr.number}. Automatic discovery cannot re-add it until explicit opt-in or /pr-watch reset.`;
   }
 
+  // Runtime counterpart of starting Pi with PI_ORCHESTRATION_SESSION_ID. The
+  // saved state carries the ID, so resume restores the role.
+  async function orchestrate(ctx: ExtensionContext): Promise<string> {
+    if (state.workerOrchestrationSessionId) {
+      throw new Error("A worker session cannot become an orchestrator");
+    }
+    if (!state.orchestrationSessionId) {
+      state.orchestrationSessionId = randomUUID();
+      // Orchestration drops PRs that no worker published; keep the ones this
+      // session already watched.
+      for (const { pr } of state.watchedPrs) (state.prOverrides ??= {})[prIdentityKey(pr)] ??= "watch";
+      if (state.mode === "off") state.mode = "active";
+      await syncWatchedSha(ctx);
+      save();
+      startPolling(ctx);
+      setStatus(ctx);
+    }
+    exportOrchestrationSessionId();
+    return state.orchestrationSessionId;
+  }
+
   const prParameters = Type.Object({
     pr: Type.String({ description: "PR number in the current repository, or full pull request URL" }),
   });
@@ -2412,6 +2538,31 @@ export default function prWatch(pi: ExtensionAPI): void {
     executionMode: "sequential",
     async execute(_id, { pr }, _signal, _onUpdate, ctx) {
       return { content: [{ type: "text", text: await unwatchPr(pr, ctx) }], details: undefined };
+    },
+  });
+
+  pi.registerTool({
+    name: "orchestrate",
+    label: "Orchestrate",
+    description: "Make this session the orchestrator, when the user asks it to orchestrate or spawn workers.",
+    parameters: Type.Object({}),
+    executionMode: "sequential",
+    async execute(_id, _params, _signal, _onUpdate, ctx) {
+      const orchestrationId = await orchestrate(ctx);
+      const text = `This session is now orchestration ${orchestrationId}. Your system prompt includes these instructions from the next turn; follow them now:\n\n${await orchestratorInstructions()}`;
+      return { content: [{ type: "text", text }], details: undefined };
+    },
+  });
+
+  pi.registerCommand("orchestrate", {
+    description: "Make this session an orchestrator of worker sessions",
+    handler: async (_args, ctx) => {
+      try {
+        const orchestrationId = await orchestrate(ctx);
+        ctx.ui.notify(`This session is orchestration ${orchestrationId}; orchestrator instructions apply from your next message.`, "info");
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+      }
     },
   });
 

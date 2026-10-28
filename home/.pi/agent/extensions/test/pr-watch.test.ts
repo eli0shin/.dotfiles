@@ -38,7 +38,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
   const stateRoot = options.stateRoot ?? mkdtempSync(join(tmpdir(), "pr-watch-test-"));
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
-  const tools = new Map<string, { execute: (id: string, params: { pr: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
+  const tools = new Map<string, { execute: (id: string, params: { pr?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
   let execGate: {
     matches: (command: string, args: string[]) => boolean;
@@ -383,6 +383,11 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     await withFakeTimer(() => handlers.get("session_start")?.({ reason }, ctx));
   }
 
+  async function startAgent(): Promise<void> {
+    idle = false;
+    await handlers.get("agent_start")?.({}, ctx);
+  }
+
   async function settleAgent(): Promise<void> {
     await handlers.get("agent_settled")?.({}, ctx);
   }
@@ -395,10 +400,10 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     withFakeTimer,
     handlers,
     commands,
-    async callTool(name: "watch_pr" | "unwatch_pr", pr: string) {
+    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate", pr?: string) {
       const tool = tools.get(name);
       assert.ok(tool, `${name} must be registered`);
-      return withFakeTimer(() => tool.execute("manual-watch", { pr }, undefined, undefined, ctx));
+      return withFakeTimer(() => tool.execute("manual-watch", pr === undefined ? {} : { pr }, undefined, undefined, ctx));
     },
     execCalls,
     pauseExec(matches: (command: string, args: string[]) => boolean, payload: unknown) {
@@ -431,6 +436,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     runInboxPoll,
     workerInbox,
     startSession,
+    startAgent,
     settleAgent,
     shutdown,
     writeWorkerSnapshot,
@@ -943,31 +949,93 @@ test("associated workers still receive merge conflicts", async () => {
   });
 });
 
-test("message-worker delivers an orchestrator message once, only when the worker is idle", async () => {
+test("message-worker steers a running worker once, without waiting for it to settle", async () => {
   await withWorker(async (harness) => {
-    harness.setIdle(false);
+    await harness.startAgent();
     const queued = runMessageWorker(["ticket-one", "Address review 77 on the retry loop."]);
     assert.equal(queued.status, 0, queued.stderr);
-    assert.match(queued.stdout, /arrives when the worker is idle/);
+    assert.match(queued.stdout, /steers the worker's current turn/);
 
     await harness.runInboxPoll();
-    assert.deepEqual(harness.sentMessages, []);
-    assert.deepEqual(await readdir(harness.workerInbox("session-123", "worker-session")), []);
-    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
-
-    harness.setIdle(true);
-    await harness.settleAgent();
     assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
     assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
     assert.match(
       harness.sentMessages[0] ?? "",
       /Message from the orchestrator:\n\nAddress review 77 on the retry loop\./,
     );
+    assert.deepEqual(await readdir(harness.workerInbox("session-123", "worker-session")), []);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+    assert.equal(harness.savedStates.at(-1)?.deliveredOrchestratorMessageIds?.length, 1);
+
+    harness.setIdle(true);
+    await harness.settleAgent();
+    await harness.runInboxPoll();
+    assert.equal(harness.sentMessages.length, 1);
+  });
+});
+
+test("a steered orchestrator message dropped by an abort is resent when the run settles", async () => {
+  await withWorker(async (harness) => {
+    await harness.startAgent();
+    const queued = runMessageWorker(["ticket-one", "Revert the schema change."]);
+    assert.equal(queued.status, 0, queued.stderr);
+    await harness.runInboxPoll();
+    assert.equal(harness.sentMessages.length, 1);
+
+    // Esc clears Pi's steering queue before the message reaches the transcript.
+    harness.setBranchEntries([]);
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 2);
+    assert.deepEqual(harness.sentMessageOptions[1], { triggerTurn: true });
+    assert.match(harness.sentMessages[1] ?? "", /Message from the orchestrator:\n\nRevert the schema change\./);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 2);
+  });
+});
+
+test("message-worker starts a turn for an idle worker", async () => {
+  await withWorker(async (harness) => {
+    const queued = runMessageWorker(["ticket-one", "Update onto the landing branch."]);
+    assert.equal(queued.status, 0, queued.stderr);
 
     await harness.runInboxPoll();
-    await harness.settleAgent();
     assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true });
+    assert.match(harness.sentMessages[0] ?? "", /Message from the orchestrator:\n\nUpdate onto the landing branch\./);
     assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+  });
+});
+
+test("orchestrator messages wait out a busy session with no run, then steer the next run", async () => {
+  await withWorker(async (harness) => {
+    // A manual compaction makes the session busy without an agent run.
+    harness.setIdle(false);
+    const queued = runMessageWorker(["ticket-one", "Stop editing the generated client."]);
+    assert.equal(queued.status, 0, queued.stderr);
+    await harness.runInboxPoll();
+    assert.deepEqual(harness.sentMessages, []);
+    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
+
+    await harness.startAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+  });
+});
+
+test("paused PR Watch holds orchestrator messages for a running worker", async () => {
+  await withWorker(async (harness) => {
+    await harness.commands.get("pr-watch")?.handler("pause", harness.ctx);
+    await harness.startAgent();
+    const queued = runMessageWorker(["ticket-one", "Keep the public API unchanged."]);
+    assert.equal(queued.status, 0, queued.stderr);
+    await harness.runInboxPoll();
+    assert.deepEqual(harness.sentMessages, []);
+    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
   });
 });
 
@@ -1037,6 +1105,168 @@ test("message-worker requires a worker on the ticket branch and a message", asyn
       env: { ...process.env, PI_ORCHESTRATION_SESSION_ID: "" },
     });
     assert.equal(noOrchestration.status, 2);
+  });
+});
+
+function gitRepo(): { directory: string; commonDir: string } {
+  const directory = mkdtempSync(join(tmpdir(), "pr-watch-repo-"));
+  execFileSync("git", ["init", "-q", directory]);
+  const commonDir = execFileSync("git", ["-C", directory, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    encoding: "utf8",
+  }).trim();
+  return { directory, commonDir };
+}
+
+test("workers publish their repo so message-worker can tell same-named branches apart", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+  process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
+  const ios = gitRepo();
+  const android = gitRepo();
+  harness.setGitDirectory(ios.directory);
+  try {
+    await harness.startSession();
+    const published = await harness.readWorkerSnapshot("session-123", "worker-session");
+    assert.equal(published.gitCommonDir, ios.commonDir);
+
+    const androidSnapshot = await harness.writeWorkerSnapshot("session-123", "android-worker", []);
+    const snapshot = JSON.parse(await readFile(androidSnapshot, "utf8"));
+    await writeFile(androidSnapshot, JSON.stringify({ ...snapshot, branch: published.branch, gitCommonDir: android.commonDir }));
+
+    const send = (args: string[], cwd: string) =>
+      spawnSync(messageWorker, args, { encoding: "utf8", cwd, env: { ...process.env, PI_ORCHESTRATION_SESSION_ID: "session-123" } });
+
+    const explicit = send(["--repo", android.directory, published.branch, "Android only."], tmpdir());
+    assert.equal(explicit.status, 0, explicit.stderr);
+    assert.equal((await readdir(harness.workerInbox("session-123", "android-worker"))).length, 1);
+
+    const fromCwd = send([published.branch, "iOS only."], ios.directory);
+    assert.equal(fromCwd.status, 0, fromCwd.stderr);
+    assert.equal((await readdir(harness.workerInbox("session-123", "worker-session"))).length, 1);
+    assert.equal((await readdir(harness.workerInbox("session-123", "android-worker"))).length, 1);
+
+    const ambiguous = send([published.branch, "Who gets this?"], tmpdir());
+    assert.notEqual(ambiguous.status, 0);
+    assert.match(ambiguous.stderr, /in several repos .*pass --repo/);
+
+    const missing = send(["--repo", tmpdir(), published.branch, "hello"], tmpdir());
+    assert.equal(missing.status, 2);
+    assert.match(missing.stderr, /--repo requires a Git checkout/);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestrate promotes a running session, keeps its watched PRs, and survives resume", async () => {
+  const harness = createHarness();
+  const names = ["HOME", "PI_ORCHESTRATION_SESSION_ID", "PI_PARENT_ORCHESTRATION_SESSION_ID"];
+  const saved = names.map((name) => process.env[name]);
+  const home = mkdtempSync(join(tmpdir(), "pr-watch-home-"));
+  const skillPath = join(home, ".agents/skills/orchestrator/SKILL.md");
+  await mkdir(join(home, ".agents/skills/orchestrator"), { recursive: true });
+  await writeFile(skillPath, "---\nname: orchestrator\n---\n# Orchestrator\n\nCoordinate workers.\n");
+  process.env.HOME = home;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+
+  try {
+    await harness.startSession();
+    await harness.activate(104);
+    const result = await harness.callTool("orchestrate");
+    const orchestrationId = harness.savedStates.at(-1)?.orchestrationSessionId;
+    assert.match(orchestrationId ?? "", /^[0-9a-f-]{36}$/);
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, orchestrationId);
+    assert.match(result.content[0].text, new RegExp(`now orchestration ${orchestrationId}`));
+    assert.match(result.content[0].text, /# Orchestrator\n\nCoordinate workers\.$/);
+    assert.doesNotMatch(result.content[0].text, /name: orchestrator/);
+
+    // Membership reconciliation drops non-worker PRs unless explicitly watched.
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map((watched: any) => watched.pr.number), [104]);
+
+    await harness.callTool("orchestrate");
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, orchestrationId);
+
+    harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }]);
+    delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    await harness.startSession("resume");
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, orchestrationId);
+  } finally {
+    await harness.shutdown();
+    names.forEach((name, index) => {
+      if (saved[index] === undefined) delete process.env[name];
+      else process.env[name] = saved[index];
+    });
+  }
+});
+
+test("switching sessions after orchestrate does not enroll the next session", async () => {
+  const harness = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+
+  try {
+    await harness.startSession();
+    await harness.activate(104);
+    const ordinary = structuredClone(harness.savedStates.at(-1));
+    assert.equal(ordinary.orchestrationSessionId, undefined);
+
+    await harness.callTool("orchestrate");
+    assert.ok(process.env.PI_ORCHESTRATION_SESSION_ID);
+    await harness.shutdown();
+
+    // Pi switches sessions by tearing down the runtime and loading the
+    // extensions again.
+    const next = createHarness();
+    next.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: ordinary }]);
+    await next.startSession("resume");
+    const resumed = next.savedStates.at(-1);
+    assert.equal(resumed.orchestrationSessionId, undefined);
+    assert.deepEqual(resumed.watchedPrs.map((watched: any) => watched.pr.number), [104]);
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+    await next.shutdown();
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("a launch orchestration request still enrolls a session resumed after a switch", async () => {
+  const first = createHarness();
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "launch-id";
+
+  try {
+    await first.startSession();
+    assert.equal(first.savedStates.at(-1)?.orchestrationSessionId, "launch-id");
+    await first.shutdown();
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, "launch-id");
+
+    const next = createHarness();
+    next.setBranchEntries([
+      {
+        type: "custom",
+        customType: "pr-watch-state",
+        data: { version: 4, mode: "active", watchedPrs: [], pendingPrUpdates: [], pendingWorkerSettlements: [], recentGhOutputs: [] },
+      },
+    ]);
+    await next.startSession("resume");
+    assert.equal(next.savedStates.at(-1)?.orchestrationSessionId, "launch-id");
+    await next.shutdown();
+  } finally {
+    await first.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("orchestrate refuses to promote a worker session", async () => {
+  await withWorker(async (harness) => {
+    await assert.rejects(harness.callTool("orchestrate"), /worker session cannot become an orchestrator/);
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
   });
 });
 

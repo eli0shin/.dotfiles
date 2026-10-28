@@ -562,6 +562,49 @@ esac
   }
 });
 
+test("spawn-worker --repo stacks the worker on another checkout's landing branch", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "calls");
+  const otherRepo = join(root, "other-repo");
+  const sessionCreated = join(root, "session-created");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(otherRepo));
+  await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") [ "$PWD" = ${JSON.stringify(otherRepo)} ] && echo develop ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/develop ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo "$PWD/.git" ;;
+  show-ref*|ls-remote*) exit 1 ;;
+  *) echo abc123 ;;
+esac
+`);
+  await executable(
+    join(fakeBin, "repos"),
+    `#!/bin/sh\nprintf 'repos %s in %s\\n' "$*" "$PWD" >> ${JSON.stringify(calls)}\ntouch ${JSON.stringify(sessionCreated)}\n`,
+  );
+  await executable(
+    join(fakeBin, "tmux"),
+    `#!/bin/sh\nprintf 'tmux' >> ${JSON.stringify(calls)}\nfor arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done\nprintf '\\n' >> ${JSON.stringify(calls)}\nif [ "$1" = "has-session" ]; then test -f ${JSON.stringify(sessionCreated)}; fi\n`,
+  );
+
+  try {
+    const result = spawnSync(spawnWorker, ["--branch", "fix-cache", "--repo", otherRepo, "--task", "Fix the cache."], {
+      encoding: "utf8",
+      cwd: root,
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, PI_ORCHESTRATION_SESSION_ID: "session-123" },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const log = await readFile(calls, "utf8");
+    assert.match(log, new RegExp(`^repos stack --no-focus fix-cache in ${otherRepo}$`, "m"));
+    assert.equal(
+      await readInitialPrompt(log),
+      "/skill:ticket-worker \n\nBranch: fix-cache\nWorker identity: other-repo@fix-cache\nPR base: develop\n\nTask:\nFix the cache.",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("spawn-worker rejects invalid handoffs before calling dependencies", async () => {
   const { root, fakeBin } = await fixture();
   const called = join(root, "called");
@@ -580,6 +623,10 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       { args: ["--branch", "fix-cache", "--task", "  "], sessionId: "session-123" },
       { args: ["--branch", "fix-cache", "--context", "Fix it."], sessionId: "session-123" },
       { args: ["--branch", "--task", "Fix it."], sessionId: "session-123" },
+      { args: ["--repo"], sessionId: "session-123" },
+      { args: ["one", "--repo"], sessionId: "session-123" },
+      { args: ["--repo", "/nonexistent/spawn-worker-repo", "one"], sessionId: "session-123" },
+      { args: ["--repo", root, "--repo", root, "one"], sessionId: "session-123" },
     ];
     for (const fixtureCase of cases) {
       const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };

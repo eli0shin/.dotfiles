@@ -33,13 +33,13 @@ The orchestrator and its workers do not talk through PR comments. PR Watch sends
 printf '%s\n' "<message>" | ~/.agents/skills/orchestrator/scripts/message-worker <ticket-name>
 ```
 
-The worker receives the message when its current turn is complete, so a message never interrupts it. For feedback that is already on the PR, refer to the comment or review by ID or URL and add only the context the worker needs. Do not copy the feedback into a new PR comment.
+Pass `--repo <path>` before the ticket name when workers in different repos share a branch name. The worker receives the message as steering once its in-progress tool calls finish, or as a new turn if it is idle. For feedback that is already on the PR, refer to the comment or review by ID or URL and add only the context the worker needs. Do not copy the feedback into a new PR comment.
 
 ## Establish the run
 
-Read the harness orchestration session ID before doing anything else: `PI_ORCHESTRATION_SESSION_ID` in Pi or `OPENCODE_ORCHESTRATION_SESSION_ID` in OpenCode. Stop clearly if it is absent. Treat the current named branch as the landing branch for the entire run; stop if HEAD is detached and never switch branches. All worker branches stack on the landing branch and all worker PRs target it. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
+Read the harness orchestration session ID before doing anything else: `PI_ORCHESTRATION_SESSION_ID` in Pi or `OPENCODE_ORCHESTRATION_SESSION_ID` in OpenCode. Stop clearly if it is absent. The landing branch is the branch checked out in the current directory, or, for a worker in another repo, in the checkout passed with `--repo`. Stop if HEAD is detached and never switch branches. Worker branches stack on their repo's landing branch and worker PRs target it. The user chooses the effort to orchestrate; do not impose a parent or map scope they did not request.
 
-Read repository instructions and the configured tracker instructions, then update the landing branch with a fast-forward-only pull. Before spawning, require it to track a same-named remote branch at exactly the same commit so every PR has a published base. Use the Tickets CLI with concise human-readable output to inspect tickets, assignment, blockers, and status. Never request JSON from Tickets. Use `tickets --help` when command syntax is uncertain.
+Read repository instructions and the configured tracker instructions, then update each landing branch you spawn onto with a fast-forward-only pull. Before spawning, require it to track a same-named remote branch at exactly the same commit so every PR has a published base. Use the Tickets CLI with concise human-readable output to inspect tickets, assignment, blockers, and status. Never request JSON from Tickets. Use `tickets --help` when command syntax is uncertain.
 
 This step is complete when the requested effort and its executable frontier are known.
 
@@ -53,7 +53,10 @@ Start all independent frontier tickets without waiting between them. Invoke the 
 ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
 ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name> --context "Use the accepted A design, not the later draft."
 printf '%s\n' "Use the accepted A design, not the later draft." | ~/.agents/skills/orchestrator/scripts/spawn-worker <ticket-name>
+~/.agents/skills/orchestrator/scripts/spawn-worker --repo ~/code/<other-repo> --branch <branch-name> --task "<task>"
 ```
+
+Use `--repo <path>` for a worker in a repo other than the current directory's, instead of changing directory.
 
 **Ticket first; context is steering only.** Default to the ticket-name-only command. The script invokes `/skill:ticket-worker` and supplies the ticket, worker identity, and PR base. The worker already has its prompt, skill, and repository instructions; those sources define how it works.
 
@@ -136,12 +139,12 @@ The gate is complete only for the head and landing SHAs checked. Confirm both ar
 
 After each merge, follow the repository's demonstrated tracker resolution process without redesigning it. A task worker has no ticket, so skip steps 2–5 for it:
 
-1. Update the landing-branch worktree with a fast-forward-only pull.
+1. Update the worker repo's landing-branch worktree with a fast-forward-only pull.
 2. Append the required concise resolution and merged PR/commit evidence to the ticket.
 3. Run `tickets done <ticket-name>` so downstream blockers are removed.
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
-6. Run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
+6. In the worker's repo, run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
 7. Run `git pull` to pull in the changes from the merged PR
 8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
 9. Find and spawn the newly unblocked frontier immediately.
