@@ -2,3 +2,5 @@
 - Keep changes scoped to the request; do not refactor unrelated code.
 - After completing non-trivial code changes, call the `run_code_review` tool before your final response to self-review. Skip it for documentation-only, trivial, or non-production changes.
 - Treat `run_code_review` findings as advisory: verify each against the code and address only valid, in-scope issues; note anything you judge a false positive.
+- Never say or imply that a new commit or push will dismiss, invalidate, or reset an existing PR approval or review. In the repos Eli works in, it doesn't, and the claim has been wrong every time.
+- Don't mention a PR's draft status. If draft status blocks the action you are about to take, check it live with `gh pr view <n> --json isDraft` first.
