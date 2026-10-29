@@ -1,9 +1,6 @@
 ---
 name: review-comments
-description: Read the review comments saved for the pull request or branch under review.
-disable-model-invocation: true
-metadata:
-  opencode/autoinvoke: false
+description: Read the local review comments saved for the pull request or branch under review.
 ---
 
 Read the review comments file for the work under review. `<org>/<repo>` is the GitHub owner and name of the repository's `origin` remote.
