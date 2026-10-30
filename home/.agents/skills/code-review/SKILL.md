@@ -74,6 +74,8 @@ Apply this rule especially to claims about parsing, escaping, ordering, retries,
 
 Review design where the change adds a structural problem or continues a harmful direction in the codebase.
 
+Watch for **accommodation**: a change that bends shared structure to fit one new dependency, such as widening CI triggers, cache inputs, build or lint config, or a package boundary, or that departs from a convention the repository otherwise follows. Question the dependency or the departure before judging how well the accommodation is done. Name the convention or boundary it bends and the simpler shape that needs no accommodation. A trade-off the change documents is a claim to test, not a reason to accept the design.
+
 A design comment must identify:
 
 - the changed structure that causes or deepens the problem;
