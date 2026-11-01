@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,6 +14,7 @@ import {
   findReviewSession,
   getFinalAssistantText,
   isReviewFailure,
+  providerExtensionPaths,
 } from "../code-review-runner.ts";
 
 test("buildReviewPrompt references the skill and preserves the requirements boundary", () => {
@@ -134,4 +135,28 @@ test("isReviewFailure flags aborts and errors", () => {
     isReviewFailure({ output: "partial", sessionId: "review-1", aborted: false, error: "boom" }),
     true,
   );
+});
+
+test("providerExtensionPaths loads only the installed package that provides the model", async () => {
+  const root = await mkdtemp(join(tmpdir(), "code-review-providers-"));
+  try {
+    const agentDir = join(root, "agent");
+    const writePackage = async (dir: string, name: string) => {
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "package.json"), JSON.stringify({ name, pi: { extensions: ["./index.ts"] } }));
+      await writeFile(join(dir, "index.ts"), "export default () => {};\n");
+    };
+    const bridge = join(root, "bridge");
+    const other = join(root, "other");
+    await writePackage(bridge, "pi-claude-bridge");
+    await writePackage(other, "pi-essentials");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [other, bridge] }));
+
+    assert.deepEqual(await providerExtensionPaths("claude-bridge", root, agentDir), [join(bridge, "index.ts")]);
+    assert.deepEqual(await providerExtensionPaths("openai-codex", root, agentDir), []);
+    assert.deepEqual(await providerExtensionPaths(undefined, root, agentDir), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

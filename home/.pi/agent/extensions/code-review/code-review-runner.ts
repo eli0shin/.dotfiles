@@ -1,11 +1,14 @@
 import {
   createAgentSession,
+  DefaultPackageManager,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ReviewResult } from "./types.ts";
 
@@ -86,6 +89,48 @@ export async function findReviewSession(
 }
 
 /**
+ * Pi packages (by package.json name) that register a model provider. A review
+ * on one of these providers loads that package so the provider exists in the
+ * review session.
+ */
+const PROVIDER_PACKAGES: Record<string, string> = {
+  "claude-bridge": "pi-claude-bridge",
+};
+
+function packageName(packageRoot: string): string | undefined {
+  try {
+    return JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Enabled extension entry points of the installed package providing `provider`. Never installs. */
+export async function providerExtensionPaths(
+  provider: string | undefined,
+  cwd: string,
+  agentDir: string,
+): Promise<string[]> {
+  const pkg = provider ? PROVIDER_PACKAGES[provider] : undefined;
+  if (!pkg) return [];
+  const packageManager = new DefaultPackageManager({
+    cwd,
+    agentDir,
+    settingsManager: SettingsManager.create(cwd, agentDir),
+  });
+  const { extensions } = await packageManager.resolve(async () => "skip");
+  return extensions
+    .filter(
+      (r) =>
+        r.enabled &&
+        r.metadata.origin === "package" &&
+        r.metadata.packageRoot !== undefined &&
+        packageName(r.metadata.packageRoot) === pkg,
+    )
+    .map((r) => r.path);
+}
+
+/**
  * Run a new review or continue an existing review in an isolated, persistent
  * pi session. Review JSONL files use a dedicated directory.
  */
@@ -94,13 +139,18 @@ export async function runReview(
   cwd: string,
   options: RunReviewOptions = {},
 ): Promise<ReviewResult> {
-  // Isolated session: discover skills and load only the Exa extension. Other
-  // user extensions stay disabled so they cannot affect the review process.
+  // Isolated session: discover skills and load only the Exa extension, plus the
+  // package that provides the model's provider when pi does not. Other user
+  // extensions stay disabled so they cannot affect the review process.
+  const agentDir = getAgentDir();
   const loader = new DefaultResourceLoader({
     cwd,
-    agentDir: getAgentDir(),
+    agentDir,
     noExtensions: true,
-    additionalExtensionPaths: [EXA_EXTENSION_PATH],
+    additionalExtensionPaths: [
+      EXA_EXTENSION_PATH,
+      ...(await providerExtensionPaths(options.model?.provider, cwd, agentDir)),
+    ],
   });
   await loader.reload();
 
@@ -137,6 +187,9 @@ export async function runReview(
 
   let error: string | undefined;
   try {
+    // Emit session_start. Provider extensions such as claude-bridge register
+    // their provider there when loaded into a second session.
+    await session.bindExtensions({});
     await session.prompt(prompt);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);

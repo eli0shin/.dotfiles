@@ -16,7 +16,9 @@ Two entry points:
 All entry points present findings to the agent through the same advisory wrapper.
 They use isolated, persistent SDK sessions. Other user extensions stay disabled;
 the Exa extension is loaded for `web_search_exa` and
-`web_fetch_exa`. The explicit tool allowlist is `read`, `grep`, `find`, `ls`,
+`web_fetch_exa`. When the caller's model comes from a package provider
+(`claude-bridge` → `pi-claude-bridge`), that package is loaded too so the
+reviewer can use the same model. The explicit tool allowlist is `read`, `grep`, `find`, `ls`,
 `bash`, `web_search_exa`, and `web_fetch_exa`. Review JSONL files are stored in
 `~/.pi/agent/code-review-sessions/`, separate from normal Pi sessions, so they do
 not affect `pi -c` or `/resume`. The subagent is instructed to use the
