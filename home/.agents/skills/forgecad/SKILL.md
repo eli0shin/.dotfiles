@@ -10,16 +10,13 @@ Author or modify ForgeCAD models, sketches, assemblies, and CLI workflows. Prefe
 
 ## Workflow
 
-1. Identify the artifact: `.forge.js`, SVG asset, or CLI/export task.
-2. **If the model has any moving parts, load the `assembly` group and `/home/elioshinsky/.agents/skills/forgecad/docs/guides/joint-design.md` upfront** — do not defer the kinematic structure to a refactor pass.
-3. Load only the docs the task needs (see Source Map below). Start from the top group, add others as needed, and prefer these docs and recipes over ad-hoc repo examples.
-4. If any two parts are intended to touch or mate in the final model, load `/home/elioshinsky/.agents/skills/forgecad/docs/guides/positioning.md` immediately and default to connectors + `matchTo()`.
-5. Default to a concrete first pass — easy iteration beats speculative design review.
-6. If an existing model is broken, replace the weak structure rather than preserving bad architecture.
-7. Validate with `forgecad run <file>` (add `--debug-imports` for import chain issues; pass `--backend manifold|occt|truck` when the backend matters).
-8. For moving assemblies, return the `Assembly` directly so runtime controls re-solve the link/edge kinematics model instead of stacking viewport-only transforms.
-9. Model the physical artifact, not an educational diagram. No explanatory labels, arrows, legends, or text plaques unless the user explicitly asks for a presentation or teaching view; product markings only where the real object would carry them.
-10. Build the real closed CAD first. Never bake cutaways, sectioned shells, permanently exploded layouts, or hidden-parts views into the default model just to show internals — use viewer-only cut planes, `explodeView`, object hiding, transparency, or `inspect sections` after the artifact exists.
+1. Identify the artifact: `.forge.js`, SVG asset, or CLI/export task. **For model creation or edits, read `../forgecad-build-model/SKILL.md` first** for the sketch-first workflow, output policy, and completion criteria.
+2. For moving parts, load the assembly group and `docs/guides/joint-design.md` before constructing the mechanism.
+3. Load only the API sections the task needs from the Source Map. Prefer documented APIs and tested constructions over guesses.
+4. For touching or mating parts, read `docs/guides/positioning.md` and use connectors + `matchTo()` for their interface.
+5. Validate with `forgecad run <file>` using the project backend. Add `--debug-imports` for import chain issues.
+6. Return moving `Assembly` objects directly so runtime controls re-solve kinematics rather than stacking viewport transforms.
+7. Build the closed physical artifact. Use viewer cut planes, `explodeView`, hiding, or transparency for explanatory views; add presentation geometry only when requested.
 
 ### Import and Composition
 
@@ -34,85 +31,85 @@ Author or modify ForgeCAD models, sketches, assemblies, and CLI workflows. Prefe
 
 ## Source Map
 
-Load groups top-to-bottom, stopping when you have what the task needs.
+Paths are relative to this skill directory. Start with core concepts and runtime names; consult other sections only for the features in use.
 
-### 1. Core API (always read first)
+### 1. Core API
 
 Execution model, colors, coordinate system, primitives, booleans, patterns, imports, parameters, topology, edge queries.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/API/core/concepts.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/runtime-names.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/manual-parameters.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/core.md`
+- `docs/API/core/concepts.md`
+- `docs/generated/runtime-names.md`
+- `docs/guides/manual-parameters.md` — structured user-editable parameter sheets.
+- `docs/generated/core.md`
 
 ### 2. Static Assembly and Positioning (for any multi-part model)
 
 Axis conventions, winding rules, and placement strategy. If parts should touch in the final model, read this group before writing placement code. Connectors + `matchTo()` are the default for mating interfaces; raw `translate()` and `rotate()` are for free offsets, not assembly contracts.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/coordinate-system.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/positioning.md`
+- `docs/guides/coordinate-system.md`
+- `docs/guides/positioning.md`
 
 ### 3. Sketch APIs
 
 2D construction, transforms, booleans, paths, on-face sketching, extrusion, anchors, text, regions.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/sketch.md`
+- `docs/generated/sketch.md`
 
 ### 4. Curves and Surfacing (for lofts, sweeps, splines)
 
 Smooth curves, Hermite splines, lofted and swept solids. For straps, inlays, guards, brace members, vents, or physical bands that live on a carrier surface, use `Carrier` + `SurfaceBody` surface-member primitives before reaching for `variableSweep`, SDF sculpting, or manual boolean overlap recipes.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/surface-members.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/curves.md`
+- `docs/guides/surface-members.md`
+- `docs/generated/curves.md`
 
 ### 5. Assemblies and Mechanisms (for joints or kinematics)
 
 Assembly graph, joint types, couplings, validation, and simulation export.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/assembly.md`
+- `docs/generated/assembly.md`
 
 ### 6. Sheet Metal (for bent parts, K-factor, flat patterns)
 
 Bend operations, flat pattern unfolding, K-factor configuration.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/sheet-metal.md`
+- `docs/generated/sheet-metal.md`
 
 ### 7. Output and Export (for STL/3MF/STEP, BOM, dimensions)
 
 Mesh export, exact geometry export, bill of materials, dimension annotations.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/output.md`
+- `docs/generated/output.md`
 
 ### 8. Toolbox (fasteners and standard parts)
 
 Parametric bolts, nuts, washers, standard hardware, gears, pipes, and structural profiles.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/lib.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/wood.md`
+- `docs/generated/lib.md`
+- `docs/generated/wood.md`
 
 ### 9. Runtime Viewport APIs (for cut planes, exploded views, hiding, and animation playback)
 
 Viewer-only APIs such as cutPlane, explodeView, render labels, comparison references, and runtime display behavior.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/viewport.md`
+- `docs/generated/viewport.md`
 
 ### 10. Recipes and Debugging (for patterns and troubleshooting)
 
 Modeling patterns, debugging tactics, copyable snippets.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/scene-presentation.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/joint-design.md`
+- `docs/guides/scene-presentation.md`
+- `docs/guides/joint-design.md`
 
 ### 11. CLI (for validation/render/export tasks)
 
 Test-run, export pipelines, debug flags.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/CLI.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/inspection-bundles.md`
-- `/home/elioshinsky/.agents/skills/forgecad/docs/guides/structural-fea.md`
+- `docs/CLI.md`
+- `docs/guides/inspection-bundles.md`
+- `docs/guides/structural-fea.md`
 
 ### SDF Modeling (smooth booleans, TPMS, deformations, fromFunction)
 
 Primitives, smooth booleans, TPMS lattices, twist/bend/displace, morph, custom functions, gotchas. The doc preamble's precision caution applies to every SDF workflow.
 
-- `/home/elioshinsky/.agents/skills/forgecad/docs/generated/sdf.md`
+- `docs/generated/sdf.md`

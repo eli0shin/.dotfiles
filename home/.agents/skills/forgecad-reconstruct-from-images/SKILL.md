@@ -1,49 +1,37 @@
 ---
 name: forgecad-reconstruct-from-images
-description: Reconstruct a real parametric ForgeCAD object from reference images by using images as evidence, not as a one-view facade.
+description: Reconstruct a parametric ForgeCAD model from reference images, preserving the object's features and checking rendered comparisons.
 forgecad-public: true
 ---
 
 # Reconstruct From Images
 
-The reference image is evidence, not the deliverable. The deliverable is a real parametric object that holds up from front, back, side, top, bottom, and reference camera views — a model that matches one image but falls apart from other angles has failed, even if the comparison board looks close. Cutaway, sectioned, exploded, or transparent references are evidence about the complete object: build the closed artifact and recreate explanatory views with viewer/inspection tools (the main `forgecad` skill's closed-artifact rule applies).
+Read `../forgecad-build-model/SKILL.md` for the functional modeling workflow, output policy, and completion criteria. Use `../forgecad/SKILL.md` for API and CLI references.
 
-## Companion Skills
-
-- `forgecad` — API docs, model authoring, renderer behavior.
-- `forgecad-build-model` — design stages, file placement, project structure, decomposition, definition of done.
-- `forgecad-build-model/references/inspection-feedback.md` — pre-delivery inspection for multi-part, internal, mechanical, thin-wall, or fit-sensitive objects.
-
-## Core Rule
-
-Infer the real object before matching any camera — identity, manufacture, scale, what hidden sides must contain, what geometry must exist for physical coherence. Reference matching is a validation step after the object exists; never start by chasing pixels or the prettiest view.
+The images constrain one physical object. Match its features and proportions while building geometry that also makes sense from hidden sides. Treat occluded regions as unknowns, not permission to redesign visible features or add hardware.
 
 ## Workflow
 
-1. Stage references in `/tmp/<slug>-replicate/refs`, keeping originals and adding view names where possible (`front`, `side`, `rear-iso`, `top`, `detail`).
-2. Read each image as evidence, recording: visible facts; scale cues; camera cues; unknowns (hidden/occluded geometry); conflicts across images or stylization.
-3. Write a Real Object Brief — a hard gate before modeling: (a) artifact identity + operating story; (b) assumed scale and units; (c) process posture + part/BOM boundary (real geometry vs purchased vs ghost vs omitted); (d) inferred hidden-side geometry + expected canonical front/back/left/right/top/bottom forms; (e) validation views and inspection evidence. Follow `forgecad-build-model` design stages when these are underdetermined.
-4. Build a coarse 3D blockout — model the object, not the image: large volumes, axes, symmetry, side depth, rear form, underside, hidden continuations. Render canonical views before any reference-camera comparison. Follow `forgecad-build-model` for project structure.
-5. Calibrate one camera per usable reference, only after the blockout makes sense from canonical views. Use the object center as `target`; estimate azimuth/elevation/distance/FOV from visible faces and perspective cues; use orthographic when parallel edges stay parallel with no perspective convergence.
-6. Render comparison boards: render the model from each calibrated reference camera and place it next to the original. Never compare from memory.
-7. Iterate one class of change at a time, in order: object hypothesis → major proportions → canonical geometry → camera → details → presentation. If improving one reference view makes another view or a canonical render worse, the object hypothesis is wrong — fix the model, not the camera illusion.
-8. Use every image as a constraint. Never pick one target image and ignore the rest: assign each image a camera, evidence list, and confidence; optimize one shared geometry against the whole set; state how distorted or decorative images were weighted.
-9. Validate the final object: `forgecad run`, reference comparison boards, canonical renders, and targeted inspections via `forgecad-build-model`'s inspection feedback reference.
+1. Read every reference. Crop the object and small details when a screenshot hides them in a larger image. Keep temporary references and comparisons in `/tmp/<slug>-replicate/`.
+2. Distinguish measured dimensions, visible geometry, and assumptions. Identify symmetry, sketch planes, extrusion depths, openings, and load-bearing junctions. Resolve uncertainties that change the construction with a focused question. This is construction reasoning, not a written brief.
+3. Build the controlling exact sketches and extrude/revolve them using the model-building workflow. Match the main proportions and shared datums first. Use all supplied views to constrain the same geometry.
+4. Render useful canonical views and a view close to each reference camera. Open the images. Check the collar/body thickness, openings, underside, connections, and silhouette before adding detail.
+5. Make side-by-side reference comparisons. Use an explicit `--camera` specification from `../forgecad/docs/CLI.md`, then compare the actual images rather than relying on memory. Adjust the camera to match perspective, not to hide a geometry mismatch.
+6. Iterate proportions and functional geometry before edge finishes. Recheck the other views after each change; improving one view must not break another.
+7. Add native fillets/chamfers in the intended feature order. Open close-ups of every changed junction and edge finish, plus the underside. Run the geometric and functional checks in the model-building skill before producing requested exports.
 
-## Comparison Boards
+## Comparison Helper
 
-Render with exact `--camera` specs (see the forgecad CLI doc for supported forms). If exact full camera specs do not render, fix the renderer before continuing — never substitute guesses from default `iso` renders.
-
-Build side-by-side boards with the bundled self-contained `uv` helper (installs Pillow on demand). Resolve `scripts/compare_images.py` relative to the installed `forgecad-reconstruct-from-images` skill directory:
+The bundled helper joins reference and render images without changing model geometry:
 
 ```bash
-uv run <skill-dir>/scripts/compare_images.py refs/front.png render-front.png compare-front.png
+uv run <skill-dir>/scripts/compare_images.py reference.png render.png comparison.png
 ```
 
-Use `--fit contain` (default); use `--fit cover` only when both images already share the same crop and aspect. Run with `--help` for other options.
+Resolve `<skill-dir>` to this skill's installed directory. Use `--fit contain` by default. Use `--fit cover` only when the images already share the same crop and aspect.
 
-## Done and Report
+## Completion
 
-Done means: a written Real Object Brief; real parametric geometry (not a billboard, facade, or one-view shell) that makes sense from all canonical views; honest hidden-side assumptions where images are silent; passes `forgecad run`; comparison boards plus canonical renders exist. The result fails if it only works from the original camera — one render is never enough; expect several render/compare/inspect iterations.
+Done means the final source passes geometric and functional checks, reference comparisons and relevant canonical/detail views have been opened and inspected, and visible mismatches have been fixed or explicitly identified. A plausible silhouette from one camera is not sufficient.
 
-Report: model path; Real Object Brief summary + assumptions; per-reference camera spec, weighting, and board path; canonical render paths; inspection evidence; remaining mismatches or downgraded confidence.
+Keep the final response short: model and requested output paths, plus any important unresolved assumption or mismatch. Follow the model-building skill's output policy.
