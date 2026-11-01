@@ -1,10 +1,15 @@
 {
-  "theme": "dark",
+  "theme": "dark-muted",
   "defaultThinkingLevel": "high",
   "quietStartup": true,
   "collapseChangelog": true,
   "doubleEscapeAction": "tree",
   "tuiMode": "fullscreen",
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "transport": "auto",
+  "defaultProjectTrust": "always",
+  "treeFilterMode": "no-tools",
   "terminal": {
     "hyperlinks": true
   },
