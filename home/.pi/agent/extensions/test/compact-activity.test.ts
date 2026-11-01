@@ -213,14 +213,71 @@ test("empty assistant tool declarations do not separate groups", () => {
 });
 
 for (const reason of ["error", "aborted", "length"] as const) {
-  test(`${reason} is visible even when the assistant only produced thinking`, () => {
-    const { chat } = setup([assistant([{ type: "thinking", thinking: "SECRET THOUGHT" }], reason)]);
-    const output = lines(chat).join("\n");
-    assert.doesNotMatch(output, /thought/);
-    assert.doesNotMatch(output, /SECRET THOUGHT/);
-    assert.match(output, /Error:|Operation aborted|truncated/);
+  test(`${reason} joins the activity group, with or without thinking`, () => {
+    for (const content of [[], [{ type: "thinking", thinking: "SECRET THOUGHT" }]] as AssistantMessage["content"][]) {
+      const { chat, setExpanded } = setup([tool(), assistant(content, reason)]);
+      assert.deepEqual(lines(chat), ["", " + 1 command"]);
+      setExpanded(true);
+      assert.match(lines(chat).join("\n"), /Error:|Operation aborted|truncated/);
+    }
   });
 }
+
+function stallWarning(attempt: number) {
+  return new ThemedText(() =>
+    `Warning: Anthropic request stalled (no response after 25s); resending (${attempt}/2)`, 1, 0);
+}
+function timeout() {
+  const component = assistant([], "error");
+  component.updateContent({ ...(component as unknown as { lastMessage: AssistantMessage }).lastMessage,
+    errorMessage: "Request timed out." });
+  return component;
+}
+
+test("stall resend warnings and provider errors stay inside the collapsed group", () => {
+  const children = [tool(), tool("edit"), new Spacer(1), stallWarning(1), new Spacer(1), stallWarning(2), timeout(),
+    new Spacer(1), stallWarning(1), new Spacer(1), stallWarning(2), thought(), tool()];
+  const { chat, setExpanded } = setup(children);
+  assert.deepEqual(lines(chat), ["", " + 2 commands, 1 edit"]);
+  assert.deepEqual(chat.children, children);
+  setExpanded(true);
+  const expanded = lines(chat).join("\n");
+  assert.equal(expanded.match(/request stalled/g)?.length, 4);
+  assert.match(expanded, /Error: Request timed out\./);
+});
+
+test("every error and warning status is grouped", () => {
+  const other = new ThemedText(() => "Warning: something else", 1, 0);
+  const final = new ThemedText(() => "Error: Retry failed after 3 attempts: Request timed out.", 1, 0);
+  const { chat, setExpanded } = setup([tool(), stallWarning(1), timeout(), new Spacer(1), final,
+    new Text("USER MESSAGE", 0, 0), tool(), new Spacer(1), other]);
+  assert.deepEqual(lines(chat), ["", " + 1 command", "USER MESSAGE", "", " + 1 command"]);
+  setExpanded(true);
+  const expanded = lines(chat).join("\n");
+  assert.match(expanded, /Error: Request timed out\.[\s\S]*Retry failed after 3 attempts[\s\S]*something else/);
+});
+
+for (const [name, child] of [["thought", () => thought("ONLY THOUGHT")], ["error", () => timeout()]] as const) {
+  test(`Ctrl+Shift+O opens and closes a ${name}-only group`, () => {
+    const { chat, view } = setup([tool(), assistant([{ type: "text", text: "PROSE" }]), child()]);
+    assert.doesNotMatch(lines(chat).join("\n"), /ONLY THOUGHT|Request timed out/);
+    view.toggleLatestGroup();
+    const output = lines(chat).join("\n");
+    assert.match(output, /\+ 1 command[\s\S]*PROSE[\s\S]*− details[\s\S]*(ONLY THOUGHT|Request timed out)/);
+    view.toggleLatestGroup();
+    assert.doesNotMatch(lines(chat).join("\n"), /ONLY THOUGHT|Request timed out|− /);
+  });
+}
+
+test("Ctrl+Shift+O always toggles the latest group, whatever it contains", () => {
+  const { chat, view } = setup([tool()]);
+  view.toggleLatestGroup();
+  chat.addChild(assistant([{ type: "text", text: "PROSE" }]));
+  chat.addChild(thought("LATER THOUGHT"));
+  assert.doesNotMatch(lines(chat).join("\n"), /\u2212 |LATER THOUGHT/, "a newer group ends the peek");
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /\+ 1 command[\s\S]*\u2212 details[\s\S]*LATER THOUGHT/);
+});
 
 test("theme invalidation and streaming thought updates keep first-group click state", () => {
   const source = thought("Before");
@@ -268,18 +325,18 @@ test("the adapter fails open on unrecognized Pi versions and document layouts", 
   assert.equal(findChat({ children: [document] }, "1.4.0"), undefined);
 });
 
-test("latest-group toggle changes only the most recent tool group, skipping trailing thoughts", () => {
+test("latest-group toggle changes only the most recent group without expanding tool output", () => {
   const older = tool();
   const recent = new ToolExecutionComponent("read", "recent", { path: "latest.ts" }, {}, createReadToolDefinition("/tmp"), ui, "/tmp");
   recent.updateResult({ content: [{ type: "text", text: "HIDDEN FILE CONTENT" }], isError: false });
   const { chat, view, redraws } = setup([older, new Text("BETWEEN", 0, 0), recent,
-    assistant([{ type: "text", text: "AFTER" }]), thought("trailing hidden thought")]);
+    assistant([{ type: "text", text: "AFTER" }])]);
   // No preceding render: the shortcut must use current transcript membership.
   view.toggleLatestGroup();
   let output = lines(chat).join("\n");
   assert.match(output, /\+ 1 command[\s\S]*BETWEEN[\s\S]*− 1 read/);
   assert.match(output, /latest\.ts/);
-  assert.doesNotMatch(output, /HIDDEN FILE CONTENT|FILE CONTENT|trailing hidden thought/);
+  assert.doesNotMatch(output, /HIDDEN FILE CONTENT|FILE CONTENT/);
   assert.equal((recent as unknown as { expanded: boolean }).expanded, false);
   assert.equal((older as unknown as { expanded: boolean }).expanded, false);
   view.toggleLatestGroup();
@@ -289,14 +346,13 @@ test("latest-group toggle changes only the most recent tool group, skipping trai
   assert.equal(redraws(), 2);
 });
 
-test("a shortcut-opened group auto-collapses only when a newer tool group appears", () => {
+test("a shortcut-opened group auto-collapses when a newer group appears", () => {
   const first = tool();
   const { chat, view } = setup([first]);
   view.toggleLatestGroup();
   assert.match(lines(chat).join("\n"), /− 1 command/);
   chat.addChild(assistant([{ type: "text", text: "PROGRESS" }]));
-  chat.addChild(thought("preparing more tools"));
-  assert.match(lines(chat).join("\n"), /− 1 command/, "prose and hidden thoughts alone do not end the peek");
+  assert.match(lines(chat).join("\n"), /− 1 command/, "prose alone does not end the peek");
   chat.addChild(tool("read"));
   let output = lines(chat).join("\n");
   assert.match(output, /\+ 1 command[\s\S]*PROGRESS[\s\S]*\+ 1 read/);
@@ -373,11 +429,15 @@ test("global expansion takes ownership away from a shortcut peek", () => {
   assert.match(lines(chat).join("\n"), /− 1 command[\s\S]*PROGRESS[\s\S]*− 1 read/);
 });
 
-test("latest-group toggle is silent with no tools or in full mode", () => {
-  const empty = setup([thought()]);
+test("latest-group toggle is silent with no groups or in full mode", () => {
+  const empty = setup([new Text("USER MESSAGE", 0, 0)]);
   empty.view.toggleLatestGroup();
-  assert.deepEqual(lines(empty.chat), []);
+  assert.deepEqual(lines(empty.chat), ["USER MESSAGE"]);
   assert.equal(empty.redraws(), 0);
+  const nothing = setup([]);
+  nothing.view.toggleLatestGroup();
+  assert.deepEqual(lines(nothing.chat), []);
+  assert.equal(nothing.redraws(), 0);
   const full = setup([tool()]);
   full.view.enabled = false;
   full.view.toggleLatestGroup();

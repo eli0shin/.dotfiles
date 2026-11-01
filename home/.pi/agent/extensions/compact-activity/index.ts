@@ -34,7 +34,8 @@ type AssistantState = {
 type Activity = {
   key: Component;
   component: Component;
-  kind: "command" | "read" | "edit" | "thought";
+  // Notices are errors and warnings: kept in details, never counted.
+  kind: "command" | "read" | "edit" | "thought" | "notice";
   images?: readonly Component[];
 };
 type Part = { activity: Activity } | { component: Component };
@@ -44,13 +45,22 @@ type Split = {
   parts: Part[];
 };
 
-function isToolOutputNotice(component: Component | undefined): boolean {
-  if (!(component instanceof Text) || component.constructor.name !== "ThemedText") return false;
-  // Pi 1.4 showStatus uses this native component for its transient UI notices.
+function noticeText(component: Component | undefined): string | undefined {
+  if (!(component instanceof Text) || component.constructor.name !== "ThemedText") return undefined;
+  // Pi 1.4 showStatus/showWarning use this native component for UI notices.
   // Match only those notices, never assistant/user text quoting the same words.
   const state = component as unknown as { build?: () => string; stale: boolean; text: string };
   const text = state.stale === false ? state.text : state.build?.call(component);
-  return typeof text === "string" && /^Tool output: (expanded|collapsed)$/.test(stripTerminalSequences(text));
+  return typeof text === "string" ? stripTerminalSequences(text) : undefined;
+}
+
+function isToolOutputNotice(component: Component | undefined): boolean {
+  return /^Tool output: (expanded|collapsed)$/.test(noticeText(component) ?? "");
+}
+
+// Pi's showError/showWarning statuses, including extension notify() calls.
+function isErrorNotice(component: Component | undefined): boolean {
+  return /^(Error|Warning): /.test(noticeText(component) ?? "");
 }
 
 function assistantState(component: AssistantMessageComponent): AssistantState | undefined {
@@ -160,6 +170,7 @@ export class ActivityView extends Container {
   private groups = new WeakMap<Component, ActivityGroup>();
   private splits = new WeakMap<AssistantMessageComponent, Split>();
   private thinkingKeys = new WeakMap<AssistantMessageComponent, Component[]>();
+  private errorKeys = new WeakMap<AssistantMessageComponent, Component>();
   private toolViews = new WeakMap<ToolExecutionComponent, CompactToolView>();
   private hiddenNotices = new WeakSet<Component>();
   private shortcutGroup?: ActivityGroup;
@@ -205,10 +216,11 @@ export class ActivityView extends Container {
     if (!state) return [{ component }];
     const message = state.lastMessage!;
     const thoughts = message.content.filter((block) => block.type === "thinking" && block.thinking.trim());
-    if (!thoughts.length) {
+    const failure = ["error", "aborted", "length"].includes(message.stopReason);
+    if (!thoughts.length && !failure) {
       // Invisible tool-only assistant messages should not break an activity run.
       const visible = message.content.some((block) => block.type === "text" && block.text.trim());
-      return visible || ["error", "aborted", "length"].includes(message.stopReason) ? [{ component }] : [];
+      return visible ? [{ component }] : [];
     }
     const signature = JSON.stringify([message.content.map((block) =>
       block.type === "thinking" ? [block.type, block.thinking] : block.type === "text" ? [block.type, block.text] : block.type),
@@ -253,9 +265,11 @@ export class ActivityView extends Container {
       run.push(block);
     }
     flush();
-    // Do not bury provider errors, truncation, or cancellation inside a thought group.
-    if (["error", "aborted", "length"].includes(message.stopReason)) {
-      parts.push({ component: make([]) });
+    // Provider errors, truncation, and cancellation join the activity group.
+    if (failure) {
+      const key = this.errorKeys.get(component) ?? new Container();
+      this.errorKeys.set(component, key);
+      parts.push({ activity: { key, component: make([]), kind: "notice" } });
     }
     this.splits.set(component, { signature, state: {
       outputPad: state.outputPad, markdownTheme: state.markdownTheme, markdownTransformers: state.markdownTransformers,
@@ -292,10 +306,12 @@ export class ActivityView extends Container {
       return false;
     };
     for (const [index, child] of this.source.children.entries()) {
+      const next = this.source.children[index + 1];
       if (isHiddenNotice(child) ||
-          (child instanceof Spacer && isHiddenNotice(this.source.children[index + 1]))) continue;
+          (child instanceof Spacer && (isHiddenNotice(next) || isErrorNotice(next)))) continue;
       let parts: Part[];
-      if (child instanceof AssistantMessageComponent) parts = this.splitAssistant(child);
+      if (isErrorNotice(child)) parts = [{ activity: { key: child, component: child, kind: "notice" } }];
+      else if (child instanceof AssistantMessageComponent) parts = this.splitAssistant(child);
       else if (child instanceof ToolExecutionComponent) {
         const state = child as unknown as ToolState;
         let detail = this.toolViews.get(child);
@@ -318,7 +334,8 @@ export class ActivityView extends Container {
       }
     }
     flush();
-    if (this.shortcutGroup && this.shortcutGroup !== this.latestToolGroup()) {
+    // A shortcut peek closes once a newer group appears.
+    if (this.shortcutGroup && this.shortcutGroup !== this.latestGroup()) {
       this.shortcutGroup.collapseShortcutPeek();
       this.shortcutGroup = undefined;
     }
@@ -329,20 +346,16 @@ export class ActivityView extends Container {
     return super.render(width);
   }
 
-  private latestToolGroup(): ActivityGroup | undefined {
-    for (let index = this.children.length - 1; index >= 0; index--) {
-      const child = this.children[index];
-      if (child instanceof ActivityGroup && child.members.some((member) => member.kind !== "thought")) return child;
-    }
-    return undefined;
+  private latestGroup(): ActivityGroup | undefined {
+    return this.children.filter((child) => child instanceof ActivityGroup).at(-1);
   }
 
   toggleLatestGroup(): void {
     if (!this.enabled) return;
     // Refresh group membership without rendering tool bodies or expanding any
-    // nested tool output. Ignore trailing thought-only runs, which are hidden.
+    // nested tool output.
     this.updateGroups();
-    const latest = this.latestToolGroup();
+    const latest = this.latestGroup();
     if (!latest) return;
     latest.toggle(true);
     this.shortcutGroup = latest.expanded ? latest : undefined;
