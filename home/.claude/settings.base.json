@@ -63,7 +63,7 @@
       "WebSearch"
     ],
     "deny": [],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "auto"
   },
   "statusLine": {
     "type": "command",
@@ -76,15 +76,13 @@
     "lsp-plugin@cli-lsp-client-plugins": true
   },
   "includeCoAuthoredBy": false,
-  "model": "opus[1m]",
   "outputStyle": "default",
   "syntaxHighlightingDisabled": false,
   "alwaysThinkingEnabled": true,
   "prefersReducedMotion": true,
   "showThinkingSummaries": true,
-  "teammateMode": "tmux",
   "feedbackSurveyState": {
     "lastShownTime": 1754020113523
   },
-  "effortLevel": "xhigh"
+  "effortLevel": "high"
 }

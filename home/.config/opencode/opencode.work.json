@@ -1,23 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "share": "disabled",
-  "plugins": ["@ex-machina/opencode-anthropic-auth@next"],
-  "mcp": {
-    "lucid": {
-      "type": "remote",
-      "url": "https://mcp.lucid.app/mcp",
-      "oauth": {},
-      "enabled": false
-    },
-    "figma": {
-      "type": "remote",
-      "url": "https://mcp.figma.com/mcp",
-      "oauth": {
-        "clientId": "{env:FIGMA_CLIENT_ID}",
-        "clientSecret": "{env:FIGMA_CLIENT_SECRET}"
-      },
-      "enabled": false
+  "model": "claude-agent/opus",
+  "agents": {
+    "build": {
+      "model": "claude-agent/opus#high"
     }
   },
+  "share": "disabled",
   "disabled_providers": ["opencode", "amazon-bedrock"]
 }

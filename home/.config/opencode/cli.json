@@ -23,12 +23,14 @@
   "session": {
     "sidebar": "hide",
     "scrollbar": false,
-    "thinking": "hide",
+    "thinking": "show",
     "markdown": "rendered",
     "grouping": "auto",
     "image_preview": true,
     "new_location": "launch",
-    "tps": false
+    "tps": false,
+    "verbosity": "low",
+    "permissions": "autoaccept"
   },
   "animations": true,
   "tabs": {
