@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AssistantMessageComponent,
+  CustomMessageComponent,
   ToolExecutionComponent,
   createReadToolDefinition,
   initTheme,
@@ -21,6 +22,10 @@ function assistant(content: AssistantMessage["content"], stopReason: AssistantMe
   });
 }
 function thought(text = "Checking source") { return assistant([{ type: "thinking", thinking: text }]); }
+function notification(content = "PR DETAILS", customType = "pr-watch-harness") {
+  return new CustomMessageComponent({ role: "custom", customType, content, display: true, timestamp: 0 },
+    (_message, { expanded }) => new Text(`${expanded ? "▾" : "▸"} pr-watch-notification${expanded ? `\n${content}` : ""}`, 0, 0));
+}
 let id = 0;
 function tool(name = "bash", error = false, running = false) {
   const component = new ToolExecutionComponent(name, `tool-${++id}`, { path: "file.ts" }, {}, {
@@ -344,6 +349,82 @@ test("latest-group toggle changes only the most recent group without expanding t
   assert.doesNotMatch(output, /latest\.ts|− collapse/);
   assert.match(output, /\+ 1 read/);
   assert.equal(redraws(), 2);
+});
+
+test("latest-block toggle peeks at a PR notification without expanding older activity or nested outputs", () => {
+  const older = tool();
+  const notice = notification();
+  const { chat, view, redraws } = setup([older, notice, assistant([{ type: "text", text: "AFTER" }])]);
+  view.toggleLatestGroup(); // no preceding render
+  assert.match(lines(chat).join("\n"), /\+ 1 command[\s\S]*▾ pr-watch-notification[\s\S]*PR DETAILS[\s\S]*AFTER/);
+  assert.doesNotMatch(lines(chat).join("\n"), /FILE CONTENT/);
+  assert.equal((older as unknown as { expanded: boolean }).expanded, false);
+  chat.invalidate();
+  assert.match(lines(chat).join("\n"), /PR DETAILS/, "invalidation preserves the peek");
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /▸ pr-watch-notification/);
+  assert.doesNotMatch(lines(chat).join("\n"), /PR DETAILS/);
+  assert.equal(redraws(), 2);
+});
+
+test("shortcut peeks auto-collapse across activity and PR notification boundaries", () => {
+  const { chat, view } = setup([tool()]);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /− 1 command/);
+  chat.addChild(notification("FIRST PR DETAILS"));
+  assert.match(lines(chat).join("\n"), /\+ 1 command[\s\S]*▸ pr-watch-notification/);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /FIRST PR DETAILS/);
+  chat.addChild(assistant([{ type: "text", text: "PROGRESS" }]));
+  assert.match(lines(chat).join("\n"), /FIRST PR DETAILS/, "prose alone does not end the peek");
+  chat.addChild(tool("read"));
+  assert.doesNotMatch(lines(chat).join("\n"), /FIRST PR DETAILS/);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /− 1 read/);
+  chat.addChild(notification("SECOND PR DETAILS"));
+  assert.match(lines(chat).join("\n"), /\+ 1 read/);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /SECOND PR DETAILS/);
+  chat.addChild(notification("THIRD PR DETAILS"));
+  assert.doesNotMatch(lines(chat).join("\n"), /SECOND PR DETAILS/);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /THIRD PR DETAILS/);
+});
+
+test("global expansion and explicit collapse take ownership of PR notification peeks", () => {
+  const notice = notification();
+  const { chat, view, setExpanded } = setup([notice]);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /PR DETAILS/);
+  setExpanded(true);
+  notice.setExpanded(true); // native Ctrl+O updates all expandable chat children
+  chat.addChild(tool()); // even when no render occurs between Ctrl+O and new activity
+  assert.match(lines(chat).join("\n"), /PR DETAILS[\s\S]*− 1 command/);
+
+  setExpanded(false);
+  notice.setExpanded(false);
+  view.resetExpansion(false);
+  chat.children = [notice];
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /PR DETAILS/);
+  view.resetExpansion(false); // /activity collapse also resets at unchanged global state
+  assert.doesNotMatch(lines(chat).join("\n"), /PR DETAILS/);
+  view.resetExpansion(true);
+  assert.match(lines(chat).join("\n"), /PR DETAILS/);
+});
+
+test("other injected message types are not PR shortcut targets", () => {
+  const { chat, view } = setup([tool(), notification("OTHER DETAILS", "other-harness")]);
+  view.toggleLatestGroup();
+  assert.match(lines(chat).join("\n"), /− 1 command/);
+  assert.doesNotMatch(lines(chat).join("\n"), /OTHER DETAILS/);
+  const onlyOther = setup([notification("OTHER DETAILS", "other-harness")]);
+  onlyOther.view.toggleLatestGroup();
+  assert.equal(onlyOther.redraws(), 0);
+  const full = setup([notification()]);
+  full.view.enabled = false;
+  full.view.toggleLatestGroup();
+  assert.equal(full.redraws(), 0);
 });
 
 test("a shortcut-opened group auto-collapses when a newer group appears", () => {

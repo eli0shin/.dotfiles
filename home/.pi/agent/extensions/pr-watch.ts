@@ -3,7 +3,8 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { orchestratorInstructions } from "./orchestrator.ts";
 
@@ -476,6 +477,21 @@ function isBotActivity(activity: Activity): boolean {
 }
 
 export default function prWatch(pi: ExtensionAPI): void {
+  // Rendering only: retain the full harness payload in the transcript/model context.
+  pi.registerMessageRenderer(NOTIFICATION_TYPE, (message, { expanded, outputPad }, theme) => {
+    const box = new Box(outputPad, 0);
+    box.addChild(new Text(theme.fg("customMessageLabel", `${expanded ? "▾" : "▸"} pr-watch-notification`), 0, 0));
+    if (expanded) {
+      const text = typeof message.content === "string"
+        ? message.content
+        : message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+      box.addChild(new Markdown(text, 0, 0, getMarkdownTheme(), {
+        color: (text) => theme.fg("customMessageText", text),
+      }));
+    }
+    return box;
+  });
+
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
   let intervalMs: number | undefined;

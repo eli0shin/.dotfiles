@@ -1,5 +1,6 @@
 import {
   AssistantMessageComponent,
+  CustomMessageComponent,
   ToolExecutionComponent,
   VERSION,
   type ExtensionAPI,
@@ -44,6 +45,16 @@ type Split = {
   state: Pick<AssistantState, "outputPad" | "markdownTheme" | "markdownTransformers">;
   parts: Part[];
 };
+
+// Pi 1.4 keeps custom-message identity/expansion on the native component.
+// Unknown shapes and other injected message types are not shortcut targets.
+function prNotificationState(component: Component): { _expanded: boolean } | undefined {
+  if (!(component instanceof CustomMessageComponent)) return undefined;
+  const state = component as unknown as { message?: { customType?: string }; _expanded?: boolean };
+  return state.message?.customType === "pr-watch-harness" && typeof state._expanded === "boolean"
+    ? state as { _expanded: boolean }
+    : undefined;
+}
 
 function noticeText(component: Component | undefined): string | undefined {
   if (!(component instanceof Text) || component.constructor.name !== "ThemedText") return undefined;
@@ -173,7 +184,8 @@ export class ActivityView extends Container {
   private errorKeys = new WeakMap<AssistantMessageComponent, Component>();
   private toolViews = new WeakMap<ToolExecutionComponent, CompactToolView>();
   private hiddenNotices = new WeakSet<Component>();
-  private shortcutGroup?: ActivityGroup;
+  private shortcutBlock?: ActivityGroup | CustomMessageComponent;
+  private shortcutGlobalExpanded = false;
 
   private source: Container;
   private redraw: () => void;
@@ -202,12 +214,13 @@ export class ActivityView extends Container {
   }
 
   resetExpansion(expanded: boolean): void {
-    this.shortcutGroup = undefined;
+    this.shortcutBlock = undefined;
     this.groups = new WeakMap();
     // Pi skips setToolsExpanded when the global value is unchanged. Explicit
-    // commands must still undo per-group clicks and per-tool local toggles.
+    // commands must still undo per-group clicks, notification peeks, and tool toggles.
     for (const child of this.source.children) {
-      if (child instanceof ToolExecutionComponent) child.setExpanded(expanded);
+      if (child instanceof ToolExecutionComponent ||
+          (child instanceof CustomMessageComponent && prNotificationState(child))) child.setExpanded(expanded);
     }
   }
 
@@ -334,10 +347,12 @@ export class ActivityView extends Container {
       }
     }
     flush();
-    // A shortcut peek closes once a newer group appears.
-    if (this.shortcutGroup && this.shortcutGroup !== this.latestGroup()) {
-      this.shortcutGroup.collapseShortcutPeek();
-      this.shortcutGroup = undefined;
+    // Global expansion takes ownership; otherwise a newer block ends the peek.
+    if (this.shortcutGlobalExpanded !== this.getExpanded()) this.shortcutBlock = undefined;
+    if (this.shortcutBlock && this.shortcutBlock !== this.latestBlock()) {
+      if (this.shortcutBlock instanceof ActivityGroup) this.shortcutBlock.collapseShortcutPeek();
+      else this.shortcutBlock.setExpanded(false);
+      this.shortcutBlock = undefined;
     }
   }
 
@@ -346,19 +361,28 @@ export class ActivityView extends Container {
     return super.render(width);
   }
 
-  private latestGroup(): ActivityGroup | undefined {
-    return this.children.filter((child) => child instanceof ActivityGroup).at(-1);
+  private latestBlock(): ActivityGroup | CustomMessageComponent | undefined {
+    return this.children.filter((child): child is ActivityGroup | CustomMessageComponent =>
+      child instanceof ActivityGroup || prNotificationState(child) !== undefined).at(-1);
   }
 
   toggleLatestGroup(): void {
     if (!this.enabled) return;
-    // Refresh group membership without rendering tool bodies or expanding any
-    // nested tool output.
+    // Refresh membership without rendering tool bodies or expanding nested output.
     this.updateGroups();
-    const latest = this.latestGroup();
+    const latest = this.latestBlock();
     if (!latest) return;
-    latest.toggle(true);
-    this.shortcutGroup = latest.expanded ? latest : undefined;
+    let expanded: boolean;
+    if (latest instanceof ActivityGroup) {
+      latest.toggle(true);
+      expanded = latest.expanded;
+    } else {
+      expanded = !prNotificationState(latest)!._expanded;
+      latest.setExpanded(expanded);
+      this.redraw();
+    }
+    this.shortcutBlock = expanded ? latest : undefined;
+    this.shortcutGlobalExpanded = this.getExpanded();
   }
 }
 
@@ -420,7 +444,7 @@ export default function compactActivity(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => { installed?.restore(); installed = undefined; });
 
   pi.registerShortcut("ctrl+shift+o", {
-    description: "Toggle the latest tool group without expanding individual tool output",
+    description: "Toggle the latest activity or PR notification block without expanding individual tool output",
     handler: () => { installed?.view.toggleLatestGroup(); },
   });
 

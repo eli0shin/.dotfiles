@@ -6,6 +6,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CustomMessageComponent, initTheme, type MessageRenderer } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 import prWatch, {
   commandTargets,
@@ -41,6 +43,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
   const stateRoot = options.stateRoot ?? mkdtempSync(join(tmpdir(), "pr-watch-test-"));
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+  const messageRenderers = new Map<string, MessageRenderer>();
   const tools = new Map<string, { execute: (id: string, params: { pr?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
   let execGate: {
@@ -122,6 +125,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     },
     registerTool(tool: any): void {
       tools.set(tool.name, tool);
+    },
+    registerMessageRenderer(customType: string, renderer: MessageRenderer): void {
+      messageRenderers.set(customType, renderer);
     },
     appendEntry(_customType: string, data: unknown): void {
       savedStates.push(structuredClone(data));
@@ -420,6 +426,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     intervalMs: () => intervalMs,
     handlers,
     commands,
+    messageRenderers,
     async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate", pr?: string) {
       const tool = tools.get(name);
       assert.ok(tool, `${name} must be registered`);
@@ -523,6 +530,43 @@ function failingCheck(name: string) {
     bucket: "fail",
   };
 }
+
+test("PR Watch messages collapse without a background and expand without changing the payload", () => {
+  initTheme("dark");
+  const harness = createHarness();
+  const renderer = harness.messageRenderers.get("pr-watch-harness");
+  assert.ok(renderer, "register for the existing message type, including saved notifications");
+  const payload = "<pr-watch-harness-notification>\nChecks failed for PR #104.\n</pr-watch-harness-notification>";
+  const contents: Parameters<MessageRenderer>[0]["content"][] = [
+    payload,
+    [{ type: "text", text: payload }],
+  ];
+  for (const content of contents) {
+    const message = { role: "custom" as const, customType: "pr-watch-harness", content, display: true, timestamp: 0 };
+    const original = structuredClone(message);
+    const component: CustomMessageComponent = new CustomMessageComponent(message, renderer);
+    const plain = (): string[] => component.render(80).map(stripTerminalSequences).map((line) => line.trimEnd());
+    const assertNoBackground = () => {
+      assert.doesNotMatch(component.render(80).join("\n"), /\x1b\[(?:48[;:]|4[0-7]m|10[0-7]m)/);
+    };
+
+    assert.deepEqual(plain(), ["", " ▸ pr-watch-notification"]);
+    assertNoBackground();
+    component.setExpanded(true);
+    assert.match(plain().join("\n"), /▾ pr-watch-notification/);
+    assert.match(plain().join("\n"), /Checks failed for PR #104\./);
+    assert.match(plain().join("\n"), /<pr-watch-harness-notification>/);
+    assertNoBackground();
+    assert.ok(component.render(12).every((line) => visibleWidth(line) <= 12));
+
+    component.setExpanded(false);
+    component.invalidate();
+    assert.deepEqual(plain(), ["", " ▸ pr-watch-notification"]);
+    component.setOutputPad(3);
+    assert.deepEqual(plain(), ["", "   ▸ pr-watch-notification"]);
+    assert.deepEqual(message, original, "only display changes; the transcript/model payload stays intact");
+  }
+});
 
 test("tracks human feedback of every activity kind", () => {
   assert.equal(shouldTrackActivity("issue-comment", humanActivity), true);
