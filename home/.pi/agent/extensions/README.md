@@ -16,7 +16,6 @@ Tracked first-pass Pi extensions for this dotfiles setup.
 - `collapsed-bash-calls.ts`: show only the first 3 lines of a multi-line bash command until the tool row is expanded (`ctrl+o`); HTML exports render rows collapsed, so they show the preview too
 - `visible-markdown-links.ts`: keep assistant Markdown links clickable and print each hidden external URL after its label
 - `plan-mode/`: read-only planning mode with extracted steps and execution tracking
-- `otel-tracing/`: export session, prompt, LLM, and tool traces over OpenTelemetry
 
 Possible later additions from the upstream examples:
 
