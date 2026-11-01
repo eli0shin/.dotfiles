@@ -137,25 +137,21 @@ test("isReviewFailure flags aborts and errors", () => {
   );
 });
 
-test("providerExtensionPaths loads only the installed package that provides the model", async () => {
+test("providerExtensionPaths loads the local bridge without consulting installed packages", async () => {
   const root = await mkdtemp(join(tmpdir(), "code-review-providers-"));
   try {
     const agentDir = join(root, "agent");
-    const writePackage = async (dir: string, name: string) => {
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, "package.json"), JSON.stringify({ name, pi: { extensions: ["./index.ts"] } }));
-      await writeFile(join(dir, "index.ts"), "export default () => {};\n");
-    };
-    const bridge = join(root, "bridge");
-    const other = join(root, "other");
-    await writePackage(bridge, "pi-claude-bridge");
-    await writePackage(other, "pi-essentials");
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [other, bridge] }));
+    const bridge = join(agentDir, "extensions/claude-bridge");
+    await mkdir(bridge, { recursive: true });
+    await writeFile(join(bridge, "index.ts"), "export default () => {};\n");
+    // An obsolete package declaration must not cause an install or replace the local extension.
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: ["git:github.com/unused/missing"] }));
 
-    assert.deepEqual(await providerExtensionPaths("claude-bridge", root, agentDir), [join(bridge, "index.ts")]);
-    assert.deepEqual(await providerExtensionPaths("openai-codex", root, agentDir), []);
-    assert.deepEqual(await providerExtensionPaths(undefined, root, agentDir), []);
+    assert.deepEqual(providerExtensionPaths("claude-bridge", agentDir), [join(bridge, "index.ts")]);
+    assert.deepEqual(providerExtensionPaths("openai-codex", agentDir), []);
+    assert.deepEqual(providerExtensionPaths(undefined, agentDir), []);
+    await rm(bridge, { recursive: true });
+    assert.throws(() => providerExtensionPaths("claude-bridge", agentDir), /Claude bridge extension not found/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

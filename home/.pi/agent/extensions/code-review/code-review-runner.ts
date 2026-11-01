@@ -1,14 +1,12 @@
 import {
   createAgentSession,
-  DefaultPackageManager,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ReviewResult } from "./types.ts";
 
@@ -88,46 +86,15 @@ export async function findReviewSession(
   return match.path;
 }
 
-/**
- * Pi packages (by package.json name) that register a model provider. A review
- * on one of these providers loads that package so the provider exists in the
- * review session.
- */
-const PROVIDER_PACKAGES: Record<string, string> = {
-  "claude-bridge": "pi-claude-bridge",
-};
-
-function packageName(packageRoot: string): string | undefined {
-  try {
-    return JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Enabled extension entry points of the installed package providing `provider`. Never installs. */
-export async function providerExtensionPaths(
+/** Load only the local extension needed by the review model. Never installs. */
+export function providerExtensionPaths(
   provider: string | undefined,
-  cwd: string,
   agentDir: string,
-): Promise<string[]> {
-  const pkg = provider ? PROVIDER_PACKAGES[provider] : undefined;
-  if (!pkg) return [];
-  const packageManager = new DefaultPackageManager({
-    cwd,
-    agentDir,
-    settingsManager: SettingsManager.create(cwd, agentDir),
-  });
-  const { extensions } = await packageManager.resolve(async () => "skip");
-  return extensions
-    .filter(
-      (r) =>
-        r.enabled &&
-        r.metadata.origin === "package" &&
-        r.metadata.packageRoot !== undefined &&
-        packageName(r.metadata.packageRoot) === pkg,
-    )
-    .map((r) => r.path);
+): string[] {
+  if (provider !== "claude-bridge") return [];
+  const path = join(agentDir, "extensions/claude-bridge/index.ts");
+  if (!existsSync(path)) throw new Error(`Claude bridge extension not found: ${path}`);
+  return [path];
 }
 
 /**
@@ -140,7 +107,7 @@ export async function runReview(
   options: RunReviewOptions = {},
 ): Promise<ReviewResult> {
   // Isolated session: discover skills and load only the Exa extension, plus the
-  // package that provides the model's provider when pi does not. Other user
+  // local extension that provides the model's provider when pi does not. Other user
   // extensions stay disabled so they cannot affect the review process.
   const agentDir = getAgentDir();
   const loader = new DefaultResourceLoader({
@@ -149,7 +116,7 @@ export async function runReview(
     noExtensions: true,
     additionalExtensionPaths: [
       EXA_EXTENSION_PATH,
-      ...(await providerExtensionPaths(options.model?.provider, cwd, agentDir)),
+      ...providerExtensionPaths(options.model?.provider, agentDir),
     ],
   });
   await loader.reload();

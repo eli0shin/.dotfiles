@@ -1,9 +1,6 @@
 {
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6.1-sol",
-  "packages": [
-    "git:github.com/eli0shin/pi-claude-bridge@860a0258b9da5577158ae77c32c509f0309b062b"
-  ],
   "enabledModels": [
     "claude-bridge/claude-opus-5-5",
     "openai-codex/gpt-6.1-sol",
