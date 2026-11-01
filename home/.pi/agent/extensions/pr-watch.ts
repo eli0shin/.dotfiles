@@ -215,7 +215,11 @@ type ShaSyncResult = {
 const CUSTOM_STATE = "pr-watch-state";
 const NOTIFICATION_TYPE = "pr-watch-harness";
 const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
+// Every session polls on its own and all of them share one GitHub rate limit,
+// so a session waits longer the more PRs it watches.
 const POLL_INTERVAL_MS = 60_000;
+const POLL_INTERVAL_PER_PR_MS = 30_000;
+const MAX_POLL_INTERVAL_MS = 10 * 60_000;
 const INBOX_POLL_INTERVAL_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 const MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS = 100;
@@ -247,6 +251,23 @@ const initialState = (): WatchState => ({
   pendingWorkerSettlements: [],
   recentGhOutputs: [],
 });
+
+export function pollIntervalMs(watchedPrCount: number): number {
+  return Math.min(MAX_POLL_INTERVAL_MS, Math.max(POLL_INTERVAL_MS, watchedPrCount * POLL_INTERVAL_PER_PR_MS));
+}
+
+// Splits `gh api --include` output into its status, ETag, and body.
+export function parseGhApiResponse(stdout: string): { status: number; etag?: string; body: string } | undefined {
+  const normalized = stdout.replace(/\r\n/g, "\n");
+  const separator = normalized.indexOf("\n\n");
+  const head = separator < 0 ? normalized : normalized.slice(0, separator);
+  const body = separator < 0 ? "" : normalized.slice(separator + 2);
+  const [statusLine = "", ...headers] = head.split("\n");
+  const status = Number(statusLine.match(/^HTTP\/\S+\s+(\d{3})\b/)?.[1]);
+  if (!status) return undefined;
+  const etag = headers.find((line) => /^etag:/i.test(line))?.slice("etag:".length).trim();
+  return { status, etag: etag || undefined, body };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -457,6 +478,12 @@ function isBotActivity(activity: Activity): boolean {
 export default function prWatch(pi: ExtensionAPI): void {
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
+  let intervalMs: number | undefined;
+  // The gh login does not change while Pi runs, so it is looked up once.
+  let cachedSelfLogin: string | undefined;
+  // GitHub does not count a 304 against the rate limit, so activity lists are
+  // fetched conditionally on the ETag of the last list.
+  const activityCache = new Map<string, { etag: string; activities: Activity[] }>();
   let inboxInterval: ReturnType<typeof setInterval> | undefined;
   let inboxQueue = Promise.resolve(0);
   let polling = false;
@@ -858,9 +885,17 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function startPolling(ctx: ExtensionContext): void {
-    if (interval || state.mode === "off" || !hasTargets()) return;
-    interval = setInterval(() => poll(ctx), POLL_INTERVAL_MS);
+    if (interval) return reschedulePolling(ctx);
+    if (state.mode === "off" || !hasTargets()) return;
+    intervalMs = pollIntervalMs(state.watchedPrs.length);
+    interval = setInterval(() => poll(ctx), intervalMs);
     setStatus(ctx);
+  }
+
+  function reschedulePolling(ctx: ExtensionContext): void {
+    if (!interval || intervalMs === pollIntervalMs(state.watchedPrs.length)) return;
+    stopPolling();
+    startPolling(ctx);
   }
 
   function startInboxPolling(ctx: ExtensionContext): void {
@@ -879,6 +914,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   function stopPolling(ctx?: ExtensionContext): void {
     if (interval) clearInterval(interval);
     interval = undefined;
+    intervalMs = undefined;
     if (ctx) setStatus(ctx);
   }
 
@@ -1355,8 +1391,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function refreshSelfLogin(ctx: ExtensionContext): Promise<void> {
-    const user = await execJson<{ login?: string }>("gh", ["api", "user"], ctx);
-    state.selfLogin = user?.login || undefined;
+    if (!cachedSelfLogin) {
+      const user = await execJson<{ login?: string }>("gh", ["api", "user"], ctx);
+      cachedSelfLogin = user?.login || undefined;
+    }
+    state.selfLogin = cachedSelfLogin;
   }
 
   async function fetchChecks(watched: WatchedPrState, ctx: ExtensionContext): Promise<Check[] | undefined> {
@@ -1543,9 +1582,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   async function fetchActivities(watched: WatchedPrState, ctx: ExtensionContext): Promise<TrackedActivity[] | undefined> {
     const { repo, number } = watched.pr;
     const [issueComments, reviews, reviewComments] = await Promise.all([
-      execJson<Activity[]>("gh", ["api", `repos/${repo}/issues/${number}/comments?per_page=100`], ctx),
-      execJson<Activity[]>("gh", ["api", `repos/${repo}/pulls/${number}/reviews?per_page=100`], ctx),
-      execJson<Activity[]>("gh", ["api", `repos/${repo}/pulls/${number}/comments?per_page=100`], ctx),
+      fetchActivityList(`repos/${repo}/issues/${number}/comments?per_page=100`, ctx),
+      fetchActivityList(`repos/${repo}/pulls/${number}/reviews?per_page=100`, ctx),
+      fetchActivityList(`repos/${repo}/pulls/${number}/comments?per_page=100`, ctx),
     ]);
     if (!issueComments || !reviews || !reviewComments) return undefined;
 
@@ -1554,6 +1593,29 @@ export default function prWatch(pi: ExtensionAPI): void {
       ...trackActivities("review", reviews),
       ...trackActivities("review-comment", reviewComments),
     ];
+  }
+
+  // A failed call (rate limit, 404) prints GitHub's JSON error object, so only
+  // a 200 list or a 304 for a cached list counts as a successful fetch.
+  async function fetchActivityList(endpoint: string, ctx: ExtensionContext): Promise<Activity[] | undefined> {
+    const cached = activityCache.get(endpoint);
+    const args = ["api", endpoint, "--include"];
+    if (cached) args.push("-H", `If-None-Match: ${cached.etag}`);
+    const result = await pi.exec("gh", args, { timeout: 30_000 });
+    const response = parseGhApiResponse(result.stdout);
+    if (response?.status === 304 && cached) return cached.activities;
+    if (response?.status !== 200) return undefined;
+    let activities: unknown;
+    try {
+      activities = JSON.parse(response.body);
+    } catch {
+      ctx.ui.notify("pr-watch could not parse gh output", "warning");
+      return undefined;
+    }
+    if (!Array.isArray(activities)) return undefined;
+    if (response.etag) activityCache.set(endpoint, { etag: response.etag, activities });
+    else activityCache.delete(endpoint);
+    return activities;
   }
 
   function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
@@ -2176,6 +2238,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.lastPollAt = Date.now();
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
       if (!hasTargets()) stopPolling(ctx);
+      else reschedulePolling(ctx);
       save();
       await publishWorkerSnapshot(ctx);
       setStatus(ctx);
@@ -2492,6 +2555,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
     }
     if (!hasTargets()) stopPolling(ctx);
+    else reschedulePolling(ctx);
     setStatus(ctx);
     return `Stopped watching PR ${repo}#${pr.number}. Automatic discovery cannot re-add it until explicit opt-in or /pr-watch reset.`;
   }

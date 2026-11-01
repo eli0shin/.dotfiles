@@ -189,6 +189,7 @@ else if(args[0]==='pr'&&args[1]==='view') {if(!fs.existsSync(marker))process.exi
 else if(args[0]==='pr'&&args[1]==='checks') console.log(JSON.stringify(fs.existsSync(process.env.REPRO_ROOT+'/ci-complete') ? [{name:'CI',state:'SUCCESS',bucket:'pass',workflow:'CI',link:'https://github.com/owner/repo/actions/runs/104',completedAt:'2026-07-13T22:00:00Z'}] : []));
 else if(args[0]==='api'&&args[1]==='user') console.log(JSON.stringify({login:'owner'}));
 else if(args[0]==='api'&&args[1].includes('/commits/')) console.log(JSON.stringify({sha:'main-sha'}));
+else if(args[0]==='api'&&args.includes('--include')) process.stdout.write('HTTP/2.0 200 OK\\r\\nEtag: "empty"\\r\\n\\r\\n[]');
 else console.log('[]');
 `);
       await executable("tickets", "#!/bin/sh\nexit 0\n");

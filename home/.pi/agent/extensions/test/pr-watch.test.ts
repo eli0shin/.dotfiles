@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +9,8 @@ import { join } from "node:path";
 
 import prWatch, {
   commandTargets,
+  parseGhApiResponse,
+  pollIntervalMs,
   prIdentityKey,
   prStatusIdentity,
   pullRequestUrlFromText,
@@ -86,6 +89,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     ],
   ]);
   let intervalCallback: (() => unknown) | undefined;
+  let intervalMs: number | undefined;
   let inboxCallback: (() => unknown) | undefined;
   let idle = true;
   let branchEntries: unknown[] = [];
@@ -192,7 +196,14 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "api") {
-        if (!activitiesAvailable) return { code: 1, stdout: "", stderr: "temporary failure" };
+        // A rate-limited `gh api` still prints GitHub's JSON error object.
+        if (!activitiesAvailable) {
+          return {
+            code: 1,
+            stdout: 'HTTP/2.0 403 Forbidden\r\n\r\n{"message":"API rate limit exceeded"}',
+            stderr: "gh: API rate limit exceeded (HTTP 403)",
+          };
+        }
         const endpoint = args[1] ?? "";
         const number = Number(endpoint.match(/\/(\d+)\//)?.[1]);
         const payload = endpoint.includes("/issues/")
@@ -200,7 +211,12 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
           : endpoint.includes("/reviews")
             ? reviews.get(number) ?? []
             : reviewComments.get(number) ?? [];
-        return { code: 0, stdout: JSON.stringify(payload), stderr: "" };
+        const body = JSON.stringify(payload);
+        const etag = `W/"${createHash("sha256").update(body).digest("hex")}"`;
+        if (args.includes(`If-None-Match: ${etag}`)) {
+          return { code: 1, stdout: `HTTP/2.0 304 Not Modified\r\nEtag: ${etag}\r\n\r\n`, stderr: "gh: HTTP 304" };
+        }
+        return { code: 0, stdout: `HTTP/2.0 200 OK\r\nEtag: ${etag}\r\n\r\n${body}`, stderr: "" };
       }
       if (command === "git" && args[0] === "branch" && args[1] === "--show-current") {
         return shaAvailable
@@ -243,7 +259,10 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     const originalClearInterval = globalThis.clearInterval;
     globalThis.setInterval = ((callback: () => unknown, ms?: number) => {
       if (ms === 5_000) inboxCallback = callback;
-      else intervalCallback = callback;
+      else {
+        intervalCallback = callback;
+        intervalMs = ms;
+      }
       return { fake: true };
     }) as any;
     globalThis.clearInterval = (() => {}) as any;
@@ -398,6 +417,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
 
   return {
     withFakeTimer,
+    intervalMs: () => intervalMs,
     handlers,
     commands,
     async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate", pr?: string) {
@@ -2592,9 +2612,9 @@ test("pending author feedback remains deliverable after a later gh output contai
 test("reviewer pending self-feedback is discarded when the next activity refresh fails", async () => {
   const harness = createHarness();
   harness.prs.get(104)!.authorLogin = "another-author";
+  harness.setSelfLoginAvailable(false);
   await harness.activate(104);
   harness.setIdle(false);
-  harness.setSelfLoginAvailable(false);
   harness.reviews.set(104, [{ id: 77, user: { login: "eli0shin", type: "User" } }]);
   await harness.runPoll();
   assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates[0]?.feedbackActivities.length, 1);
@@ -3793,4 +3813,88 @@ test("closing a PR or manually removing it discards its pending updates", async 
   await secondHarness.commands.get("pr-watch")?.handler("remove 104", secondHarness.ctx);
   assert.deepEqual(secondHarness.savedStates.at(-1)?.pendingPrUpdates, []);
   assert.equal(secondHarness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+});
+
+test("poll interval grows with the watched PR count between one and ten minutes", () => {
+  assert.equal(pollIntervalMs(0), 60_000);
+  assert.equal(pollIntervalMs(2), 60_000);
+  assert.equal(pollIntervalMs(3), 90_000);
+  assert.equal(pollIntervalMs(13), 390_000);
+  assert.equal(pollIntervalMs(40), 600_000);
+});
+
+test("parses gh api --include output", () => {
+  assert.deepEqual(parseGhApiResponse('HTTP/2.0 200 OK\r\nEtag: W/"abc"\r\nX-Other: 1\r\n\r\n[{"id":1}]'), {
+    status: 200,
+    etag: 'W/"abc"',
+    body: '[{"id":1}]',
+  });
+  assert.deepEqual(parseGhApiResponse('HTTP/2.0 304 Not Modified\r\nETag: "abc"\r\n\r\n'), {
+    status: 304,
+    etag: '"abc"',
+    body: "",
+  });
+  assert.equal(parseGhApiResponse('[{"id":1}]'), undefined);
+  assert.equal(parseGhApiResponse(""), undefined);
+});
+
+test("polling slows down once a session watches more than two PRs", async () => {
+  const harness = createHarness();
+  harness.prs.set(106, {
+    ...harness.prs.get(105)!,
+    number: 106,
+    url: "https://github.com/eli0shin/repos/pull/106",
+    branch: "third-feature",
+    headSha: "abc106",
+  });
+  await harness.activate(104);
+  assert.equal(harness.intervalMs(), 60_000);
+  await harness.activate(105);
+  await harness.activate(106);
+  assert.equal(harness.intervalMs(), 90_000);
+});
+
+test("the gh login is looked up once rather than on every poll", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  await harness.runPoll();
+  await harness.runPoll();
+  const userCalls = harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "user");
+  assert.equal(userCalls.length, 1);
+  assert.equal(harness.savedStates.at(-1)?.selfLogin, "eli0shin");
+});
+
+test("activity lists are requested conditionally and an unchanged list is reused", async () => {
+  const harness = createHarness();
+  harness.prs.get(104)!.authorLogin = "another-author";
+  harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+  await harness.activate(104);
+  const reviewCalls = () =>
+    harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "api" && args[1]?.includes("/reviews"));
+  const firstCallCount = reviewCalls().length;
+
+  await harness.runPoll();
+  const conditional = reviewCalls().at(-1)?.args ?? [];
+  assert.ok(reviewCalls().length > firstCallCount);
+  assert.ok(conditional.some((arg) => arg.startsWith("If-None-Match: ")));
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77"]);
+  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
+
+  harness.reviews.set(104, [
+    { id: 77, user: { login: "reviewer", type: "User" } },
+    { id: 78, user: { login: "reviewer", type: "User" } },
+  ]);
+  await harness.runPoll();
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77", "review:78"]);
+});
+
+test("a rate-limited activity refresh leaves the seen activity baseline unchanged", async () => {
+  const harness = createHarness();
+  harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+  await harness.activate(104);
+  harness.setActivitiesAvailable(false);
+  await harness.runPoll();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77"]);
+  assert.equal(harness.savedStates.at(-1)?.lastError, undefined);
 });
