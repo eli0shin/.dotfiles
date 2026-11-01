@@ -16,8 +16,6 @@ export default function orchestratorExtension(pi: ExtensionAPI): void {
     // their ordinary role.
     if (!process.env.PI_ORCHESTRATION_SESSION_ID?.trim()) return;
 
-    return {
-      systemPrompt: `${event.systemPrompt}\n\n${await orchestratorInstructions()}`,
-    };
+    event.systemPromptOptions.sections.orchestrator = await orchestratorInstructions();
   });
 }

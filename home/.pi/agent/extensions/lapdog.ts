@@ -166,7 +166,7 @@ export default function lapdog(pi: ExtensionAPI): void {
 		// agent.continue()'s agent_start (no before_agent_start) reads as a
 		// continuation.
 		userTurnPending = true;
-		const prompt = _event?.prompt;
+		const prompt = _event?.messageType === "user" ? _event.prompt : undefined;
 		if (typeof prompt === "string" && prompt) {
 			pendingUserPrompt = prompt;
 		}

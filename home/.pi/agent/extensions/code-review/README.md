@@ -61,7 +61,10 @@ an overlay with the markdown-rendered findings and the action choices.
 
 ## Development
 
+This directory uses the parent `extensions/` workspace. Run these commands there:
+
 ```bash
 npm install
-npm run check   # typecheck + tests
+npm run typecheck
+npm test
 ```

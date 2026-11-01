@@ -2269,7 +2269,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", (event) => {
     if (state.mode === "off") return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${HARNESS_GUIDANCE}` };
+    event.systemPromptOptions.sections.pr_watch = HARNESS_GUIDANCE;
   });
 
   pi.on("session_start", async (event, ctx) => {

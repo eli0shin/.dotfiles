@@ -553,17 +553,21 @@ test("status identity omits the current repository and all organization prefixes
   assert.equal(prStatusIdentity({ repo: "another/other", number: 42 }, undefined), "other#42");
 });
 
-test("system prompt delegates CI monitoring to the harness", async () => {
+test("system prompt section delegates CI monitoring to the harness", async () => {
   const harness = createHarness();
-  const result = (await harness.handlers.get("before_agent_start")?.(
-    { systemPrompt: "base prompt" },
-    harness.ctx,
-  )) as any;
+  const runSections = async () => {
+    const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+    assert.equal(await harness.handlers.get("before_agent_start")?.(event, harness.ctx), undefined);
+    return event.systemPromptOptions.sections;
+  };
 
-  assert.match(result?.systemPrompt ?? "", /^base prompt/);
-  assert.match(result?.systemPrompt ?? "", /PR Watch monitors CI and PR feedback/);
-  assert.match(result?.systemPrompt ?? "", /Return control after these operations/);
-  assert.match(result?.systemPrompt ?? "", /harness notifications, not user messages/);
+  const section = (await runSections()).pr_watch ?? "";
+  assert.match(section, /PR Watch monitors CI and PR feedback/);
+  assert.match(section, /Return control after these operations/);
+  assert.match(section, /harness notifications, not user messages/);
+
+  await harness.commands.get("pr-watch")?.handler("off", harness.ctx);
+  assert.deepEqual(await runSections(), {});
 });
 
 test("status line prefixes only PRs from other repositories", async () => {

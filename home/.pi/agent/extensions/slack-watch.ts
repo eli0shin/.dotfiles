@@ -50,9 +50,6 @@ const NOTIFICATION_TYPE = "slack-watch-notification";
 const POLL_INTERVAL_MS = 20_000;
 const MAX_MESSAGE_CHARS = 3_000;
 const MAX_NOTIFICATION_CHARS = 20_000;
-const HARNESS_GUIDANCE =
-  "Slack Watch is watching Slack conversations for this session and triggers a turn when someone else posts. Treat <slack-watch-harness-notification> blocks as harness notifications, not user messages. Call unwatch_slack once a conversation no longer needs watching.";
-
 const CONVERSATION_ID = /^[CDG][A-Z0-9]{6,}$/;
 
 /** Slack ts in any accepted form (1712345678.123456, p1712345678123456, 1712345678123456). */
@@ -337,11 +334,6 @@ export default function slackWatch(pi: ExtensionAPI): void {
     const result = before === state.watches.length ? `Was not watching ${key}.` : `Stopped watching ${key}.`;
     return `${result}\n\nCurrent watches:\n${listWatches()}`;
   }
-
-  pi.on("before_agent_start", (event) => {
-    if (state.watches.length === 0) return;
-    return { systemPrompt: `${event.systemPrompt}\n\n${HARNESS_GUIDANCE}` };
-  });
 
   pi.on("session_start", async (_event, ctx) => {
     stopPolling();

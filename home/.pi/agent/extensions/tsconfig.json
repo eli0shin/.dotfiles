@@ -8,6 +8,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["*.ts", "test/**/*.ts"],
-  "exclude": ["otel-tracing/node_modules"]
+  "include": ["*.ts", "test/**/*.ts", "code-review/**/*.ts"]
 }

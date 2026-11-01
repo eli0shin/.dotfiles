@@ -155,7 +155,8 @@ if (process.argv[2] === "worker") {
     const root = await mkdtemp(join(tmpdir(), "pi-pr-watch-integration-"));
     const bin = join(root, "bin"), repo = join(root, "repo"), worker = join(root, "worker");
     const envNames = ["PATH", "REPRO_ROOT", "REPRO_WORKER", "PI_PR_WATCH_STATE_DIR", "PI_ORCHESTRATION_SESSION_ID",
-      "PI_PARENT_ORCHESTRATION_SESSION_ID", "OPENCODE_ORCHESTRATION_SESSION_ID", "OPENCODE_PARENT_ORCHESTRATION_SESSION_ID", "HERDR_ENV", "REPRO_AUTOMATIC"];
+      "PI_PARENT_ORCHESTRATION_SESSION_ID", "OPENCODE_ORCHESTRATION_SESSION_ID", "OPENCODE_PARENT_ORCHESTRATION_SESSION_ID", "HERDR_ENV", "REPRO_AUTOMATIC",
+      "PI_CODING_AGENT_DIR"];
     const original = new Map(envNames.map((name) => [name, process.env[name]]));
     const timer = capturePolling(automatic);
     let session: AgentSession | undefined;
@@ -170,6 +171,9 @@ if (process.argv[2] === "worker") {
       process.env.PI_ORCHESTRATION_SESSION_ID = "orchestration-123";
       for (const name of envNames.slice(5)) delete process.env[name];
       process.env.REPRO_AUTOMATIC = automatic ? "1" : "0";
+      // Pi's bash tool puts $PI_CODING_AGENT_DIR/bin first on PATH. With the real
+      // agent dir, a managed install's `pi` there shadows the stub and starts a real worker.
+      process.env.PI_CODING_AGENT_DIR = join(root, "agent");
       git("init", "-b", "main");
       git("config", "user.name", "PR Watch Test"); git("config", "user.email", "test@example.invalid");
       git("commit", "--allow-empty", "-m", "initial");
