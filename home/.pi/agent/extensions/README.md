@@ -14,6 +14,7 @@ Tracked first-pass Pi extensions for this dotfiles setup.
 - `orchestrator.ts`: add the canonical `~/.agents/skills/orchestrator/SKILL.md` instructions as the `orchestrator` system prompt section before each agent run when `PI_ORCHESTRATION_SESSION_ID` is set; role instructions stay outside compacted conversation history, and PR Watch restores the variable on resume. Workers with only `PI_PARENT_ORCHESTRATION_SESSION_ID` keep their ordinary role. Use `/reload` to load this extension in an existing session.
 - `trust-all.ts`: automatically trust every project to bypass project trust prompts
 - `collapsed-bash-calls.ts`: show only the first 3 lines of a multi-line bash command until the tool row is expanded (`ctrl+o`); HTML exports render rows collapsed, so they show the preview too
+- `expanded-pastes.ts`: keep pasted/dictated text visible and editable instead of `[paste #…]` markers, preserving native cleanup, cursor placement, and atomic undo. Adapts only the current prompt editor on Pi 1.4.x, waiting through reload's temporary loading panel and attaching before the first input; unsupported editors/versions retain native behavior. Reload to activate; repaste any draft that was already collapsed.
 - `visible-markdown-links.ts`: keep assistant Markdown links clickable and print each hidden external URL after its label
 - `plan-mode/`: read-only planning mode with extracted steps and execution tracking
 
