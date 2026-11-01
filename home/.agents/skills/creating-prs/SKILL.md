@@ -11,7 +11,7 @@ A good PR feels native to its repo and gives a familiar reviewer the missing con
 
 1. **Read the repo convention.** Inspect the PR template and a few recent PR titles and descriptions. Done when you know the expected title shape, whether Jira tickets are required, whether ticket links appear in the body, and which template sections are actually used.
 
-2. **Find the ticket.** If repo convention expects Jira tickets, derive the ticket key from the branch or commits using the `ABC-123` shape. If the repo expects one and you cannot find it, ask the user for it before drafting the PR. Done when the title can start with the ticket key or you know this repo does not require one.
+2. **Find the ticket.** If repo convention expects Jira tickets, derive the ticket key from the branch or commits using the `ABC-123` shape. If the repo expects one and you cannot find it, search the tracker for a ticket covering this work, and create one from the user's requirements when none matches. Done when the title can start with the ticket key or you know this repo does not require one.
 
 3. **Understand the change.** Review the branch diff and commits as the source of truth. Done when you can describe the user-visible behavior, workflow, constraint, or system capability that changed, plus the motivation/context a codebase-familiar reviewer would not infer from the diff alone.
 
