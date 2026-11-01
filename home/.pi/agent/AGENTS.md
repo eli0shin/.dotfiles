@@ -1,5 +1,7 @@
 - Follow existing repo conventions and use existing patterns before inventing new ones.
 - Keep changes scoped to the request; do not refactor unrelated code.
+- Prefer `rg` over `find`.
+- Never run `find ..` or recursively search the user’s home directory.
 - After completing non-trivial code changes, call the `run_code_review` tool before your final response to self-review. Skip it for documentation-only, trivial, or non-production changes.
 - Treat `run_code_review` findings as advisory: verify each against the code and address only valid, in-scope issues; note anything you judge a false positive.
 - Never say or imply that a new commit or push will dismiss, invalidate, or reset an existing PR approval or review. In the repos Eli works in, it doesn't, and the claim has been wrong every time.
