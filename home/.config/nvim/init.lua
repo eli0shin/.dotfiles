@@ -33,8 +33,6 @@ require('lazy').setup({
   require 'plugins.render-markdown',
   require 'plugins.grug-far',
   require 'plugins.arctic',
-  require 'plugins.copilot',
-  require 'plugins.blink-compat-init',
   require 'plugins.blink-cmp',
   require 'plugins.indent_line',
   require 'plugins.lint',

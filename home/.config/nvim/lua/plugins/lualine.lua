@@ -9,7 +9,7 @@ return {
       icons_enabled = true,
       section_separators = '',
       component_separators = '',
-      disabled_filetypes = { 'NvimTree', 'oil', 'Trouble', 'dashboard', 'alpha', 'avante', 'codecompanion' },
+      disabled_filetypes = { 'NvimTree', 'oil', 'Trouble', 'dashboard', 'alpha' },
       always_divide_middle = false,
       globalstatus = true,
     },

@@ -8,7 +8,7 @@ A powerful and feature-rich Neovim setup optimized for modern development workfl
 - **Modern UI**: Minimal and clean interface with Arctic theme
 - **LSP Integration**: Full Language Server Protocol support with intelligent code completion
 - **Git Integration**: Seamless git workflow with Fugitive, Gitsigns, Diffview, and Octo
-- **AI Assistance**: CodeCompanion, Copilot, and Aider integration for AI-powered development
+- **AI Assistance**: Aider integration for AI-powered development
 - **Testing Tools**: Jester for JavaScript/TypeScript testing
 - **Debugging**: DAP integration for interactive debugging
 - **File Navigation**: Oil.nvim and Telescope for intuitive file management
@@ -57,7 +57,6 @@ nvim
 - **LSP Configuration**: Native LSP with enhanced capabilities
 - **Telescope**: Fuzzy finder for files, buffers, and more
 - **Treesitter**: Advanced syntax highlighting
-- **Copilot & CodeCompanion**: AI assistants for coding
 - **DAP**: Debug Adapter Protocol for interactive debugging
 - **Oil.nvim**: File explorer in a buffer
 - **Conform.nvim**: Code formatting
@@ -74,8 +73,7 @@ To customize this configuration:
 
 ## Special Features
 
-- **MCP-Hub**: Integration with Model Context Protocol for AI tools
-- **Blink Integration**: Enhanced AI coding assistance
+- **Blink Integration**: Completion for LSP, paths, snippets, and buffers
 - **CSpell**: Spell checking for code and documentation
 - **Rest.nvim**: HTTP client for API testing
 - **Diffview**: Enhanced git diff viewer
