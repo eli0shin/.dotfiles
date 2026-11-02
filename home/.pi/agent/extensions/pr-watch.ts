@@ -715,7 +715,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const repo = await ensureCurrentRepo(ctx);
     const branch = state.workerBranch;
     if (!repo || !branch || hasWatchedPrForBranch(repo, branch)) return;
-    await discover(ctx, "worker branch", false, branch, { ignoreUnresolved: true });
+    await discover(ctx, branch, { ignoreUnresolved: true });
   }
 
   async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
@@ -821,7 +821,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (resolved.has(pr.url)) continue;
       if (state.watchedPrs.some((watched) => prIdentityKey(watched.pr) === prIdentityKey(pr))) continue;
       try {
-        await discover(ctx, "worker snapshot", false, pr.url);
+        await discover(ctx, pr.url);
       } catch (error) {
         errors.push(
           `Could not enroll worker PR ${pr.repo}#${pr.number}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1049,8 +1049,6 @@ export default function prWatch(pi: ExtensionAPI): void {
   async function watchCurrentBranch(
     ctx: ExtensionContext,
     repoName: string,
-    reason: string,
-    notify: boolean,
   ): Promise<boolean> {
     if (fixedShaWatchActive()) {
       startPolling(ctx);
@@ -1104,7 +1102,6 @@ export default function prWatch(pi: ExtensionAPI): void {
     save();
     startPolling(ctx);
     setStatus(ctx);
-    if (notify) ctx.ui.notify(`PR watch active for SHA ${sha.slice(0, 7)} (${reason}).`, "info");
     return true;
   }
 
@@ -1164,8 +1161,6 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function discover(
     ctx: ExtensionContext,
-    reason: string,
-    notify = true,
     prTarget?: string,
     options: DiscoverOptions = {},
   ): Promise<boolean> {
@@ -1221,7 +1216,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       };
       const watchedKey = prIdentityKey(watchedPr);
       const existing = state.watchedPrs.find((candidate) => prIdentityKey(candidate.pr) === watchedKey);
-      const wasAlreadyWatched = Boolean(existing);
       const watched = existing ?? { pr: watchedPr, seenActivityIds: [] };
       if (existing) {
         existing.pr = watchedPr;
@@ -1243,7 +1237,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         (url) => url !== watchedPr.url,
       );
       await publishWorkerSnapshot(ctx);
-      if (notify && !wasAlreadyWatched) ctx.ui.notify(`PR watch added #${pr.number} (${reason}).`, "info");
       return true;
     }
 
@@ -1279,7 +1272,6 @@ export default function prWatch(pi: ExtensionAPI): void {
           startPolling(ctx);
           setStatus(ctx);
           await publishWorkerSnapshot(ctx);
-          if (notify) ctx.ui.notify(`PR watch is waiting for CI on the merge commit of #${pr.number}.`, "info");
           return true;
         }
       }
@@ -1308,14 +1300,13 @@ export default function prWatch(pi: ExtensionAPI): void {
           setStatus(ctx);
           return false;
         }
-        return watchCurrentBranch(ctx, repoForCurrentDirectory, `${reason}; no PRs are watched`, notify);
+        return watchCurrentBranch(ctx, repoForCurrentDirectory);
       }
-      if (notify && pr) ctx.ui.notify(`PR #${pr.number} is not open; it was not added to PR watch.`, "info");
       return false;
     }
 
     if (state.orchestrationSessionId) return false;
-    return watchCurrentBranch(ctx, repoName, reason, notify);
+    return watchCurrentBranch(ctx, repoName);
   }
 
   function isOrchestrationMember(pr: Pick<WatchedPr, "repo" | "number">): boolean {
@@ -2217,7 +2208,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       await refreshSelfLogin(ctx);
       await discoverWorkerPr(ctx);
       const shaSync = await syncWatchedSha(ctx);
-      let addedCount = 0;
       const errors = shaSync.error ? [shaSync.error] : [];
 
       // Poll watched PRs before reconciling membership: a worker can drop a
@@ -2226,7 +2216,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         try {
           const result = await pollPr(watched, ctx);
           if (!isWatchedPr(watched)) continue;
-          addedCount += result.addedCount;
           if (result.error) errors.push(result.error);
           if (result.merged) handleMergedPr(watched.pr, result.merged);
           if (result.remove) removePr(watched.pr);
@@ -2244,13 +2233,13 @@ export default function prWatch(pi: ExtensionAPI): void {
           const repo = await ensureCurrentRepo(ctx);
           if (!repo) {
             errors.push("Could not resolve the current GitHub repository");
-          } else if (!(await watchCurrentBranch(ctx, repo, "no PRs are watched", false)) && state.lastError) {
+          } else if (!(await watchCurrentBranch(ctx, repo)) && state.lastError) {
             errors.push(state.lastError);
           }
         }
       }
 
-      addedCount += await pollSha(ctx);
+      await pollSha(ctx);
       state.lastPollAt = Date.now();
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
       if (!hasTargets()) stopPolling(ctx);
@@ -2259,9 +2248,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       await publishWorkerSnapshot(ctx);
       setStatus(ctx);
 
-      if (addedCount > 0) {
-        ctx.ui.notify(`PR Watch buffered ${addedCount} update${addedCount === 1 ? "" : "s"} (${pendingCount()} pending).`, "info");
-      }
       flushPending(ctx);
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
@@ -2409,7 +2395,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const savedSha = state.watchedSha;
     if (!state.orchestrationSessionId) state.watchedSha = undefined;
     for (const watched of savedPrs) {
-      await discover(ctx, "startup", false, watched.pr.url, { alreadyEnrolled: true });
+      await discover(ctx, watched.pr.url, { alreadyEnrolled: true });
     }
     await discoverWorkerPr(ctx);
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
@@ -2483,7 +2469,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (isActivationCommand(command)) {
       const target = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0] ?? pullRequestUrlFromText(output);
-      await discover(ctx, "gh pr command", true, target);
+      await discover(ctx, target);
       return;
     }
 
@@ -2496,21 +2482,21 @@ export default function prWatch(pi: ExtensionAPI): void {
         ...urls,
         ...commandTargets(command, "stack", ["link"]).filter((target) => !urlNumbers.has(target)),
       ];
-      if (targets.length === 0) await discover(ctx, "gh stack command", false);
+      if (targets.length === 0) await discover(ctx);
       for (const target of targets) {
-        await discover(ctx, "gh stack command", true, target, { ignoreUnresolved: true });
+        await discover(ctx, target, { ignoreUnresolved: true });
       }
       return;
     }
 
     if (isGitPush(command)) {
-      if (!(await watchPushedDefaultBranch(ctx, command, output))) await discover(ctx, "git push", false);
+      if (!(await watchPushedDefaultBranch(ctx, command, output))) await discover(ctx);
       return;
     }
 
     if (isPrMerge(command) || isStackMerge(command)) {
       const group = isPrMerge(command) ? "pr" : "stack";
-      await discover(ctx, `gh ${group} merge`, false, commandTargets(command, group, ["merge"])[0], {
+      await discover(ctx, commandTargets(command, group, ["merge"])[0], {
         allowMergeWatch: true,
         // A bare gh stack merge number may name a stack rather than a PR.
         ignoreUnresolved: group === "stack",
@@ -2522,7 +2508,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     // attempt/check keys change), so only a rerun with no active watch needs to
     // start one. discover picks PR watch when the active branch has an open PR
     // and otherwise starts SHA watch.
-    if (isRunRerun(command) && !hasTargets()) await discover(ctx, "gh run rerun", false);
+    if (isRunRerun(command) && !hasTargets()) await discover(ctx);
   });
 
   function validatePrTarget(target: string): string {
@@ -2536,7 +2522,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     target = validatePrTarget(target);
     const previousMode = state.mode;
     state.mode = "active";
-    if (!(await discover(ctx, "explicit opt-in", false, target, { explicit: true }))) {
+    if (!(await discover(ctx, target, { explicit: true }))) {
       state.mode = previousMode;
       save();
       setStatus(ctx);
@@ -2566,7 +2552,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         await syncWatchedSha(ctx);
       } else {
         const current = await ensureCurrentRepo(ctx);
-        if (current) await watchCurrentBranch(ctx, current, "no PRs are watched", false);
+        if (current) await watchCurrentBranch(ctx, current);
       }
       save();
     }
@@ -2661,11 +2647,10 @@ export default function prWatch(pi: ExtensionAPI): void {
           startPolling(ctx);
           await poll(ctx);
         } else {
-          await discover(ctx, `manual ${action}`);
+          await discover(ctx);
           flushPending(ctx);
         }
         setStatus(ctx);
-        ctx.ui.notify(`PR watch ${action === "on" ? "enabled" : "resumed"}.`, "info");
         return;
       }
 
@@ -2674,7 +2659,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         save();
         startPolling(ctx);
         setStatus(ctx);
-        ctx.ui.notify("PR watch notifications paused; polling continues.", "info");
         return;
       }
 
@@ -2682,7 +2666,6 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.mode = "off";
         stopPolling(ctx);
         save();
-        ctx.ui.notify("PR watch disabled for this session.", "info");
         return;
       }
 
@@ -2692,7 +2675,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           return;
         }
         try {
-          ctx.ui.notify(await watchPr(target, ctx), "info");
+          await watchPr(target, ctx);
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
         }
@@ -2701,7 +2684,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       if (action === "remove") {
         try {
-          ctx.ui.notify(await unwatchPr(target, ctx), "info");
+          await unwatchPr(target, ctx);
         } catch (error) {
           ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
         }
@@ -2722,7 +2705,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           save();
           startPolling(ctx);
         } else {
-          await discover(ctx, "manual reset");
+          await discover(ctx);
           await publishWorkerSnapshot(ctx);
         }
         return;

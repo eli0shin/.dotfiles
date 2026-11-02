@@ -1612,16 +1612,51 @@ test("manual add accepts a PR number for the current repository", async () => {
   await harness.shutdown();
 });
 
-test("repeated gh pr activity does not notify for an already watched PR", async () => {
+test("PR discovery and repeated gh pr activity stay silent", async () => {
   const harness = createHarness();
 
   await harness.activate(104);
-  assert.deepEqual(harness.notifications, ["PR watch added #104 (gh pr command)."]);
+  assert.deepEqual(harness.notifications, []);
 
   await harness.activate(104, "view");
-  assert.equal(harness.notifications.length, 1);
+  assert.deepEqual(harness.notifications, []);
 
   await harness.shutdown();
+});
+
+test("manual PR watch controls stay silent while status and warnings remain available", async () => {
+  const harness = createHarness();
+  try {
+    await harness.startSession();
+    for (const action of ["add 104", "pause", "resume", "off", "on", "remove 104", "reset"]) {
+      await harness.withFakeTimer(() => harness.commands.get("pr-watch")!.handler(action, harness.ctx));
+      assert.deepEqual(harness.notifications, [], `${action} should only update the status line`);
+    }
+
+    await harness.commands.get("pr-watch")!.handler("status", harness.ctx);
+    assert.match(harness.notifications.pop() ?? "", /PR watch mode: active/);
+    await harness.commands.get("pr-watch")!.handler("add", harness.ctx);
+    assert.match(harness.notifications.pop() ?? "", /Usage: \/pr-watch add/);
+    harness.prs.get(105)!.state = "CLOSED";
+    await harness.commands.get("pr-watch")!.handler("add 105", harness.ctx);
+    assert.match(harness.notifications.pop() ?? "", /not open/);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+test("rediscovering a merge commit stays silent and updates the status line", async () => {
+  const harness = createHarness();
+  try {
+    await harness.activate(104);
+    harness.prs.get(104)!.state = "MERGED";
+    harness.prs.get(104)!.mergeCommitSha = "merge-104-sha";
+    await harness.activate(104, "view");
+    assert.match(harness.statuses.at(-1) ?? "", /#104 merge merge-1/);
+    assert.deepEqual(harness.notifications, []);
+  } finally {
+    await harness.shutdown();
+  }
 });
 
 test("gh pr view adds an open PR to the watch list", async () => {
@@ -1636,7 +1671,7 @@ test("gh pr view adds an open PR to the watch list", async () => {
   );
 });
 
-test("does not add a PR that is not open", async () => {
+test("does not add a PR that is not open or announce its exclusion", async () => {
   const harness = createHarness();
   harness.prs.get(105)!.state = "MERGED";
 
@@ -1644,6 +1679,7 @@ test("does not add a PR that is not open", async () => {
   await harness.activate(105);
   await harness.shutdown();
 
+  assert.deepEqual(harness.notifications, []);
   assert.deepEqual(
     harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number),
     [104],
@@ -1661,6 +1697,7 @@ test("with no watched PRs, PR watch uses the current checkout branch tip", async
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs, []);
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "eli0shin/repos");
   assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
+  assert.deepEqual(harness.notifications, []);
   assert.equal(
     harness.execCalls.some(
       ({ command, args }) =>
@@ -2929,7 +2966,8 @@ test("buffers busy updates internally and delivers one batch after the agent set
   assert.equal(harness.sentMessages.length, 0);
   assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates[0]?.checksHeadSha, "abc104");
   assert.equal(harness.savedStates.at(-1)?.pendingPrUpdates[0]?.feedbackActivities.length, 1);
-  assert.match(harness.notifications.at(-1) ?? "", /buffered 1 update \(2 pending\)/);
+  assert.deepEqual(harness.notifications, []);
+  assert.match(harness.statuses.at(-1) ?? "", /2 pending/);
 
   harness.setIdle(true);
   await harness.settleAgent();
@@ -3095,7 +3133,7 @@ test("orchestrator viewing a non-worker PR does not enroll it or report its CI",
     await harness.commands.get("pr-watch")?.handler("add 105", harness.ctx);
     await harness.runPoll();
     assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104, 105]);
-    assert.match(harness.notifications.at(-1) ?? "", /Explicit opt-in overrides automatic membership rules/);
+    assert.deepEqual(harness.notifications, []);
   } finally {
     await harness.shutdown();
     if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
