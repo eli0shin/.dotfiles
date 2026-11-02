@@ -387,14 +387,13 @@ test("groups respect narrow widths and wide characters", () => {
   }
 });
 
-test("the adapter fails open on unrecognized Pi versions and document layouts", () => {
+test("the adapter fails open on unrecognized document layouts", () => {
   const document = new Container();
   document.children = [new Container(), new Container(), new Container()];
-  assert.equal(findChat({ children: [document] }, "1.4.0"), document.children[2]);
-  assert.equal(findChat({ children: [document] }, "1.5.0"), undefined);
-  assert.equal(findChat({ children: [] }, "1.4.0"), undefined);
+  assert.equal(findChat({ children: [document] }), document.children[2]);
+  assert.equal(findChat({ children: [] }), undefined);
   document.addChild(new Container());
-  assert.equal(findChat({ children: [document] }, "1.4.0"), undefined);
+  assert.equal(findChat({ children: [document] }), undefined);
 });
 
 test("latest-group toggle changes only the most recent group without expanding tool output", () => {

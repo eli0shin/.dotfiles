@@ -577,10 +577,9 @@ export function installActivityView(
   };
 }
 
-// In Pi 1.4 both terminal modes mount document=[header, resources, chat] first.
-// Refuse other layouts/versions rather than risk hiding the wrong UI component.
-export function findChat(tui: Pick<TUI, "children">, version = VERSION): Container | undefined {
-  if (!/^1\.4\./.test(version)) return undefined;
+// Both terminal modes mount document=[header, resources, chat] first.
+// Refuse other layouts rather than risk hiding the wrong UI component.
+export function findChat(tui: Pick<TUI, "children">): Container | undefined {
   const document = tui.children[0];
   if (!(document instanceof Container) || document.children.length !== 3 ||
       !document.children.every((child) => child instanceof Container)) return undefined;
@@ -659,7 +658,7 @@ export default function compactActivity(pi: ExtensionAPI): void {
       done();
       return new Container();
     });
-    if (!installed) ctx.ui.notify("Compact activity: unsupported Pi layout/version; using the normal transcript.", "warning");
+    if (!installed) ctx.ui.notify("Compact activity: unsupported Pi layout; using the normal transcript.", "warning");
   });
 
   pi.on("session_shutdown", cleanup);

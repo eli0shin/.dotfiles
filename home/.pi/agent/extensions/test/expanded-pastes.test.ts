@@ -139,11 +139,7 @@ test("existing native paste entries are left alone and new entries do not leak",
   assert.equal(state.pasteCounter, 1);
 });
 
-test("unsupported versions and editor shapes fail open", () => {
-  const target = editor();
-  const original = (target as unknown as { handlePaste: Function }).handlePaste;
-  assert.equal(expandPastes(target, "1.5.0"), undefined);
-  assert.equal((target as unknown as { handlePaste: Function }).handlePaste, original);
+test("unsupported editor shapes fail open", () => {
   assert.equal(expandPastes({} as CustomEditor), undefined);
 });
 

@@ -1,7 +1,7 @@
-import { CustomEditor, VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, type Component, type TUI } from "@earendil-works/pi-tui";
 
-// Pi 1.4 has no setting for its 1,000-character / 10-line paste collapse.
+// Pi has no setting for its 1,000-character / 10-line paste collapse.
 // Adapt only the current prompt editor, retaining the native paste pipeline's
 // normalization, filtering, path spacing, cursor placement, and atomic undo.
 type PasteEditor = {
@@ -11,9 +11,9 @@ type PasteEditor = {
   pasteCounter: number;
 };
 
-export function expandPastes(editor: CustomEditor, version = VERSION): (() => void) | undefined {
+export function expandPastes(editor: CustomEditor): (() => void) | undefined {
   const state = editor as unknown as PasteEditor;
-  if (!/^1\.4\./.test(version) || typeof state.handlePaste !== "function" ||
+  if (typeof state.handlePaste !== "function" ||
       typeof state.insertTextAtCursorInternal !== "function" || !(state.pastes instanceof Map) ||
       typeof state.pasteCounter !== "number") return undefined;
 
@@ -75,7 +75,7 @@ export default function expandedPastes(pi: ExtensionAPI): void {
         const editor = findPromptEditor(tui);
         if (!editor) return false;
         restore = expandPastes(editor);
-        if (!restore) ctx.ui.notify("Expanded pastes: unsupported Pi editor/version; using native paste behavior.", "warning");
+        if (!restore) ctx.ui.notify("Expanded pastes: unsupported Pi editor; using native paste behavior.", "warning");
         return true;
       };
       if (!attach()) {
