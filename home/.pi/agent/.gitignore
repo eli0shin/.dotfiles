@@ -19,4 +19,6 @@
 !prompts/**
 !themes/
 !themes/**
-!keybindings.json
+!keybindings.base.json
+!keybindings.personal.json
+!keybindings.work.json

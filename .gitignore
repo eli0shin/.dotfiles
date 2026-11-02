@@ -34,6 +34,7 @@ home/.claude/settings.json
 home/.pi/web-search.json
 home/.pi/agent/settings.json
 home/.pi/agent/models.json
+home/.pi/agent/keybindings.json
 home/.config/opencode/opencode.json
 home/.config/opencode/otel.json
 home/.config/review/config.json
@@ -54,6 +55,7 @@ home/.config/git/config.local
 home/.pi/web-search.local.json
 home/.pi/agent/settings.local.json
 home/.pi/agent/models.local.json
+home/.pi/agent/keybindings.local.json
 home/.config/opencode/otel.local.json
 
 # Pi state (keep config, exclude auth/runtime state)
