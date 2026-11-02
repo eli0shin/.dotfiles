@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import {
   AssistantMessageComponent,
   CustomMessageComponent,
@@ -11,6 +14,15 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Spacer, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { ThemedText } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/themed-text.js";
 import compactActivity, { ActivityGroup, findChat, installActivityView } from "../compact-activity/index.ts";
+
+const agentDir = mkdtempSync(join(tmpdir(), "compact-activity-"));
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = agentDir;
+after(() => {
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  rmSync(agentDir, { recursive: true, force: true });
+});
 
 initTheme();
 const ui = { requestRender() {} } as TUI;
@@ -116,6 +128,61 @@ test("expanded groups can be collapsed from their bottom without changing indivi
   assert.deepEqual(lines(chat), ["", " + 1 command"]);
   assert.equal((native as unknown as { expanded: boolean }).expanded, true);
   assert.equal(redraws(), 2);
+});
+
+test("summary clicks only toggle within the visible label, not blank row space", () => {
+  const { chat, redraws } = setup([tool()]);
+  let output = lines(chat);
+  const labelWidth = visibleWidth(output[1]);
+  for (const x of [0, labelWidth, 60]) {
+    assert.notEqual(chat.handleMouse({ ...click(1, output.length), x })?.handled, true);
+    assert.deepEqual(lines(chat), ["", " + 1 command"]);
+  }
+  chat.handleMouse({ ...click(1, output.length), x: labelWidth - 1 });
+  output = lines(chat);
+  assert.match(output.join("\n"), /FILE CONTENT/);
+  for (const x of [0, labelWidth, 60]) {
+    chat.handleMouse({ ...click(1, output.length), x });
+    assert.match(lines(chat).join("\n"), /FILE CONTENT/);
+  }
+  chat.handleMouse({ ...click(1, output.length), x: labelWidth - 1 });
+  assert.deepEqual(lines(chat), ["", " + 1 command"]);
+  assert.equal(redraws(), 2);
+});
+
+test("bottom collapse clicks ignore blank space on either side of the label", () => {
+  const { chat, redraws } = setup([tool()], true);
+  const output = lines(chat);
+  const footer = output.length - 1;
+  const labelWidth = visibleWidth(output[footer]);
+  for (const x of [0, labelWidth, 60]) {
+    chat.handleMouse({ ...click(footer, output.length), x });
+    assert.match(lines(chat).join("\n"), /FILE CONTENT/);
+  }
+  chat.handleMouse({ ...click(footer, output.length), x: labelWidth - 1 });
+  assert.deepEqual(lines(chat), ["", " + 1 command"]);
+  assert.equal(redraws(), 1);
+});
+
+test("label hit areas follow ANSI-styled text and truncation after resizing", () => {
+  const group = new ActivityGroup(() => {}, (text) => `\x1b[90m${text}\x1b[0m`);
+  const detail = new Text("DETAIL", 0, 0);
+  group.update([{ key: detail, component: detail, kind: "command" }], false);
+  for (const width of [80, 8, 80]) {
+    let output = lines(group, width);
+    const summaryWidth = visibleWidth(output[1]);
+    group.handleMouse({ ...click(1, output.length), x: summaryWidth, width });
+    assert.equal(group.expanded, false);
+    group.handleMouse({ ...click(1, output.length), x: summaryWidth - 1, width });
+    assert.equal(group.expanded, true);
+    output = lines(group, width);
+    const footer = output.length - 1;
+    const footerWidth = visibleWidth(output[footer]);
+    group.handleMouse({ ...click(footer, output.length), x: footerWidth, width });
+    assert.equal(group.expanded, true);
+    group.handleMouse({ ...click(footer, output.length), x: footerWidth - 1, width });
+    assert.equal(group.expanded, false);
+  }
 });
 
 test("the bottom collapse control closes only its own group when multiple groups are expanded", () => {
@@ -589,8 +656,9 @@ test("Ctrl+Shift+O is registered and toggles the latest group without global exp
   } as never);
   const chat = new Container(); chat.addChild(tool());
   const document = new Container(); document.children = [new Container(), new Container(), chat];
-  const ctx = { mode: "tui", ui: {
-    custom: async (factory: Function) => factory({ children: [document], requestRender() {} }, {}, {}, () => {}),
+  const ctx = { mode: "tui", sessionManager: { getSessionId: () => "shortcut-test" }, ui: {
+    custom: async (factory: Function) => factory({ children: [document], requestRender() {},
+      addInputListener() { return () => {}; } }, {}, {}, () => {}),
     theme: { fg: (_color: string, text: string) => text },
     getToolsExpanded: () => false,
     setToolsExpanded: () => assert.fail("local toggle must not change global expansion"),

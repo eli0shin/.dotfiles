@@ -14,6 +14,7 @@ import {
   Text,
   stripTerminalSequences,
   truncateToWidth,
+  visibleWidth,
   type Component,
   type MarkdownTheme,
   type TUI,
@@ -21,6 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { CompactToolView, type ToolState } from "./tool-view.ts";
 import { ImageGrid } from "./image-grid.ts";
+import { ActivityTrace } from "./trace.ts";
 
 // Pi has per-tool renderers, but no transcript-grouping hook. Keep the 1.4 adapter
 // here: it reads component metadata and replaces only this chat container's view.
@@ -88,24 +90,55 @@ export class ActivityGroup extends Container {
   private globalExpanded = false;
   private shortcutPeek = false;
   private previews = new ImageGrid();
+  private summaryWidth = 0;
+  private trace?: ActivityTrace;
+  private lastTraceState?: string;
 
   private redraw: () => void;
   private style: (text: string) => string;
 
-  constructor(redraw: () => void, style: (text: string) => string) {
+  constructor(redraw: () => void, style: (text: string) => string, trace?: ActivityTrace) {
     super();
     this.redraw = redraw;
     this.style = style;
+    this.trace = trace;
+  }
+
+  private recordState(reason: string, before = this.expanded, onlyIfChanged = false): void {
+    if (!this.trace?.enabled) return;
+    const state = { group: this.trace.id(this), expanded: this.expanded, globalExpanded: this.globalExpanded,
+      override: this.override ?? null, shortcutPeek: this.shortcutPeek, members: this.members.length,
+      first: this.members[0] ? this.trace.id(this.members[0].key) : null,
+      last: this.members.at(-1) ? this.trace.id(this.members.at(-1)!.key) : null,
+      expandedTools: this.members.filter((member) => member.key instanceof ToolExecutionComponent &&
+        (member.key as unknown as { expanded: boolean }).expanded).length,
+    };
+    const signature = JSON.stringify(state);
+    if (!onlyIfChanged || signature !== this.lastTraceState) {
+      this.trace.record("group-state", { ...state, before, reason: this.lastTraceState === undefined ? "create" : reason });
+    }
+    this.lastTraceState = signature;
+  }
+
+  traceSnapshot(): void { this.recordState("snapshot"); }
+
+  private recordMouse(event: TuiMouseEvent, control: "summary" | "collapse"): void {
+    this.trace?.record("group-mouse", { group: this.trace.id(this), control,
+      x: event.x, y: event.y, screenX: event.screenX, screenY: event.screenY,
+      width: event.width, height: event.height, clickCount: event.clickCount });
   }
 
   update(members: Activity[], globalExpanded: boolean): void {
-    if (this.globalExpanded !== globalExpanded) {
+    const before = this.expanded;
+    const globalChanged = this.globalExpanded !== globalExpanded;
+    if (globalChanged) {
       this.override = undefined;
       this.shortcutPeek = false;
     }
     this.globalExpanded = globalExpanded;
     this.members = members;
     this.expanded = this.override ?? globalExpanded;
+    this.recordState(globalChanged ? "global-change" : "update", before, true);
   }
 
   render(width: number): string[] {
@@ -120,18 +153,24 @@ export class ActivityGroup extends Container {
     // Thought-only runs stay silent while collapsed, rather than replacing
     // removed counters with another source of transcript noise.
     if (!counts && !this.expanded) {
+      this.summaryWidth = 0;
       this.children = [];
       return super.render(width);
     }
     const summary = `${this.expanded ? "−" : "+"} ${counts || "details"}`;
-    this.children = [new Spacer(1), new Text(truncateToWidth(this.style(` ${summary}`), width), 0, 0)];
+    const summaryLine = truncateToWidth(this.style(` ${summary}`), width);
+    this.summaryWidth = visibleWidth(summaryLine);
+    this.children = [new Spacer(1), new Text(summaryLine, 0, 0)];
     if (this.expanded) {
       this.children.push(...this.members.map((member) => member.component));
+      const collapseLine = truncateToWidth(this.style(" − collapse"), width);
+      const collapseWidth = visibleWidth(collapseLine);
       this.children.push(new MouseRegion(
-        new Text(truncateToWidth(this.style(" − collapse"), width), 0, 0),
+        new Text(collapseLine, 0, 0),
         (event) => {
-          if (event.type !== "click" || event.button !== "left") return undefined;
-          this.setLocalExpansion(false);
+          if (event.type !== "click" || event.button !== "left" || event.x < 1 || event.x >= collapseWidth) return undefined;
+          this.recordMouse(event, "collapse");
+          this.setLocalExpansion(false, "mouse-collapse");
           return { handled: true };
         },
       ));
@@ -146,27 +185,33 @@ export class ActivityGroup extends Container {
   }
 
   toggle(fromShortcut = false): void {
-    this.setLocalExpansion(!this.expanded, fromShortcut);
+    this.setLocalExpansion(!this.expanded, fromShortcut ? "shortcut" : "mouse-summary");
   }
 
   collapseShortcutPeek(): void {
     if (!this.shortcutPeek) return;
+    const before = this.expanded;
     this.shortcutPeek = false;
     this.override = false;
     this.expanded = false;
+    this.recordState("newer-block", before);
     // Called while the view is rebuilding for the current render; no extra
     // frame or notification is needed. Mouse-opened groups are never affected.
   }
 
-  private setLocalExpansion(expanded: boolean, fromShortcut = false): void {
+  private setLocalExpansion(expanded: boolean, reason: "shortcut" | "mouse-summary" | "mouse-collapse"): void {
+    const before = this.expanded;
     this.override = expanded;
     this.expanded = expanded;
-    this.shortcutPeek = expanded && fromShortcut;
+    this.shortcutPeek = expanded && reason === "shortcut";
+    this.recordState(reason, before);
     this.redraw();
   }
 
   handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
-    if (event.type === "click" && event.button === "left" && event.y === 1) {
+    if (event.type === "click" && event.button === "left" && event.y === 1 &&
+        event.x >= 1 && event.x < this.summaryWidth) {
+      this.recordMouse(event, "summary");
       this.toggle();
       return { handled: true, target: { component: this,
         originX: event.screenX - event.x, originY: event.screenY - event.y,
@@ -186,6 +231,8 @@ export class ActivityView extends Container {
   private hiddenNotices = new WeakSet<Component>();
   private shortcutBlock?: ActivityGroup | CustomMessageComponent;
   private shortcutGlobalExpanded = false;
+  private trace?: ActivityTrace;
+  private notificationStates = new WeakMap<Component, boolean>();
 
   private source: Container;
   private redraw: () => void;
@@ -194,13 +241,14 @@ export class ActivityView extends Container {
   private styleError: (text: string) => string;
 
   constructor(source: Container, redraw: () => void, style: (text: string) => string, getExpanded: () => boolean,
-    styleError: (text: string) => string) {
+    styleError: (text: string) => string, trace?: ActivityTrace) {
     super();
     this.source = source;
     this.redraw = redraw;
     this.style = style;
     this.getExpanded = getExpanded;
     this.styleError = styleError;
+    this.trace = trace;
   }
 
   invalidate(): void {
@@ -214,6 +262,7 @@ export class ActivityView extends Container {
   }
 
   resetExpansion(expanded: boolean): void {
+    this.trace?.record("expansion-reset", { expanded, globalExpanded: this.getExpanded() });
     this.shortcutBlock = undefined;
     this.groups = new WeakMap();
     // Pi skips setToolsExpanded when the global value is unchanged. Explicit
@@ -298,7 +347,7 @@ export class ActivityView extends Container {
       const key = members[0].key;
       let group = this.groups.get(key);
       if (!group) {
-        group = new ActivityGroup(this.redraw, this.style);
+        group = new ActivityGroup(this.redraw, this.style, this.trace);
         this.groups.set(key, group);
       }
       group.update(members, this.getExpanded());
@@ -319,6 +368,12 @@ export class ActivityView extends Container {
       return false;
     };
     for (const [index, child] of this.source.children.entries()) {
+      const notification = prNotificationState(child);
+      if (this.trace?.enabled && notification && this.notificationStates.get(child) !== notification._expanded) {
+        this.trace.record("notification-state", { notification: this.trace.id(child), expanded: notification._expanded,
+          before: this.notificationStates.get(child) ?? null, globalExpanded: this.getExpanded() });
+        this.notificationStates.set(child, notification._expanded);
+      }
       const next = this.source.children[index + 1];
       if (isHiddenNotice(child) ||
           (child instanceof Spacer && (isHiddenNotice(next) || isErrorNotice(next)))) continue;
@@ -351,7 +406,11 @@ export class ActivityView extends Container {
     if (this.shortcutGlobalExpanded !== this.getExpanded()) this.shortcutBlock = undefined;
     if (this.shortcutBlock && this.shortcutBlock !== this.latestBlock()) {
       if (this.shortcutBlock instanceof ActivityGroup) this.shortcutBlock.collapseShortcutPeek();
-      else this.shortcutBlock.setExpanded(false);
+      else {
+        this.trace?.record("notification-expansion", { notification: this.trace.id(this.shortcutBlock),
+          reason: "newer-block", expanded: false });
+        this.shortcutBlock.setExpanded(false);
+      }
       this.shortcutBlock = undefined;
     }
   }
@@ -366,11 +425,34 @@ export class ActivityView extends Container {
       child instanceof ActivityGroup || prNotificationState(child) !== undefined).at(-1);
   }
 
+  traceSnapshot(): void {
+    // Observe the last displayed groups, not a refreshed view: reconciliation
+    // can collapse peeks and would change the state we are trying to capture.
+    this.trace?.record("view-snapshot", { enabled: this.enabled, globalExpanded: this.getExpanded() });
+    if (this.enabled) {
+      for (const child of this.children) {
+        if (child instanceof ActivityGroup) child.traceSnapshot();
+      }
+    }
+    for (const child of this.source.children) {
+      const notification = prNotificationState(child);
+      if (notification) this.trace?.record("notification-state", { notification: this.trace.id(child),
+        reason: "snapshot", expanded: notification._expanded, globalExpanded: this.getExpanded() });
+      else if (!this.enabled && child instanceof ToolExecutionComponent) {
+        this.trace?.record("native-tool-state", { tool: this.trace.id(child), reason: "snapshot",
+          expanded: (child as unknown as { expanded: boolean }).expanded });
+      }
+    }
+  }
+
   toggleLatestGroup(): void {
+    this.trace?.record("latest-shortcut", { enabled: this.enabled, globalExpanded: this.getExpanded() });
     if (!this.enabled) return;
     // Refresh membership without rendering tool bodies or expanding nested output.
     this.updateGroups();
     const latest = this.latestBlock();
+    this.trace?.record("shortcut-target", { target: latest ? this.trace.id(latest) : null,
+      kind: latest instanceof ActivityGroup ? "activity" : latest ? "notification" : "none" });
     if (!latest) return;
     let expanded: boolean;
     if (latest instanceof ActivityGroup) {
@@ -379,6 +461,7 @@ export class ActivityView extends Container {
     } else {
       expanded = !prNotificationState(latest)!._expanded;
       latest.setExpanded(expanded);
+      this.trace?.record("notification-expansion", { notification: this.trace.id(latest), reason: "shortcut", expanded });
       this.redraw();
     }
     this.shortcutBlock = expanded ? latest : undefined;
@@ -392,17 +475,28 @@ export function installActivityView(
   style: (text: string) => string,
   getExpanded: () => boolean,
   styleError: (text: string) => string = (text) => text,
+  trace?: ActivityTrace,
 ): { view: ActivityView; restore: () => void } {
-  const view = new ActivityView(chat, redraw, style, getExpanded, styleError);
+  const view = new ActivityView(chat, redraw, style, getExpanded, styleError, trace);
   const render = chat.render;
   const handleMouse = chat.handleMouse;
   const invalidate = chat.invalidate;
-  chat.render = (width) => view.enabled ? view.render(width) : render.call(chat, width);
+  let lastRenderState: string | undefined;
+  chat.render = (width) => {
+    if (trace?.enabled) {
+      const state = { width, enabled: view.enabled, globalExpanded: getExpanded() };
+      const signature = JSON.stringify(state);
+      if (signature !== lastRenderState) trace.record("view-render", state);
+      lastRenderState = signature;
+    }
+    return view.enabled ? view.render(width) : render.call(chat, width);
+  };
   chat.handleMouse = (event) => view.enabled ? view.handleMouse(event) : handleMouse.call(chat, event);
   chat.invalidate = () => { invalidate.call(chat); view.invalidate(); };
   return {
     view,
     restore: () => {
+      trace?.record("view-restore");
       chat.render = render;
       chat.handleMouse = handleMouse;
       chat.invalidate = invalidate;
@@ -421,27 +515,82 @@ export function findChat(tui: Pick<TUI, "children">, version = VERSION): Contain
   return document.children[2] as Container;
 }
 
+// Pi 1.4 fullscreen consumes focus/mouse reports in its first input listener.
+// Observe before that listener, not after it. The stable TUI reference points at
+// replacement renderers, which reuse this terminal and call start() on switches.
+export function observeActivityInput(tui: TUI, trace: ActivityTrace): () => void {
+  if (!trace.enabled) return () => {};
+  const terminal = tui.terminal;
+  if (!terminal || typeof terminal.start !== "function") {
+    trace.record("input-observer", { supported: false, tuiMode: tui.mode });
+    return () => {};
+  }
+  type Listener = Parameters<TUI["addInputListener"]>[0];
+  const observer: Listener = (data) => { trace.input(data); };
+  let unsubscribe: (() => void) | undefined;
+  let active = true;
+  const attach = () => {
+    unsubscribe?.(); unsubscribe = undefined;
+    const listeners = (tui as unknown as { inputListeners?: Set<Listener> }).inputListeners;
+    if (!(listeners instanceof Set)) {
+      trace.record("input-observer", { supported: false, tuiMode: tui.mode });
+      return;
+    }
+    unsubscribe = tui.addInputListener(observer);
+    const ordered = [...listeners];
+    listeners.clear();
+    listeners.add(observer);
+    for (const listener of ordered) if (listener !== observer) listeners.add(listener);
+    trace.record("input-observer", { supported: true, tuiMode: tui.mode });
+  };
+  attach();
+  const start = terminal.start;
+  const observedStart: typeof start = function (this: typeof terminal, onInput, onResize) {
+    if (active) attach();
+    start.call(this, onInput, onResize);
+  };
+  terminal.start = observedStart;
+  return () => {
+    active = false;
+    unsubscribe?.(); unsubscribe = undefined;
+    if (terminal.start === observedStart) terminal.start = start;
+  };
+}
+
 export default function compactActivity(pi: ExtensionAPI): void {
   let installed: ReturnType<typeof installActivityView> | undefined;
+  let trace: ActivityTrace | undefined;
+  let removeInputListener: (() => void) | undefined;
+  const cleanup = () => {
+    removeInputListener?.(); removeInputListener = undefined;
+    installed?.restore(); installed = undefined;
+    trace?.record("session-stop"); trace = undefined;
+  };
 
   pi.on("session_start", async (_event, ctx) => {
-    installed?.restore();
-    installed = undefined;
+    cleanup();
     if (ctx.mode !== "tui") return;
+    const sessionTrace = new ActivityTrace(ctx.sessionManager.getSessionId());
+    trace = sessionTrace;
+    sessionTrace.record("session-start", { version: VERSION, globalExpanded: ctx.ui.getToolsExpanded() });
     // Borrow the public custom-UI factory to get the TUI reference, closing before
     // mounting any dialog or taking focus. No persistent widget/padding is added.
     await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
       const chat = findChat(tui);
-      if (chat) installed = installActivityView(chat, () => tui.requestRender(),
-        (text) => ctx.ui.theme.fg("muted", text), () => ctx.ui.getToolsExpanded(),
-        (text) => ctx.ui.theme.fg("error", text));
+      sessionTrace.record("view-install", { supported: !!chat, tuiMode: tui.mode });
+      if (chat) {
+        installed = installActivityView(chat, () => tui.requestRender(),
+          (text) => ctx.ui.theme.fg("muted", text), () => ctx.ui.getToolsExpanded(),
+          (text) => ctx.ui.theme.fg("error", text), sessionTrace);
+        removeInputListener = observeActivityInput(tui, sessionTrace);
+      }
       done();
       return new Container();
     });
     if (!installed) ctx.ui.notify("Compact activity: unsupported Pi layout/version; using the normal transcript.", "warning");
   });
 
-  pi.on("session_shutdown", () => { installed?.restore(); installed = undefined; });
+  pi.on("session_shutdown", cleanup);
 
   pi.registerShortcut("ctrl+shift+o", {
     description: "Toggle the latest activity or PR notification block without expanding individual tool output",
@@ -449,16 +598,22 @@ export default function compactActivity(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("activity", {
-    description: "Activity display: compact (default), full, expand, collapse",
+    description: "Activity display: compact (default), full, expand, collapse; trace saves a diagnostic checkpoint",
     handler: async (args, ctx: ExtensionContext) => {
       if (!installed) { ctx.ui.notify("Compact activity is unavailable in this session.", "warning"); return; }
-      switch (args.trim() || "compact") {
+      const command = args.trim() || "compact";
+      switch (command) {
         case "compact": installed.view.enabled = true; break;
         case "full": installed.view.enabled = false; break;
         case "expand": ctx.ui.setToolsExpanded(true); installed.view.resetExpansion(true); break;
         case "collapse": ctx.ui.setToolsExpanded(false); installed.view.resetExpansion(false); break;
-        default: ctx.ui.notify("Usage: /activity compact|full|expand|collapse", "warning"); return;
+        case "trace":
+          installed.view.traceSnapshot();
+          ctx.ui.notify(`Compact activity trace ${trace?.enabled ? "on" : "off"}: ${trace?.path}`, "info");
+          return;
+        default: ctx.ui.notify("Usage: /activity compact|full|expand|collapse|trace", "warning"); return;
       }
+      trace?.record("activity-command", { command, enabled: installed.view.enabled, globalExpanded: ctx.ui.getToolsExpanded() });
       installed.view.refresh();
     },
   });
