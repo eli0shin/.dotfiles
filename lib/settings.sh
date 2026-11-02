@@ -137,6 +137,18 @@ _defaults_write_object() {
     _defaults_write "$domain" "$key" -dict "${args[@]}"
 }
 
+_activate_symbolic_hotkeys() {
+    # Writing the plist does not update the live system hotkey registry.
+    # activateSettings applies symbolic hotkeys without a logout or restart.
+    local activate_settings="/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
+    defaults read com.apple.symbolichotkeys.plist >/dev/null 2>&1 || true
+    if [[ -x "$activate_settings" ]]; then
+        "$activate_settings" -u
+    else
+        killall SystemUIServer 2>/dev/null || true
+    fi
+}
+
 _apply_symbolic_hotkeys() {
     if [[ "$(uname -s)" != "Darwin" || ! -f "$SYMBOLIC_HOTKEYS_FILE" ]]; then
         return 0
@@ -169,10 +181,31 @@ _apply_symbolic_hotkeys() {
             plutil -insert "AppleSymbolicHotKeys.$hotkey_id" -json '{"enabled":false}' "$plist"
         fi
         changed=true
-    done < <(jq -r '.disabled[]' "$SYMBOLIC_HOTKEYS_FILE")
+    done < <(jq -r '.disabled[]?' "$SYMBOLIC_HOTKEYS_FILE")
+
+    local mapping
+    while IFS= read -r mapping; do
+        hotkey_id=$(jq -r '.key' <<< "$mapping")
+        local path="AppleSymbolicHotKeys.$hotkey_id"
+        local expected current operation
+        expected=$(jq -cS '{enabled:true,value:.value}' <<< "$mapping")
+        current=$(plutil -extract "$path" json -o - "$plist" 2>/dev/null | jq -cS '.' || true)
+        if [[ "$current" == "$expected" ]]; then
+            continue
+        fi
+
+        operation=insert
+        [[ -z "$current" ]] || operation=replace
+        if ! plutil "-$operation" "$path" -json "$expected" "$plist"; then
+            rm -f "$plist"
+            error "Failed to remap macOS shortcut $hotkey_id"
+            return 1
+        fi
+        changed=true
+    done < <(jq -c '(.remapped // {}) | to_entries[]' "$SYMBOLIC_HOTKEYS_FILE")
 
     if [[ "$changed" == true ]]; then
-        info "Disabling conflicting macOS shortcuts..."
+        info "Applying macOS shortcut mappings..."
         if ! defaults import com.apple.symbolichotkeys "$plist" 2>/dev/null; then
             rm -f "$plist"
             error "Failed to update macOS symbolic hotkeys"
@@ -180,23 +213,14 @@ _apply_symbolic_hotkeys() {
         fi
     fi
 
-    # Writing the plist does not update the live system hotkey registry.
-    # activateSettings is the macOS mechanism that applies symbolic hotkeys
-    # without a logout or restart.
-    local activate_settings="/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
-    defaults read com.apple.symbolichotkeys.plist >/dev/null 2>&1 || true
-    if [[ -x "$activate_settings" ]]; then
-        if ! "$activate_settings" -u; then
-            rm -f "$plist"
-            error "Failed to activate macOS symbolic hotkeys"
-            return 1
-        fi
-    else
-        killall SystemUIServer 2>/dev/null || true
+    if ! _activate_symbolic_hotkeys; then
+        rm -f "$plist"
+        error "Failed to activate macOS symbolic hotkeys"
+        return 1
     fi
 
     if [[ "$changed" == true ]]; then
-        success "Disabled conflicting macOS shortcuts"
+        success "Applied macOS shortcut mappings"
     fi
 
     rm -f "$plist"
