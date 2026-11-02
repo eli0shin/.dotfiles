@@ -117,13 +117,13 @@ Act as the final authority on review feedback. Assess delegated findings and exi
 
 - If the worker must change code, regenerate outputs, or initiate missing verification, send all accepted actionable findings in one `message-worker` message. Never request review by tagging a bot. Then yield for the worker's update.
 - If no worker action is needed but checks or another external operation are already running, yield for the next event.
-- Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed for that head, generated changes are intentional, and actionable findings are resolved. Require current mergeability and the merge compatibility gate below before merging. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
+- Merge only when delegated evidence confirms the PR targets the landing branch, the reviewed head satisfies the ticket, checks passed for that head, generated changes are intentional, and actionable findings are resolved. Require current mergeability and the merge compatibility gate below before merging. Squash merge with `gh pr merge <pr> --squash --match-head-commit <reviewed-head-sha>`. A PR in a GitHub stack refuses that command: merge it with `gh api -X PUT repos/<owner>/<repo>/pulls/<pr>/merge-async -f sha=<reviewed-head-sha> -f merge_method=squash -f merge_action=direct_merge`, then read the result from `.../merge-async/<uuid>`. If the head precondition fails, fetch the current PR state and obtain a fresh review before merging.
 
 ## Merge compatibility
 
 Being behind the landing branch alone does not require an update. The orchestrator applies this gate from metadata; it adds no reviewer duty or worker compatibility report.
 
-If GitHub reports a merge conflict, leave the PR unmerged and yield. The worker receives the conflict notification and resolves it. Never send the worker a message or PR comment about the conflict.
+If GitHub reports a merge conflict, leave the PR unmerged and yield. The worker receives the conflict notification and resolves it. Never send the worker a message or PR comment about the conflict. In a stack, a conflict at the base is a stack rebase (below), not a single worker's fix.
 
 When a PR is otherwise ready to merge:
 
@@ -137,6 +137,28 @@ Shared paths trigger an update even when GitHub can merge the changes cleanly. T
 
 The gate is complete only for the head and landing SHAs checked. Confirm both are unchanged before merging; if either changed, apply the gate again. Repository-required checks and branch protection still apply.
 
+## Merge a stack
+
+Merge a stack as one unit whenever you can. When several PRs from the bottom of a stack are each ready to merge (reviewed head, checks passed for it, approved, findings resolved), merge them together in one atomic stack merge rather than one by one: one merge, one stack rebase afterward, one round of CI on what's left.
+
+1. Find the highest ready PR such that every PR below it is ready too. Confirm each of those PRs' current head still equals its reviewed head, and apply the merge compatibility gate to the stack's changed paths as a whole.
+2. Merge up to it with `gh api -X PUT repos/<owner>/<repo>/pulls/<top-ready-pr>/merge-async -f sha=<its reviewed head> -f merge_method=squash -f merge_action=direct_merge`. For a stacked PR this merges every open PR below it in the same all-or-nothing operation. Read the result from `.../merge-async/<uuid>`.
+3. Resolve each merged PR (below), then rebase what's left of the stack once.
+
+A PR waiting on an approval or a fix holds back only itself and the PRs above it. Keep merging the ready run below it.
+
+## Rebase a stack
+
+When worker PRs stack on each other, the stack moves as one unit. Whenever its base changes, because the bottom PR merged or the landing branch conflicts with it, rebase the entire stack together:
+
+1. Pause every other worker in the stack with `message-worker`: no rebase, conflict resolution, commit, or push until told. PR Watch sends each of them a conflict notice as its parent moves, and a worker rebasing on its own races the stack rebase.
+2. Have the bottom worker run plain `repos rebase` from its worktree. It rebases that branch and every branch stacked above it in one pass; conflicts resolve with `repos continue`. The worker then pushes every rebased branch with `--force-with-lease`.
+3. Confirm every branch sits on its parent (`git merge-base --is-ancestor origin/<parent> origin/<child>` for each pair) and was pushed. Then resume the paused workers, and review each PR's new head once its CI passes.
+
+Never use `repos rebase --only` in a stack. Rebasing one branch at a time turns one base change into a waterfall of rebases that can take more than a day to settle.
+
+Link a new stacked PR into its GitHub stack by number as soon as it opens: `gh stack link <stack-number> <pr>`. A PR number pushes nothing, so it's safe while workers are mid-change.
+
 ## Resolve a merge
 
 After each merge, follow the repository's demonstrated tracker resolution process without redesigning it. A task worker has no ticket, so skip steps 2–5 for it:
@@ -148,7 +170,7 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 5. Run `tickets lint`.
 6. In the worker's repo, run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
 7. Run `git pull` to pull in the changes from the merged PR
-8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
+8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. When the merge took the bottom of a stack, rebase the rest of the stack (above) before anything else. After a stack merge, do steps 2–6 for every PR it merged, then this step once. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
 9. Find and spawn the newly unblocked frontier immediately.
 
 This step is complete when tracker evidence is recorded, the worker is cleaned up successfully, lint passes, remaining PRs have been reconciled, and every newly executable ticket has a worker. Then yield.

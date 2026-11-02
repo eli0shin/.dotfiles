@@ -8,3 +8,4 @@ A stacked PR is a native GitHub stack, created with the `gh stack` CLI extension
 - Branches already exist (e.g. from `repos stack`): `gh stack link <bottom> ... <top>` (branch names or PR numbers, bottom to top) pushes them, opens any missing PRs, and creates the stack.
 - Everything else: `gh stack --help`. Docs: https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands
 - When rebasing a stack use the `repos rebase` flow instead of the `gh stack rebase` flow so that local tracking metadata stays in sync.
+- Rebase a stack as one unit: when its base changes, run plain `repos rebase` from the bottom branch's worktree, which moves every branch above it in the same pass, then push each with `--force-with-lease`. Never `repos rebase --only` inside a stack: one branch at a time becomes a waterfall that can take more than a day to settle.
