@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
@@ -76,9 +76,21 @@ type PendingWorkerSettlement = {
   response: string;
 };
 
-type OrchestratorMessage = {
+type CoordinationMessage = {
   id: string;
   text: string;
+  worker?: {
+    orchestrationId: string;
+    sessionId: string;
+    branch: string;
+    gitCommonDir: string;
+    createdAt: number;
+  };
+};
+
+type PendingSteer = {
+  marker: string;
+  messageIds: string[];
 };
 
 type PendingDelivery = {
@@ -87,7 +99,7 @@ type PendingDelivery = {
   pendingPrUpdates: PendingPrUpdate[];
   pendingShaUpdate?: PendingShaUpdate;
   pendingWorkerSettlements?: PendingWorkerSettlement[];
-  pendingOrchestratorMessages?: OrchestratorMessage[];
+  pendingMessages?: CoordinationMessage[];
 };
 
 type WorkerWatchSnapshot = {
@@ -118,8 +130,9 @@ type WatchState = {
   workerOrchestrationSessionId?: string;
   workerBranch?: string;
   latestWorkerSettlement?: WorkerSettlement;
-  pendingOrchestratorMessages?: OrchestratorMessage[];
-  deliveredOrchestratorMessageIds?: string[];
+  pendingMessages?: CoordinationMessage[];
+  deliveredMessageIds?: string[];
+  pendingSteers?: PendingSteer[];
   workerSnapshots?: Record<string, WorkerWatchSnapshot>;
   resolvedOrchestrationPrUrls?: string[];
   resolvedWorkerSettlementIds?: string[];
@@ -223,7 +236,8 @@ const POLL_INTERVAL_PER_PR_MS = 30_000;
 const MAX_POLL_INTERVAL_MS = 10 * 60_000;
 const INBOX_POLL_INTERVAL_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
-const MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS = 100;
+const MAX_DELIVERED_MESSAGE_IDS = 100;
+const MAX_WORKER_MESSAGE_LENGTH = 16_000;
 const MAX_MERGED_BRANCHES = 20;
 // Chained workflow_run runs (e.g. post-deploy verification) start shortly after
 // the run they follow, so a merge commit waits this long after its last run
@@ -452,7 +466,7 @@ export function commandTargets(command: string, group: "pr" | "stack", subcomman
   return [...new Set(targets)];
 }
 
-function isOrchestratorMessage(value: unknown): value is OrchestratorMessage & { version: 1 } {
+function isCoordinationMessage(value: unknown): value is CoordinationMessage & { version: 1 } {
   return (
     isObject(value) &&
     value.version === 1 &&
@@ -507,7 +521,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   // Set between agent_start and agent_settled. ctx.isIdle() is also false
   // during a manual compaction, when steering would start a run instead.
   let agentRunning = false;
-  let steeredMessages: Array<{ marker: string; messages: OrchestratorMessage[] }> = [];
+  let sessionGeneration = 0;
   let lastPublishedMembership: string | undefined;
   let currentRepo: string | undefined;
   let currentDefaultBranch: string | undefined;
@@ -568,61 +582,122 @@ export default function prWatch(pi: ExtensionAPI): void {
     return join(orchestrationDirectory(orchestrationId), "inbox", encodeURIComponent(workerSessionId));
   }
 
-  // The orchestrator's message-worker script writes one JSON file per message.
-  // Messages move into the persisted state before their files are removed.
-  // flushPending steers them into a running turn, or batches them with other
-  // PR Watch notifications when the worker is idle.
-  function receiveOrchestratorMessages(ctx: ExtensionContext): Promise<number> {
-    inboxQueue = inboxQueue.then(async () => {
-      const orchestrationId = state.workerOrchestrationSessionId;
-      if (!orchestrationId) return 0;
+  function orchestratorInboxDirectory(orchestrationId: string): string {
+    return join(orchestrationDirectory(orchestrationId), "orchestrator-inbox");
+  }
 
-      const directory = workerInboxDirectory(orchestrationId, ctx.sessionManager.getSessionId());
+  async function validateWorkerMessage(message: CoordinationMessage, orchestrationId: string): Promise<void> {
+    const worker = message.worker;
+    if (
+      !worker || worker.orchestrationId !== orchestrationId ||
+      typeof worker.sessionId !== "string" || !worker.sessionId ||
+      typeof worker.branch !== "string" || !worker.branch ||
+      typeof worker.gitCommonDir !== "string" || !worker.gitCommonDir.startsWith("/") ||
+      !Number.isSafeInteger(worker.createdAt) || worker.createdAt <= 0 ||
+      !Number.isFinite(new Date(worker.createdAt).getTime()) ||
+      message.text.length > MAX_WORKER_MESSAGE_LENGTH
+    ) throw new Error("worker message identity or schema does not match");
+
+    const snapshot: unknown = JSON.parse(await readFile(workerSnapshotPath(orchestrationId, worker.sessionId), "utf8"));
+    if (
+      !isWorkerWatchSnapshot(snapshot) || snapshot.orchestrationId !== orchestrationId ||
+      snapshot.workerSessionId !== worker.sessionId || snapshot.gitCommonDir !== worker.gitCommonDir
+    ) throw new Error("sender is not a worker of this orchestration");
+  }
+
+  // Pi defers a fresh session's disk writes until a user/assistant message.
+  // Keep inbox files until their acknowledgment has a session file on disk,
+  // even if custom notifications have already reached the in-memory transcript.
+  async function pruneDeliveredMessages(ctx: ExtensionContext): Promise<void> {
+    const generation = sessionGeneration;
+    const orchestrationId = state.orchestrationSessionId ?? state.workerOrchestrationSessionId;
+    const sessionFile = ctx.sessionManager.getSessionFile();
+    if (!orchestrationId || !sessionFile || !(state.deliveredMessageIds?.length)) return;
+    const directory = state.orchestrationSessionId
+      ? orchestratorInboxDirectory(orchestrationId)
+      : workerInboxDirectory(orchestrationId, ctx.sessionManager.getSessionId());
+    const ids = [...state.deliveredMessageIds];
+    if (!(await stat(sessionFile).catch(() => undefined))?.isFile() || generation !== sessionGeneration) return;
+    const removed = new Set<string>();
+    for (const id of ids) {
+      if (generation !== sessionGeneration) return;
+      if (basename(id) === id) {
+        await rm(join(directory, `${id}.json`), { force: true }).then(() => removed.add(id), () => undefined);
+      }
+    }
+    if (generation !== sessionGeneration) return;
+    // Bound duplicate history only after deleting the corresponding inbox
+    // files. A large batch or failed unlink must not make old files new again.
+    const delivered = state.deliveredMessageIds ?? [];
+    const recent = new Set(delivered.slice(-MAX_DELIVERED_MESSAGE_IDS));
+    const retained = delivered.filter((id) => !removed.has(id) || recent.has(id));
+    if (retained.length !== delivered.length) {
+      state.deliveredMessageIds = retained;
+      save();
+    }
+  }
+
+  // Both directions use the same inbox and native Pi delivery path.
+  // Never write to the prompt editor.
+
+  function receiveMessages(ctx: ExtensionContext): Promise<number> {
+    const generation = sessionGeneration;
+    inboxQueue = inboxQueue.then(async () => {
+      if (generation !== sessionGeneration) return 0;
+      const orchestrationId = state.orchestrationSessionId ?? state.workerOrchestrationSessionId;
+      if (!orchestrationId) return 0;
+      const fromWorkers = Boolean(state.orchestrationSessionId);
+      const source = fromWorkers ? "worker" : "orchestrator";
+      const directory = fromWorkers
+        ? orchestratorInboxDirectory(orchestrationId)
+        : workerInboxDirectory(orchestrationId, ctx.sessionManager.getSessionId());
       let names: string[];
       try {
         names = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort();
       } catch (error) {
         if (isObject(error) && error.code === "ENOENT") return 0;
-        state.lastError = `Could not read orchestrator messages: ${error instanceof Error ? error.message : String(error)}`;
+        if (generation !== sessionGeneration) return 0;
+        state.lastError = `Could not read ${source} messages: ${error instanceof Error ? error.message : String(error)}`;
         save();
         setStatus(ctx);
         return 0;
       }
-      if (names.length === 0) return 0;
+      if (generation !== sessionGeneration || names.length === 0) return 0;
 
-      state.pendingOrchestratorMessages ??= [];
+      state.pendingMessages ??= [];
       const known = new Set([
-        ...state.pendingOrchestratorMessages.map((message) => message.id),
-        ...(state.deliveredOrchestratorMessageIds ?? []),
+        ...state.pendingMessages.map((message) => message.id),
+        ...(state.deliveredMessageIds ?? []),
       ]);
-      const consumed: string[] = [];
       const errors: string[] = [];
       let added = 0;
       for (const name of names) {
         const path = join(directory, name);
         try {
           const value: unknown = JSON.parse(await readFile(path, "utf8"));
-          if (!isOrchestratorMessage(value) || `${value.id}.json` !== name) {
+          if (!isCoordinationMessage(value) || `${value.id}.json` !== name) {
             throw new Error("message identity or schema does not match");
           }
-          if (!known.has(value.id)) {
-            state.pendingOrchestratorMessages.push({ id: value.id, text: value.text.trim() });
-            known.add(value.id);
-            added += 1;
-          }
-          consumed.push(path);
+          if (known.has(value.id)) continue;
+          if (fromWorkers) await validateWorkerMessage(value, orchestrationId);
+          else if (value.worker !== undefined) throw new Error("expected a message from the orchestrator");
+          if (generation !== sessionGeneration) return 0;
+          state.pendingMessages.push({ id: value.id, text: value.text.trim(), ...(value.worker ? { worker: value.worker } : {}) });
+          known.add(value.id);
+          added += 1;
         } catch (error) {
+          if (generation !== sessionGeneration) return 0;
           errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
           await rename(path, `${path}.invalid`).catch(() => undefined);
         }
       }
 
-      if (errors.length > 0) state.lastError = `Could not read orchestrator messages: ${errors.join("; ")}`;
+      if (generation !== sessionGeneration) return 0;
+      if (errors.length > 0) state.lastError = `Could not read ${source} messages: ${errors.join("; ")}`;
       if (added > 0 || errors.length > 0) {
         save();
         setStatus(ctx);
       }
-      for (const path of consumed) await rm(path, { force: true }).catch(() => undefined);
       return added;
     });
     return inboxQueue;
@@ -868,7 +943,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         count + (pending.checksKey ? 1 : 0) + (pending.conflictsKey ? 1 : 0) + pending.feedbackActivities.length,
       (state.pendingShaUpdate ? 1 : 0) +
         state.pendingWorkerSettlements.length +
-        (state.pendingOrchestratorMessages?.length ?? 0),
+        (state.pendingMessages?.length ?? 0),
     );
   }
 
@@ -915,9 +990,15 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function startInboxPolling(ctx: ExtensionContext): void {
-    if (inboxInterval || !state.workerOrchestrationSessionId) return;
+    if (inboxInterval || !(state.workerOrchestrationSessionId || state.orchestrationSessionId)) return;
+    const generation = sessionGeneration;
     inboxInterval = setInterval(async () => {
-      if ((await receiveOrchestratorMessages(ctx)) > 0) flushPending(ctx);
+      if (generation !== sessionGeneration) return;
+      await receiveMessages(ctx);
+      if (generation !== sessionGeneration) return;
+      reconcileSteers(ctx);
+      flushPending(ctx);
+      await pruneDeliveredMessages(ctx);
     }, INBOX_POLL_INTERVAL_MS);
     inboxInterval.unref?.();
   }
@@ -1736,8 +1817,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `${headline}\n\n${reviewerSafetyNotice(watched)}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${authorLogin}`;
   }
 
-  function buildOrchestratorMessage(message: OrchestratorMessage): string {
-    return `Message from the orchestrator:\n\n${message.text}`;
+  function buildCoordinationMessage(message: CoordinationMessage): string {
+    const worker = message.worker;
+    if (!worker) return `Message from the orchestrator:\n\n${message.text}`;
+    const identity = `${basename(dirname(worker.gitCommonDir))}@${worker.branch}`;
+    return `Message from worker ${identity}:\nSession: ${worker.sessionId}\nRepository: ${worker.gitCommonDir}\nMessage ID: ${message.id}\nSent: ${new Date(worker.createdAt).toISOString()}\n\n${message.text}`;
   }
 
   function buildWorkerSettlementMessage(settlement: PendingWorkerSettlement): string {
@@ -1844,7 +1928,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     pendingPrUpdates: PendingPrUpdate[],
     pendingShaUpdate: PendingShaUpdate | undefined,
     pendingWorkerSettlements: PendingWorkerSettlement[],
-    pendingOrchestratorMessages: OrchestratorMessage[],
+    pendingMessages: CoordinationMessage[],
   ): string {
     const messages: string[] = [];
     for (const pending of pendingPrUpdates) {
@@ -1857,7 +1941,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
     if (pendingShaUpdate) messages.push(buildShaChecksMessage(pendingShaUpdate));
     for (const settlement of pendingWorkerSettlements) messages.push(buildWorkerSettlementMessage(settlement));
-    for (const message of pendingOrchestratorMessages) messages.push(buildOrchestratorMessage(message));
+    for (const message of pendingMessages) messages.push(buildCoordinationMessage(message));
     return buildBatchMessage(messages);
   }
 
@@ -1906,79 +1990,76 @@ export default function prWatch(pi: ExtensionAPI): void {
     if ((delivery.pendingWorkerSettlements ?? []).some((settlement) => !pendingWorkerIds.has(workerSettlementIdentity(settlement)))) {
       return false;
     }
-    const pendingMessageIds = new Set((state.pendingOrchestratorMessages ?? []).map((message) => message.id));
-    if ((delivery.pendingOrchestratorMessages ?? []).some((message) => !pendingMessageIds.has(message.id))) {
+    const pendingMessageIds = new Set((state.pendingMessages ?? []).map((message) => message.id));
+    if ((delivery.pendingMessages ?? []).some((message) => !pendingMessageIds.has(message.id))) {
       return false;
     }
     return true;
   }
 
-  // A correction from the orchestrator must reach a worker mid-run, so it
-  // steers the running turn. Pi queues the message once sendMessage returns;
-  // that counts as delivery. Messages already in an idle batch stay there.
-  function steerOrchestratorMessages(ctx: ExtensionContext): void {
+  // Keep queued steers durable until their markers reach the transcript.
+  // On abort/restart, unobserved steers become eligible for replay with the
+  // same message IDs. Pi can retain a queue across some aborts; duplicates
+  // are preferable to losing a question or correction.
+  function reconcileSteers(ctx: ExtensionContext, retryUnobserved = false): void {
+    const steers = state.pendingSteers ?? [];
+    const remaining: PendingSteer[] = [];
+    for (const steer of steers) {
+      if (sessionHasMarker(ctx, steer.marker)) {
+        markMessagesDelivered(new Set(steer.messageIds));
+        state.lastNotifyAt = Date.now();
+      } else if (!retryUnobserved) remaining.push(steer);
+    }
+    if (remaining.length === steers.length) return;
+    state.pendingSteers = remaining;
+    save();
+    setStatus(ctx);
+  }
+
+  function steerMessages(ctx: ExtensionContext): void {
     if (!agentRunning || ctx.isIdle()) return;
-    const batched = new Set((state.pendingDelivery?.pendingOrchestratorMessages ?? []).map((message) => message.id));
-    const messages = (state.pendingOrchestratorMessages ?? []).filter((message) => !batched.has(message.id));
+    reconcileSteers(ctx);
+    const queued = new Set([
+      ...(state.pendingDelivery?.pendingMessages ?? []).map((message) => message.id),
+      ...(state.pendingSteers ?? []).flatMap((steer) => steer.messageIds),
+    ]);
+    const messages = (state.pendingMessages ?? []).filter((message) => !queued.has(message.id));
     if (messages.length === 0) return;
 
     const marker = `<!-- pr-watch-steer:${randomUUID()} -->`;
+    (state.pendingSteers ??= []).push({ marker, messageIds: messages.map((message) => message.id) });
+    save();
     try {
       pi.sendMessage(
         {
           customType: NOTIFICATION_TYPE,
-          content: `${buildBatchMessage(messages.map(buildOrchestratorMessage))}\n\n${marker}`,
+          content: `${buildBatchMessage(messages.map(buildCoordinationMessage))}\n\n${marker}`,
           display: true,
         },
-        // triggerTurn starts a run if this one settled in the meantime.
         { triggerTurn: true, deliverAs: "steer" },
       );
     } catch (error) {
+      state.pendingSteers = (state.pendingSteers ?? []).filter((steer) => steer.marker !== marker);
       state.lastError = error instanceof Error ? error.message : String(error);
       save();
       setStatus(ctx);
       return;
     }
-    markOrchestratorMessagesDelivered(new Set(messages.map((message) => message.id)));
-    steeredMessages.push({ marker, messages });
-    state.lastNotifyAt = Date.now();
-    save();
+    reconcileSteers(ctx);
     setStatus(ctx);
   }
 
-  // Aborting a run clears Pi's steering queue without restoring extension
-  // messages to the editor. A steer that never reached the transcript by the
-  // time the run settles goes back to pending, so this settle resends it.
-  // Other aborts, such as /compact mid-run, keep Pi's queue, and the worker
-  // then gets the message twice. A duplicate beats a lost correction.
-  function requeueDroppedSteers(ctx: ExtensionContext): void {
-    const dropped = steeredMessages
-      .filter(({ marker }) => !sessionHasMarker(ctx, marker))
-      .flatMap(({ messages }) => messages);
-    steeredMessages = [];
-    if (dropped.length === 0) return;
-
-    const ids = new Set(dropped.map((message) => message.id));
-    const pending = (state.pendingOrchestratorMessages ?? []).filter((message) => !ids.has(message.id));
-    state.pendingOrchestratorMessages = [...dropped, ...pending];
-    state.deliveredOrchestratorMessageIds = (state.deliveredOrchestratorMessageIds ?? []).filter((id) => !ids.has(id));
-    save();
-    setStatus(ctx);
-  }
-
-  function markOrchestratorMessagesDelivered(ids: Set<string>): void {
-    state.pendingOrchestratorMessages = (state.pendingOrchestratorMessages ?? []).filter(
-      (message) => !ids.has(message.id),
-    );
-    state.deliveredOrchestratorMessageIds = [
-      ...new Set([...(state.deliveredOrchestratorMessageIds ?? []), ...ids]),
-    ].slice(-MAX_DELIVERED_ORCHESTRATOR_MESSAGE_IDS);
+  function markMessagesDelivered(ids: Set<string>): void {
+    state.pendingMessages = (state.pendingMessages ?? []).filter((message) => !ids.has(message.id));
+    state.deliveredMessageIds = [
+      ...new Set([...(state.deliveredMessageIds ?? []), ...ids]),
+    ];
   }
 
   function flushPending(ctx: ExtensionContext): void {
     if (state.mode !== "active") return;
     if (!ctx.isIdle()) {
-      steerOrchestratorMessages(ctx);
+      steerMessages(ctx);
       return;
     }
     if (state.pendingDelivery && !deliveryAttemptedId && !deliveryStillPending(state.pendingDelivery)) {
@@ -1992,19 +2073,19 @@ export default function prWatch(pi: ExtensionAPI): void {
       const pendingPrUpdates = structuredClone(state.pendingPrUpdates);
       const pendingShaUpdate = structuredClone(state.pendingShaUpdate);
       const pendingWorkerSettlements = structuredClone(state.pendingWorkerSettlements);
-      const pendingOrchestratorMessages = structuredClone(state.pendingOrchestratorMessages ?? []);
+      const pendingMessages = structuredClone(state.pendingMessages ?? []);
       state.pendingDelivery = {
         id,
         message: `${buildPendingMessage(
           pendingPrUpdates,
           pendingShaUpdate,
           pendingWorkerSettlements,
-          pendingOrchestratorMessages,
+          pendingMessages,
         )}\n\n${deliveryMarker(id)}`,
         pendingPrUpdates,
         pendingShaUpdate,
         pendingWorkerSettlements,
-        pendingOrchestratorMessages,
+        pendingMessages,
       };
       save();
     }
@@ -2088,9 +2169,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       ...new Set([...(state.resolvedWorkerSettlementIds ?? []), ...deliveredWorkerIds]),
     ];
 
-    markOrchestratorMessagesDelivered(
-      new Set((delivery.pendingOrchestratorMessages ?? []).map((message) => message.id)),
-    );
+    markMessagesDelivered(new Set((delivery.pendingMessages ?? []).map((message) => message.id)));
 
     state.pendingDelivery = undefined;
     deliveryAttemptedId = undefined;
@@ -2339,10 +2418,10 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     stopInboxPolling();
+    sessionGeneration += 1;
     state = initialState();
     deliveryAttemptedId = undefined;
     agentRunning = false;
-    steeredMessages = [];
     lastPublishedMembership = undefined;
     orchestrationEnvironmentAtStart = process.env.PI_ORCHESTRATION_SESSION_ID;
     const requestedOrchestrationSessionId = process.env.PI_ORCHESTRATION_SESSION_ID?.trim() || undefined;
@@ -2373,14 +2452,26 @@ export default function prWatch(pi: ExtensionAPI): void {
         state.workerOrchestrationSessionId = requestedWorkerOrchestrationSessionId;
       }
     }
-    state.pendingWorkerSettlements ??= [];
-    state.pendingOrchestratorMessages ??= [];
-    exportOrchestrationSessionId();
-    if (state.workerOrchestrationSessionId) {
-      await refreshWorkerBranch();
-      await receiveOrchestratorMessages(ctx);
-      startInboxPolling(ctx);
+    // Version 4 sessions used direction-specific names before worker replies.
+    const legacy = state as WatchState & {
+      pendingOrchestratorMessages?: CoordinationMessage[];
+      deliveredOrchestratorMessageIds?: string[];
+    };
+    state.pendingMessages ??= legacy.pendingOrchestratorMessages ?? [];
+    state.deliveredMessageIds ??= legacy.deliveredOrchestratorMessageIds ?? [];
+    delete legacy.pendingOrchestratorMessages;
+    delete legacy.deliveredOrchestratorMessageIds;
+    if (state.pendingDelivery) {
+      const delivery = state.pendingDelivery as PendingDelivery & { pendingOrchestratorMessages?: CoordinationMessage[] };
+      delivery.pendingMessages ??= delivery.pendingOrchestratorMessages ?? [];
+      delete delivery.pendingOrchestratorMessages;
     }
+    state.pendingWorkerSettlements ??= [];
+    exportOrchestrationSessionId();
+    reconcileSteers(ctx, true);
+    if (state.workerOrchestrationSessionId) await refreshWorkerBranch();
+    await receiveMessages(ctx);
+    startInboxPolling(ctx);
     reconcileDelivery(ctx);
 
     if (state.mode === "off") {
@@ -2425,9 +2516,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     startPolling(ctx);
     setStatus(ctx);
     flushPending(ctx);
+    await pruneDeliveredMessages(ctx);
   });
 
   pi.on("session_shutdown", async () => {
+    sessionGeneration += 1;
     stopPolling();
     stopInboxPolling();
     if (orchestrationEnvironmentAtStart === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
@@ -2441,19 +2534,21 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("agent_settled", async (_event, ctx) => {
     agentRunning = false;
-    requeueDroppedSteers(ctx);
+    reconcileSteers(ctx, true);
     if (state.workerOrchestrationSessionId) {
       await discoverWorkerPr(ctx);
       await captureWorkerSettlement(ctx);
       await publishWorkerSnapshot(ctx, true);
-      await receiveOrchestratorMessages(ctx);
+      await receiveMessages(ctx);
     }
     reconcileDelivery(ctx);
     flushPending(ctx);
   });
 
   pi.on("turn_start", async (_event, ctx) => {
+    reconcileSteers(ctx);
     reconcileDelivery(ctx);
+    await pruneDeliveredMessages(ctx);
   });
 
   pi.on("tool_result", async (event, ctx) => {
@@ -2577,6 +2672,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       await syncWatchedSha(ctx);
       save();
       startPolling(ctx);
+      startInboxPolling(ctx);
       setStatus(ctx);
     }
     exportOrchestrationSessionId();
@@ -2604,6 +2700,53 @@ export default function prWatch(pi: ExtensionAPI): void {
     executionMode: "sequential",
     async execute(_id, { pr }, _signal, _onUpdate, ctx) {
       return { content: [{ type: "text", text: await unwatchPr(pr, ctx) }], details: undefined };
+    },
+  });
+
+  pi.registerTool({
+    name: "message_orchestrator",
+    label: "Message orchestrator",
+    description: "Ask your orchestrator a judgment question or report a blocker or repeatedly failing checks. Not for PR creation or routine CI updates. Worker sessions only; sender identity and parent are supplied by the harness.",
+    parameters: Type.Object({
+      message: Type.String({ minLength: 1, maxLength: MAX_WORKER_MESSAGE_LENGTH, description: "Concise question or escalation, with relevant evidence or references" }),
+    }),
+    executionMode: "sequential",
+    async execute(_id, { message }, _signal, _onUpdate, ctx) {
+      const orchestrationId = state.workerOrchestrationSessionId;
+      if (!orchestrationId || state.orchestrationSessionId) throw new Error("message_orchestrator requires a worker session");
+      const text = message.trim();
+      if (!text || text.length > MAX_WORKER_MESSAGE_LENGTH) throw new Error("message_orchestrator requires a non-empty message of at most 16000 characters");
+      const generation = sessionGeneration;
+      if (!(await refreshWorkerBranch())) throw new Error("Could not resolve worker branch");
+      const gitCommonDir = await resolveWorkerGitCommonDir();
+      if (!gitCommonDir) throw new Error("Could not resolve worker repository");
+      await publishWorkerSnapshot(ctx, true);
+      if (generation !== sessionGeneration) throw new Error("Worker session changed while preparing the message");
+      const createdAt = Date.now();
+      const id = `${String(createdAt).padStart(16, "0")}-${randomUUID()}`;
+      const envelope: CoordinationMessage & { version: 1 } = {
+        version: 1,
+        id,
+        text,
+        worker: { orchestrationId, sessionId: ctx.sessionManager.getSessionId(), branch: state.workerBranch!, gitCommonDir, createdAt },
+      };
+      // Publishing errors are surfaced here before promising a queued message.
+      await validateWorkerMessage(envelope, orchestrationId);
+      const directory = orchestratorInboxDirectory(orchestrationId);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const temporary = join(directory, `.${id}.tmp`);
+      try {
+        await writeFile(temporary, `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
+        if (generation !== sessionGeneration) throw new Error("Worker session changed while queuing the message");
+        await rename(temporary, join(directory, `${id}.json`));
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      return {
+        content: [{ type: "text", text: `Queued message ${id} for your orchestrator. It steers an active run or starts a turn when idle; this is not acknowledgment of a reply.` }],
+        details: { messageId: id, orchestrationId },
+      };
     },
   });
 
@@ -2748,7 +2891,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         ...state.pendingWorkerSettlements.map(
           (settlement) => `  worker ${settlement.branch}: stopped without a watched PR`,
         ),
-        ...(state.pendingOrchestratorMessages ?? []).map(() => "  orchestrator message"),
+        ...(state.pendingMessages ?? []).map((message) => message.worker ? `  worker ${message.worker.branch}: message` : "  orchestrator message"),
       ];
       const lines = [
         `PR watch mode: ${state.mode}`,

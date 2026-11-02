@@ -20,6 +20,7 @@ const script = fileURLToPath(import.meta.url);
 
 function capturePolling(scheduled = false) {
   const polls: Array<() => Promise<void>> = [];
+  const inboxPolls: Array<() => Promise<void>> = [];
   const scheduledTimers = new Set<ReturnType<typeof setInterval>>();
   const running = new Set<Promise<void>>();
   const originalSet = globalThis.setInterval;
@@ -28,6 +29,7 @@ function capturePolling(scheduled = false) {
   globalThis.setInterval = ((callback: () => Promise<void>, ms: number, ...args: any[]) => {
     if (ms !== 60_000 && ms !== 5_000) return originalSet(callback, ms, ...args);
     if (ms === 60_000) polls.push(callback);
+    if (ms === 5_000) inboxPolls.push(callback);
     if (scheduled) {
       const timer = originalSet(() => {
         const task = callback();
@@ -46,6 +48,7 @@ function capturePolling(scheduled = false) {
   }) as any;
   return {
     polls,
+    inboxPolls,
     async stop() {
       for (const timer of scheduledTimers) originalClear(timer);
       await Promise.all(running);
@@ -70,7 +73,7 @@ async function startSession(cwd: string, root: string): Promise<AgentSession> {
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
   const { session } = await createAgentSession({
     cwd, agentDir, settingsManager, resourceLoader,
-    sessionManager: SessionManager.inMemory(cwd), tools: ["bash", "watch_pr", "unwatch_pr"],
+    sessionManager: SessionManager.inMemory(cwd), tools: ["bash", "watch_pr", "unwatch_pr", "message_orchestrator"],
   });
   await session.bindExtensions({ mode: "print", onError: (error) => { throw new Error(JSON.stringify(error)); } });
   return session;
@@ -81,7 +84,7 @@ async function startSession(cwd: string, root: string): Promise<AgentSession> {
 async function runCommand(session: AgentSession, command: string, toolName = "bash"): Promise<void> {
   const toolCall = {
     type: "toolCall", name: toolName, id: `fixture-command-${session.messages.length}`,
-    arguments: toolName === "bash" ? { command } : { pr: command },
+    arguments: toolName === "bash" ? { command } : toolName === "message_orchestrator" ? { message: command } : { pr: command },
   };
   const model = session.modelRuntime.getModel("openai", "gpt-4o");
   assert.ok(model);
@@ -143,6 +146,7 @@ if (process.argv[2] === "worker") {
     await runCommand(session, automatic ? command : `sh -c '${command}'`);
     assert.deepEqual(watchState(session).watchedPrs.map(({ pr }: any) => pr.number), [104]);
     assert.equal(watchState(session).latestWorkerSettlement.hadWatchedPr, true);
+    await runCommand(session, "Which accepted contract should the repeated failing fixture follow?", "message_orchestrator");
     if (automatic) await writeFile(join(process.env.REPRO_ROOT!, "ci-complete"), "");
   } finally {
     await stopSession(session);
@@ -228,9 +232,13 @@ esac
           () => readFile(join(root, "worker-done")).then(() => true, () => false),
           "the worker must finish successfully",
         );
-        assert.equal(parent.messages.filter((message) => message.role === "user").length, 1);
+        await waitUntil(
+          () => parent.sessionManager.getBranch().some((entry) =>
+            entry.type === "custom_message" && JSON.stringify(entry.content).includes("Message from worker repo@ticket-one:")),
+          "the parent must receive its worker's question through the inbox",
+        );
       } else {
-        for (const poll of [...timer.polls]) await poll();
+        for (const poll of [...timer.polls, ...timer.inboxPolls]) await poll();
       }
       await timer.stop();
       await session.waitForIdle();
@@ -239,6 +247,13 @@ esac
       assert.deepEqual(state.watchedPrs.map(({ pr }: any) => pr.number), [104]);
       assert.deepEqual(state.pendingWorkerSettlements, []);
       assert.equal(state.lastError, undefined);
+      const questions = session.sessionManager.getBranch().filter((entry) =>
+        entry.type === "custom_message" && JSON.stringify(entry.content).includes("Message from worker repo@ticket-one:"));
+      assert.equal(questions.length, 1);
+      assert.match(JSON.stringify(questions[0]), /Which accepted contract/);
+      assert.equal(session.messages.filter((message) => message.role === "user").length, 1);
+      assert.deepEqual(state.pendingMessages, []);
+      assert.equal(state.deliveredMessageIds.length, 1);
 
       await runCommand(session, "104", "unwatch_pr");
       for (const poll of [...timer.polls]) await poll();

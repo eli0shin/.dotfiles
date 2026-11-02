@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { mkdtempSync } from "node:fs";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CustomMessageComponent, initTheme, type MessageRenderer } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme, SessionManager, type MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Container, Text, TuiAltScreen, stripTerminalSequences, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { installActivityView } from "../compact-activity/index.ts";
 
@@ -40,12 +40,16 @@ type PrFixture = {
   mergedAt?: string;
 };
 
-function createHarness(options: { stateRoot?: string; sessionId?: string } = {}) {
+function createHarness(options: { stateRoot?: string; sessionId?: string; sessionManager?: SessionManager } = {}) {
   const stateRoot = options.stateRoot ?? mkdtempSync(join(tmpdir(), "pr-watch-test-"));
+  const sessionFile = join(stateRoot, `${options.sessionId ?? "worker-session"}.jsonl`);
+  // Most tests model an existing persisted conversation. Durability tests
+  // supply a real SessionManager, including Pi's deferred initial writes.
+  if (!options.sessionManager) writeFileSync(sessionFile, "fixture conversation\n");
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const messageRenderers = new Map<string, MessageRenderer>();
-  const tools = new Map<string, { execute: (id: string, params: { pr?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
+  const tools = new Map<string, { execute: (id: string, params: { pr?: string; message?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
   let execGate: {
     matches: (command: string, args: string[]) => boolean;
@@ -55,6 +59,8 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
   } | undefined;
   const sentMessages: string[] = [];
   const sentMessageOptions: unknown[] = [];
+  let autoDeliverMessages = true;
+  const queuedMessages: Array<{ customType: string; content: string; display: boolean }> = [];
   const savedStates: any[] = [];
   const notifications: string[] = [];
   const statuses: Array<string | undefined> = [];
@@ -132,10 +138,16 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     },
     appendEntry(_customType: string, data: unknown): void {
       savedStates.push(structuredClone(data));
+      options.sessionManager?.appendCustomEntry(_customType, structuredClone(data));
     },
-    sendMessage(message: { customType: string; content: string; display: boolean }, options?: unknown): void {
+    sendMessage(message: { customType: string; content: string; display: boolean }, deliveryOptions?: unknown): void {
       sentMessages.push(message.content);
-      sentMessageOptions.push(options);
+      sentMessageOptions.push(deliveryOptions);
+      if (!autoDeliverMessages) {
+        queuedMessages.push(message);
+        return;
+      }
+      options.sessionManager?.appendCustomMessageEntry(message.customType, message.content, message.display);
       branchEntries.push({
         type: "custom_message",
         customType: message.customType,
@@ -231,6 +243,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "git" && args[0] === "rev-parse") {
+        if (args.includes("--git-common-dir")) return { code: 0, stdout: "/work/repos/.git\n", stderr: "" };
         return shaAvailable
           ? { code: 0, stdout: `${localSha}\n`, stderr: "" }
           : { code: 1, stdout: "", stderr: "temporary failure" };
@@ -256,8 +269,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     },
     isIdle: () => idle,
     sessionManager: {
-      getBranch: () => branchEntries,
-      getSessionId: () => options.sessionId ?? "worker-session",
+      getBranch: () => options.sessionManager?.getBranch() ?? branchEntries,
+      getSessionId: () => options.sessionManager?.getSessionId() ?? options.sessionId ?? "worker-session",
+      getSessionFile: () => options.sessionManager ? options.sessionManager.getSessionFile() : sessionFile,
     },
   };
 
@@ -389,6 +403,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
           workerSessionId,
           revision: Date.now(),
           branch: settlement?.branch ?? `branch-${workerSessionId}`,
+          gitCommonDir: "/work/repos/.git",
           watchedPrs,
           ...(settlement
             ? {
@@ -428,10 +443,21 @@ function createHarness(options: { stateRoot?: string; sessionId?: string } = {})
     handlers,
     commands,
     messageRenderers,
-    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate", pr?: string) {
+    stateRoot,
+    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate" | "message_orchestrator", value?: string) {
       const tool = tools.get(name);
       assert.ok(tool, `${name} must be registered`);
-      return withFakeTimer(() => tool.execute("manual-watch", pr === undefined ? {} : { pr }, undefined, undefined, ctx));
+      const params = name === "message_orchestrator" ? { message: value } : value === undefined ? {} : { pr: value };
+      return withFakeTimer(() => tool.execute("manual-watch", params, undefined, undefined, ctx));
+    },
+    setMessageDelivery(value: boolean) {
+      autoDeliverMessages = value;
+    },
+    async deliverQueuedMessages() {
+      for (const message of queuedMessages.splice(0)) {
+        branchEntries.push({ type: "custom_message", ...message });
+      }
+      await handlers.get("turn_start")?.({}, ctx);
     },
     execCalls,
     pauseExec(matches: (command: string, args: string[]) => boolean, payload: unknown) {
@@ -907,6 +933,7 @@ test("associated workers publish their branch and terminal response when they se
       workerSessionId: "worker-session",
       revision: (await harness.readWorkerSnapshot("session-123", "worker-session")).revision,
       branch: "009-worker-recovery",
+      gitCommonDir: "/work/repos/.git",
       watchedPrs: [],
       latestSettlement: {
         assistantEntryId: "assistant-final",
@@ -1143,8 +1170,9 @@ test("worker fallback waits in the existing delivery loop while the orchestrator
 
 async function withWorker(
   action: (harness: ReturnType<typeof createHarness>) => Promise<void>,
+  options: Parameters<typeof createHarness>[0] = {},
 ): Promise<void> {
-  const harness = createHarness();
+  const harness = createHarness(options);
   const original = process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
   process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = "session-123";
   harness.setCurrentBranch("ticket-one");
@@ -1157,6 +1185,306 @@ async function withWorker(
     else process.env.PI_PARENT_ORCHESTRATION_SESSION_ID = original;
   }
 }
+
+async function withOrchestrator(
+  action: (harness: ReturnType<typeof createHarness>) => Promise<void>,
+  options: Parameters<typeof createHarness>[0] = {},
+): Promise<void> {
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "session-123";
+  const harness = createHarness({ ...options, sessionId: "parent-session" });
+  try {
+    await harness.startSession();
+    await action(harness);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+}
+
+function parentInbox(harness: ReturnType<typeof createHarness>): string {
+  return join(harness.stateRoot, "session-123", "orchestrator-inbox");
+}
+
+test("message_orchestrator rejects ordinary sessions and orchestrators", async () => {
+  const ordinary = createHarness();
+  await assert.rejects(ordinary.callTool("message_orchestrator", "Question"), /requires a worker session/);
+  await withOrchestrator(async (parent) => {
+    await assert.rejects(parent.callTool("message_orchestrator", "Question"), /requires a worker session/);
+  });
+});
+
+test("message_orchestrator queues a private envelope using restored worker identity, not launch environment", async () => {
+  await withWorker(async (worker) => {
+    const saved = worker.savedStates.at(-1);
+    await worker.shutdown();
+    worker.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
+    await worker.startSession("resume");
+    assert.equal(process.env.PI_PARENT_ORCHESTRATION_SESSION_ID, undefined);
+    await assert.rejects(worker.callTool("message_orchestrator", "   "), /non-empty/);
+    await assert.rejects(worker.callTool("message_orchestrator", "x".repeat(16_001)), /at most 16000/);
+    const result = await worker.callTool("message_orchestrator", "  Which contract should win?  ");
+    const { messageId, orchestrationId } = result.details;
+    assert.equal(orchestrationId, "session-123");
+    const files = await readdir(parentInbox(worker));
+    assert.deepEqual(files, [`${messageId}.json`]);
+    const envelope = JSON.parse(await readFile(join(parentInbox(worker), files[0]!), "utf8"));
+    assert.equal(envelope.text, "Which contract should win?");
+    assert.deepEqual(envelope.worker, {
+      orchestrationId: "session-123", sessionId: "worker-session", branch: "ticket-one",
+      gitCommonDir: "/work/repos/.git", createdAt: envelope.worker.createdAt,
+    });
+    assert.ok(Number.isSafeInteger(envelope.worker.createdAt));
+    assert.equal((await stat(join(parentInbox(worker), files[0]!))).mode & 0o777, 0o600);
+    assert.equal((await stat(parentInbox(worker))).mode & 0o777, 0o700);
+    assert.ok(worker.execCalls.every((call) => call.command !== "herdr" && call.command !== "tmux"));
+    assert.match(result.content[0].text, /Queued message/);
+  });
+});
+
+for (const running of [false, true]) {
+  test(`worker messages ${running ? "steer a running" : "wake an idle"} orchestrator with harness-supplied identity`, async () => {
+    await withWorker(async (worker) => {
+      await withOrchestrator(async (parent) => {
+        if (running) await parent.startAgent();
+        // Any attempt to modify the user's draft fails the test.
+        Object.assign(parent.ctx.ui, { setEditorText() { assert.fail("must not modify the prompt editor"); } });
+        const result = await worker.callTool("message_orchestrator", "CI still fails after two fixes. Should I change the contract?");
+        await parent.runInboxPoll();
+        assert.equal(parent.sentMessages.length, 1);
+        const notice = parent.sentMessages[0]!;
+        assert.match(notice, /^<pr-watch-harness-notification>\nNot a user message\./);
+        assert.match(notice, /Message from worker repos@ticket-one:/);
+        assert.match(notice, /Session: worker-session\nRepository: \/work\/repos\/\.git/);
+        assert.ok(notice.includes(`Message ID: ${result.details.messageId}`));
+        assert.match(notice, /CI still fails after two fixes/);
+        assert.deepEqual(parent.sentMessageOptions[0], running ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: true });
+        assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+        assert.deepEqual(await readdir(parentInbox(parent)), []);
+        await parent.runInboxPoll();
+        assert.equal(parent.sentMessages.length, 1);
+      }, { stateRoot: worker.stateRoot });
+    });
+  });
+}
+
+test("worker messages batch on startup even when the parent was offline", async () => {
+  await withWorker(async (worker) => {
+    await worker.callTool("message_orchestrator", "First decision");
+    await worker.callTool("message_orchestrator", "Second decision");
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /## Update 1/);
+      assert.match(parent.sentMessages[0]!, /## Update 2/);
+      assert.match(parent.sentMessages[0]!, /First decision/);
+      assert.match(parent.sentMessages[0]!, /Second decision/);
+      assert.equal(parent.savedStates.at(-1)?.deliveredMessageIds.length, 2);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("a fresh persistent parent retains inbox files until transcript acknowledgment is on disk", async () => {
+  await withWorker(async (worker) => {
+    const sent = await worker.callTool("message_orchestrator", "Do not lose this question on startup");
+    const inboxFile = join(parentInbox(worker), `${sent.details.messageId}.json`);
+    const sessions = join(worker.stateRoot, "sessions");
+    const firstManager = SessionManager.create(worker.stateRoot, sessions);
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+      // A custom message and acknowledged state still do not create a file.
+      await assert.rejects(stat(firstManager.getSessionFile()!), { code: "ENOENT" });
+      assert.ok((await stat(inboxFile)).isFile());
+    }, { stateRoot: worker.stateRoot, sessionManager: firstManager });
+
+    // Model a crash/restart: the first parent's entire session was in memory.
+    const secondManager = SessionManager.create(worker.stateRoot, sessions);
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /Do not lose this question/);
+      assert.ok((await stat(inboxFile)).isFile());
+      secondManager.appendMessage({ role: "user", content: "Continue", timestamp: Date.now() });
+      await parent.runInboxPoll();
+      await assert.rejects(stat(inboxFile), { code: "ENOENT" });
+      const persisted = await readFile(secondManager.getSessionFile()!, "utf8");
+      assert.ok(persisted.includes(sent.details.messageId));
+      assert.equal(parent.sentMessages.length, 1);
+    }, { stateRoot: worker.stateRoot, sessionManager: secondManager });
+  });
+});
+
+test("batches larger than duplicate history are pruned without replaying old inbox files", async () => {
+  await withWorker(async (worker) => {
+    const first = await worker.callTool("message_orchestrator", "Batch question");
+    const directory = parentInbox(worker);
+    const template = JSON.parse(await readFile(join(directory, `${first.details.messageId}.json`), "utf8"));
+    for (let index = 0; index < 105; index += 1) {
+      const id = `batch-${index}`;
+      await writeFile(join(directory, `${id}.json`), JSON.stringify({ ...template, id }));
+    }
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.deepEqual(await readdir(directory), []);
+      assert.equal(parent.savedStates.at(-1)?.deliveredMessageIds.length, 100);
+      await parent.runInboxPoll();
+      assert.equal(parent.sentMessages.length, 1);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("batched worker messages retain each sender's session and branch", async () => {
+  await withWorker(async (first) => {
+    await first.callTool("message_orchestrator", "First worker's question");
+    await withWorker(async (second) => {
+      second.setCurrentBranch("ticket-two");
+      await second.callTool("message_orchestrator", "Second worker's blocker");
+    }, { stateRoot: first.stateRoot, sessionId: "worker-two" });
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /worker repos@ticket-one:\nSession: worker-session/);
+      assert.match(parent.sentMessages[0]!, /worker repos@ticket-two:\nSession: worker-two/);
+      assert.match(parent.sentMessages[0]!, /First worker's question/);
+      assert.match(parent.sentMessages[0]!, /Second worker's blocker/);
+    }, { stateRoot: first.stateRoot });
+  });
+});
+
+test("worker messages wait during compaction and paused delivery", async () => {
+  await withWorker(async (worker) => {
+    await withOrchestrator(async (parent) => {
+      parent.setIdle(false); // Busy without an active run: manual compaction.
+      await worker.callTool("message_orchestrator", "Need a decision");
+      await parent.runInboxPoll();
+      assert.deepEqual(parent.sentMessages, []);
+      assert.equal(parent.savedStates.at(-1)?.pendingMessages.length, 1);
+      await parent.commands.get("pr-watch")!.handler("pause", parent.ctx);
+      await parent.startAgent();
+      await parent.runInboxPoll();
+      assert.deepEqual(parent.sentMessages, []);
+      await parent.withFakeTimer(() => parent.commands.get("pr-watch")!.handler("resume", parent.ctx));
+      assert.equal(parent.sentMessages.length, 1);
+      assert.deepEqual(parent.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("unobserved worker steers remain durable, are not repeatedly queued, and replay after restart", async () => {
+  await withWorker(async (worker) => {
+    await withOrchestrator(async (parent) => {
+      parent.setMessageDelivery(false);
+      await parent.startAgent();
+      const sent = await worker.callTool("message_orchestrator", "Question before proceeding");
+      await parent.runInboxPoll();
+      assert.equal(parent.savedStates.at(-1)?.pendingMessages.length, 1);
+      assert.equal(parent.savedStates.at(-1)?.pendingSteers.length, 1);
+      assert.deepEqual(parent.savedStates.at(-1)?.deliveredMessageIds, []);
+      await parent.runInboxPoll();
+      assert.equal(parent.sentMessages.length, 1);
+      const saved = parent.savedStates.at(-1);
+      await parent.shutdown();
+      parent.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
+      parent.setIdle(true);
+      parent.setMessageDelivery(true);
+      await parent.startSession("resume");
+      assert.equal(parent.sentMessages.length, 2);
+      assert.ok(parent.sentMessages[1]!.includes(sent.details.messageId));
+      assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+      await parent.runInboxPoll();
+      assert.equal(parent.sentMessages.length, 2);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("worker steers observed before a crash are acknowledged on resume without replay", async () => {
+  await withWorker(async (worker) => {
+    await withOrchestrator(async (parent) => {
+      parent.setMessageDelivery(false);
+      await parent.startAgent();
+      await worker.callTool("message_orchestrator", "Already reached the transcript");
+      await parent.runInboxPoll();
+      const saved = parent.savedStates.at(-1);
+      await parent.shutdown();
+      parent.setBranchEntries([
+        { type: "custom", customType: "pr-watch-state", data: saved },
+        { type: "custom_message", customType: "pr-watch-harness", content: parent.sentMessages[0] },
+      ]);
+      parent.setIdle(true);
+      parent.setMessageDelivery(true);
+      await parent.startSession("resume");
+      await parent.runInboxPoll();
+      assert.equal(parent.sentMessages.length, 1);
+      assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+      assert.equal(parent.savedStates.at(-1)?.deliveredMessageIds.length, 1);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("worker steers dropped by an abort replay and acknowledge only on transcript insertion", async () => {
+  await withWorker(async (worker) => {
+    await withOrchestrator(async (parent) => {
+      parent.setMessageDelivery(false);
+      await parent.startAgent();
+      await worker.callTool("message_orchestrator", "Blocked on an ambiguous requirement");
+      await parent.runInboxPoll();
+      parent.setIdle(true);
+      await parent.settleAgent();
+      assert.equal(parent.sentMessages.length, 2);
+      assert.equal(parent.savedStates.at(-1)?.pendingMessages.length, 1);
+      await parent.deliverQueuedMessages();
+      assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+      await parent.runInboxPoll();
+      assert.equal(parent.sentMessages.length, 2);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("invalid and foreign worker messages are quarantined without blocking valid messages", async () => {
+  await withWorker(async (worker) => {
+    const sent = await worker.callTool("message_orchestrator", "Valid question");
+    const directory = parentInbox(worker);
+    const valid = JSON.parse(await readFile(join(directory, `${sent.details.messageId}.json`), "utf8"));
+    const invalid = [
+      { ...valid, worker: undefined },
+      { ...valid, worker: { ...valid.worker, orchestrationId: "other-parent" } },
+      { ...valid, worker: { ...valid.worker, sessionId: "unknown-worker" } },
+      { ...valid, worker: { ...valid.worker, gitCommonDir: "/other/repo/.git" } },
+      { ...valid, worker: { ...valid.worker, createdAt: "yesterday" } },
+      { ...valid, worker: { ...valid.worker, createdAt: Number.MAX_SAFE_INTEGER } },
+    ];
+    for (const [index, envelope] of invalid.entries()) {
+      await writeFile(join(directory, `bad-${index}.json`), JSON.stringify({ ...envelope, id: `bad-${index}` }));
+    }
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /Valid question/);
+      assert.deepEqual((await readdir(directory)).sort(), invalid.map((_, index) => `bad-${index}.json.invalid`));
+      assert.ok(parent.savedStates.some((state) => state.lastError?.includes("Could not read worker messages")));
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("version 4 pending orchestrator messages migrate without losing the pending delivery", async () => {
+  await withWorker(async (worker) => {
+    const saved = worker.savedStates.at(-1);
+    const message = { id: "legacy-message", text: "Legacy correction" };
+    const delivery = {
+      id: "legacy-delivery", message: "Legacy correction\n<!-- pr-watch-delivery:legacy-delivery -->",
+      pendingPrUpdates: [], pendingOrchestratorMessages: [message],
+    };
+    await worker.shutdown();
+    worker.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: {
+      ...saved, pendingMessages: undefined, deliveredMessageIds: undefined,
+      pendingOrchestratorMessages: [message], deliveredOrchestratorMessageIds: ["already-delivered"], pendingDelivery: delivery,
+    } }]);
+    await worker.startSession("resume");
+    assert.equal(worker.sentMessages.length, 1);
+    assert.match(worker.sentMessages[0]!, /Legacy correction/);
+    assert.deepEqual(worker.savedStates.at(-1)?.pendingMessages, []);
+    assert.deepEqual(worker.savedStates.at(-1)?.deliveredMessageIds, ["already-delivered", "legacy-message"]);
+    assert.equal(worker.savedStates.at(-1)?.pendingOrchestratorMessages, undefined);
+  });
+});
 
 const messageWorker = join(import.meta.dirname, "../../../../.agents/skills/orchestrator/scripts/message-worker");
 
@@ -1218,8 +1546,8 @@ test("message-worker steers a running worker once, without waiting for it to set
       /Message from the orchestrator:\n\nAddress review 77 on the retry loop\./,
     );
     assert.deepEqual(await readdir(harness.workerInbox("session-123", "worker-session")), []);
-    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
-    assert.equal(harness.savedStates.at(-1)?.deliveredOrchestratorMessageIds?.length, 1);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
+    assert.equal(harness.savedStates.at(-1)?.deliveredMessageIds?.length, 1);
 
     harness.setIdle(true);
     await harness.settleAgent();
@@ -1230,6 +1558,7 @@ test("message-worker steers a running worker once, without waiting for it to set
 
 test("a steered orchestrator message dropped by an abort is resent when the run settles", async () => {
   await withWorker(async (harness) => {
+    harness.setMessageDelivery(false);
     await harness.startAgent();
     const queued = runMessageWorker(["ticket-one", "Revert the schema change."]);
     assert.equal(queued.status, 0, queued.stderr);
@@ -1237,13 +1566,14 @@ test("a steered orchestrator message dropped by an abort is resent when the run 
     assert.equal(harness.sentMessages.length, 1);
 
     // Esc clears Pi's steering queue before the message reaches the transcript.
-    harness.setBranchEntries([]);
+    assert.equal(harness.savedStates.at(-1)?.pendingMessages.length, 1);
+    harness.setMessageDelivery(true);
     harness.setIdle(true);
     await harness.settleAgent();
     assert.equal(harness.sentMessages.length, 2);
     assert.deepEqual(harness.sentMessageOptions[1], { triggerTurn: true });
     assert.match(harness.sentMessages[1] ?? "", /Message from the orchestrator:\n\nRevert the schema change\./);
-    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
 
     await harness.settleAgent();
     assert.equal(harness.sentMessages.length, 2);
@@ -1259,7 +1589,7 @@ test("message-worker starts a turn for an idle worker", async () => {
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true });
     assert.match(harness.sentMessages[0] ?? "", /Message from the orchestrator:\n\nUpdate onto the landing branch\./);
-    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
   });
 });
 
@@ -1271,12 +1601,12 @@ test("orchestrator messages wait out a busy session with no run, then steer the 
     assert.equal(queued.status, 0, queued.stderr);
     await harness.runInboxPoll();
     assert.deepEqual(harness.sentMessages, []);
-    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
+    assert.equal(harness.savedStates.at(-1)?.pendingMessages?.length, 1);
 
     await harness.startAgent();
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
-    assert.deepEqual(harness.savedStates.at(-1)?.pendingOrchestratorMessages, []);
+    assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
   });
 });
 
@@ -1288,7 +1618,7 @@ test("paused PR Watch holds orchestrator messages for a running worker", async (
     assert.equal(queued.status, 0, queued.stderr);
     await harness.runInboxPoll();
     assert.deepEqual(harness.sentMessages, []);
-    assert.equal(harness.savedStates.at(-1)?.pendingOrchestratorMessages?.length, 1);
+    assert.equal(harness.savedStates.at(-1)?.pendingMessages?.length, 1);
   });
 });
 
