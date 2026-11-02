@@ -7,7 +7,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CustomMessageComponent, initTheme, type MessageRenderer } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, TuiAltScreen, stripTerminalSequences, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { installActivityView } from "../compact-activity/index.ts";
 
 import prWatch, {
   commandTargets,
@@ -566,6 +567,190 @@ test("PR Watch messages collapse without a background and expand without changin
     assert.deepEqual(plain(), ["", "   ▸ pr-watch-notification"]);
     assert.deepEqual(message, original, "only display changes; the transcript/model payload stays intact");
   }
+});
+
+test("Compact Tools toggles PR Watch notifications by clicking their title in either state", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  for (const initiallyExpanded of [false, true]) {
+    const notice = new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+      content: "Checks failed for PR #104.", display: true, timestamp: 0 }, renderer);
+    notice.setExpanded(initiallyExpanded);
+    const chat = new Container();
+    chat.children = [new Text("Earlier transcript", 0, 0), notice];
+    let redraws = 0;
+    installActivityView(chat, () => { redraws++; }, (text) => text, () => false);
+    const render = () => chat.render(80).map(stripTerminalSequences);
+    const clickTitle = () => {
+      const output = render();
+      const y = output.findIndex((line) => line.includes("pr-watch-notification"));
+      const event = { type: "click", button: "left", x: 5, y, screenX: 5, screenY: y,
+        width: 80, height: output.length } as TuiMouseEvent;
+      assert.equal(chat.handleMouse(event)?.handled, true, "the PR notification title must handle the click");
+    };
+    clickTitle();
+    assert.equal(render().join("\n").includes("Checks failed"), !initiallyExpanded);
+    clickTitle();
+    assert.equal(render().join("\n").includes("Checks failed"), initiallyExpanded);
+    assert.equal(redraws, 2);
+  }
+});
+
+test("expanded PR notifications have a text-only bottom collapse control", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  const message = { role: "custom" as const, customType: "pr-watch-harness",
+    content: "Checks failed for PR #104.", display: true, timestamp: 0 };
+  const original = structuredClone(message);
+  const first = new CustomMessageComponent(message, renderer);
+  const second = new CustomMessageComponent(message, renderer);
+  second.setExpanded(true);
+  const chat = new Container();
+  chat.children = [first, second];
+  let redraws = 0;
+  const { view } = installActivityView(chat, () => { redraws++; }, (text) => text, () => false);
+  const render = (width = 80) => chat.render(width).map(stripTerminalSequences).map((line) => line.trimEnd());
+  const click = (x: number, y: number, width = 80, button = "left", clickCount = 1) => chat.handleMouse({
+    type: "click", button, x, y, screenX: x, screenY: y, width, height: render(width).length, clickCount,
+  } as TuiMouseEvent);
+  assert.equal(click(2, 1)?.handled, true);
+  let output = render();
+  assert.equal(output.filter((line) => line === " − collapse").length, 2);
+  const footer = output.indexOf(" − collapse");
+  for (const x of [0, " − collapse".length, 79]) {
+    assert.notEqual(click(x, footer)?.handled, true);
+    assert.deepEqual(render(), output, "blank space must not collapse the notification");
+  }
+  assert.notEqual(click(2, footer, 80, "right")?.handled, true);
+  assert.equal(click(2, footer, 80, "left", 2)?.handled, true, "the second click of a double-click can collapse");
+  output = render();
+  assert.equal(output.filter((line) => line === " − collapse").length, 1);
+  assert.match(first.render(80).map(stripTerminalSequences).join("\n"), /▸ pr-watch-notification/);
+  assert.match(second.render(80).map(stripTerminalSequences).join("\n"), /Checks failed/);
+  assert.equal(redraws, 2);
+
+  first.setExpanded(true);
+  for (const width of [6, 12, 80]) {
+    output = render(width);
+    const y = first.render(width).length;
+    const label = output[y];
+    assert.match(label, /^ − /);
+    assert.ok(visibleWidth(label) <= width);
+    assert.notEqual(click(visibleWidth(label), y, width)?.handled, true);
+    assert.equal(click(2, y, width)?.handled, true, "footer hit area follows resizing");
+    first.setExpanded(true);
+  }
+  first.setOutputPad(3);
+  output = render();
+  assert.equal(click(2, output.indexOf(" − collapse"))?.handled, true, "footer follows payload height changes");
+  assert.deepEqual(message, original, "collapse controls never change the payload");
+  view.enabled = false;
+  assert.doesNotMatch(render().join("\n"), /− collapse/, "full mode retains native rendering");
+});
+
+test("fullscreen PR notifications open and close with consecutive clicks at the same screen position", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  const notice = new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+    content: Array.from({ length: 20 }, (_, i) => `PR detail ${i}`).join("\n\n"), display: true, timestamp: 0 }, renderer);
+  let input!: (data: string) => void;
+  const terminal: Terminal = {
+    columns: 80, rows: 12, kittyProtocolActive: false,
+    start(onInput) { input = onInput; }, stop() {}, async drainInput() {},
+    write() {}, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {},
+    clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+  };
+  const tui = new TuiAltScreen(terminal);
+  const chat = new Container();
+  chat.children = [new Text(Array.from({ length: 20 }, () => "Earlier transcript").join("\n"), 0, 0), notice];
+  installActivityView(chat, () => tui.requestRender(), (text) => text, () => false);
+  tui.addChild(chat);
+  tui.start();
+  try {
+    tui.renderNow();
+    const screen = () => tui.getScreenLines().map(stripTerminalSequences);
+    const y = screen().findIndex((line) => line.includes("▸ pr-watch-notification")) + 1;
+    assert.ok(y > 0);
+    const click = () => {
+      input(`\x1b[<0;3;${y}M`);
+      input(`\x1b[<0;3;${y}m`);
+      tui.renderNow();
+    };
+    click();
+    assert.match(screen()[y - 1], /− collapse/, "the collapse control replaces the title beneath the stationary pointer");
+    click();
+    assert.match(screen()[y - 1], /▸ pr-watch-notification/);
+    assert.doesNotMatch(screen().join("\n"), /PR detail|− collapse/);
+  } finally {
+    tui.stop();
+  }
+});
+
+test("PR notification title hit areas follow wrapping and padding, excluding whitespace and details", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  const notice = new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+    content: "Checks failed for PR #104.", display: true, timestamp: 0 }, renderer);
+  const chat = new Container();
+  chat.addChild(notice);
+  installActivityView(chat, () => {}, (text) => text, () => false);
+  for (const pad of [1, 3]) {
+    notice.setOutputPad(pad);
+    for (const width of [1, 2, 3, 12, 80]) {
+      const render = () => chat.render(width).map(stripTerminalSequences);
+      const click = (x: number, y: number, button = "left") => chat.handleMouse({
+        type: "click", button, x, y, screenX: x, screenY: y, width, height: render().length,
+      } as TuiMouseEvent);
+      const collapsed = render();
+      for (const [y, line] of collapsed.entries()) {
+        if (!line.trim()) continue;
+        const start = line.length - line.trimStart().length;
+        const end = line.trimEnd().length;
+        assert.notEqual(click(start, y, "right")?.handled, true);
+        if (start > 0) assert.notEqual(click(start - 1, y)?.handled, true);
+        if (end < width) assert.notEqual(click(end, y)?.handled, true);
+        assert.deepEqual(render(), collapsed, "padding and right clicks must not toggle");
+        assert.equal(click(start, y)?.handled, true, `wrapped title at width ${width}, row ${y}`);
+        const expanded = render();
+        assert.ok(expanded.length > collapsed.length);
+        assert.notEqual(click(0, 0)?.handled, true, "the spacer is not a toggle");
+        assert.notEqual(click(start, collapsed.length)?.handled, true, "the payload is not a toggle");
+        assert.deepEqual(render(), expanded);
+        assert.equal(click(start, y)?.handled, true);
+        assert.deepEqual(render(), collapsed);
+      }
+    }
+  }
+});
+
+test("mouse-opened PR notifications keep their state across newer blocks and keyboard resets", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  const makeNotice = () => new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+    content: "Checks failed for PR #104.", display: true, timestamp: 0 }, renderer);
+  const notice = makeNotice();
+  const chat = new Container();
+  chat.addChild(notice);
+  const { view } = installActivityView(chat, () => {}, (text) => text, () => false);
+  const render = () => chat.render(80).map(stripTerminalSequences).join("\n");
+  const clickTitle = () => {
+    const height = chat.render(80).length;
+    assert.equal(chat.handleMouse({ type: "click", button: "left", x: 5, y: 1,
+      screenX: 5, screenY: 1, width: 80, height } as TuiMouseEvent)?.handled, true);
+  };
+  view.toggleLatestGroup();
+  assert.match(render(), /Checks failed/);
+  clickTitle(); // Close the keyboard peek, then explicitly mouse-open it.
+  clickTitle();
+  chat.addChild(makeNotice());
+  assert.match(render(), /Checks failed/);
+  view.toggleLatestGroup();
+  assert.equal(render().match(/Checks failed/g)?.length, 2);
+  view.resetExpansion(false);
+  assert.doesNotMatch(render(), /Checks failed/);
+  view.resetExpansion(true);
+  clickTitle(); // A locally collapsed notification stays collapsed during redraws.
+  assert.equal(render().match(/Checks failed/g)?.length, 1);
 });
 
 test("tracks human feedback of every activity kind", () => {

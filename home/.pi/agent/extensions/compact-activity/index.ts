@@ -58,6 +58,62 @@ function prNotificationState(component: Component): { _expanded: boolean } | und
     : undefined;
 }
 
+// CustomMessageComponent supports setExpanded(), but Pi 1.4 does not give it
+// a mouse toggle. Keep that state on the native component so global/keyboard
+// expansion and title clicks all control the same notification.
+class PrNotificationView extends MouseRegion {
+  private titleRows = new Map<number, { start: number; end: number }>();
+  readonly notification: CustomMessageComponent;
+  private content: Container;
+  private toggle: (control: "title" | "collapse") => void;
+  private style: (text: string) => string;
+
+  constructor(notification: CustomMessageComponent, toggle: (control: "title" | "collapse") => void,
+    style: (text: string) => string) {
+    const content = new Container();
+    super(content, (event) => {
+      const row = this.titleRows.get(event.y);
+      if (event.type !== "click" || event.button !== "left" || !row ||
+          event.x < row.start || event.x >= row.end) return undefined;
+      toggle("title");
+      return { handled: true };
+    });
+    this.notification = notification;
+    this.content = content;
+    this.toggle = toggle;
+    this.style = style;
+  }
+
+  render(width: number): string[] {
+    this.content.children = [this.notification];
+    if (prNotificationState(this.notification)!._expanded) {
+      const line = truncateToWidth(this.style(" − collapse"), width);
+      const labelWidth = visibleWidth(line);
+      this.content.addChild(new MouseRegion(new Text(line, 0, 0), (event) => {
+        if (event.type !== "click" || event.button !== "left" || event.x < 1 || event.x >= labelWidth) return undefined;
+        this.toggle("collapse");
+        return { handled: true };
+      }));
+    }
+    const lines = super.render(width);
+    this.titleRows.clear();
+    let remaining = `${prNotificationState(this.notification)!._expanded ? "▾" : "▸"} pr-watch-notification`;
+    // Measure the actual rendered title, including wrapped rows and outputPad.
+    // Stop before the payload: clicking details must still select text/open links.
+    for (const [y, line] of lines.entries()) {
+      const plain = stripTerminalSequences(line);
+      const text = plain.trim();
+      if (!text) continue;
+      if (!remaining.startsWith(text)) break;
+      const start = visibleWidth(plain) - visibleWidth(plain.trimStart());
+      this.titleRows.set(y, { start, end: start + visibleWidth(text) });
+      remaining = remaining.slice(text.length).trimStart();
+      if (!remaining) break;
+    }
+    return lines;
+  }
+}
+
 function noticeText(component: Component | undefined): string | undefined {
   if (!(component instanceof Text) || component.constructor.name !== "ThemedText") return undefined;
   // Pi 1.4 showStatus/showWarning use this native component for UI notices.
@@ -233,6 +289,7 @@ export class ActivityView extends Container {
   private shortcutGlobalExpanded = false;
   private trace?: ActivityTrace;
   private notificationStates = new WeakMap<Component, boolean>();
+  private notificationViews = new WeakMap<CustomMessageComponent, PrNotificationView>();
 
   private source: Container;
   private redraw: () => void;
@@ -395,6 +452,20 @@ export class ActivityView extends Container {
             kind: state.toolName === "read" ? "read" : state.toolName === "edit" || state.toolName === "write" ? "edit" : "command",
             images: state.imageComponents,
           } }];
+      } else if (child instanceof CustomMessageComponent && notification) {
+        let detail = this.notificationViews.get(child);
+        if (!detail) {
+          detail = new PrNotificationView(child, (control) => {
+            const expanded = control === "collapse" ? false : !prNotificationState(child)!._expanded;
+            child.setExpanded(expanded);
+            if (this.shortcutBlock === child) this.shortcutBlock = undefined;
+            this.trace?.record("notification-expansion", { notification: this.trace.id(child),
+              reason: control === "collapse" ? "mouse-collapse" : "mouse-title", expanded });
+            this.redraw();
+          }, this.style);
+          this.notificationViews.set(child, detail);
+        }
+        parts = [{ component: detail }];
       } else parts = [{ component: child }];
       for (const part of parts) {
         if ("activity" in part) members.push(part.activity);
@@ -421,7 +492,8 @@ export class ActivityView extends Container {
   }
 
   private latestBlock(): ActivityGroup | CustomMessageComponent | undefined {
-    return this.children.filter((child): child is ActivityGroup | CustomMessageComponent =>
+    return this.children.map((child) => child instanceof PrNotificationView ? child.notification : child)
+      .filter((child): child is ActivityGroup | CustomMessageComponent =>
       child instanceof ActivityGroup || prNotificationState(child) !== undefined).at(-1);
   }
 
