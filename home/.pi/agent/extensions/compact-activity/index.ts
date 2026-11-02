@@ -20,6 +20,7 @@ import {
   type TUI,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
+import { notificationLabelFromDetails } from "../pr-watch.ts";
 import { CompactToolView, type ToolState } from "./tool-view.ts";
 import { ImageGrid } from "./image-grid.ts";
 import { ActivityTrace } from "./trace.ts";
@@ -50,11 +51,13 @@ type Split = {
 
 // Pi 1.4 keeps custom-message identity/expansion on the native component.
 // Unknown shapes and other injected message types are not shortcut targets.
-function prNotificationState(component: Component): { _expanded: boolean } | undefined {
+type PrNotificationState = { message: { details?: unknown }; _expanded: boolean };
+
+function prNotificationState(component: Component): PrNotificationState | undefined {
   if (!(component instanceof CustomMessageComponent)) return undefined;
   const state = component as unknown as { message?: { customType?: string }; _expanded?: boolean };
   return state.message?.customType === "pr-watch-harness" && typeof state._expanded === "boolean"
-    ? state as { _expanded: boolean }
+    ? state as PrNotificationState
     : undefined;
 }
 
@@ -97,7 +100,8 @@ class PrNotificationView extends MouseRegion {
     }
     const lines = super.render(width);
     this.titleRows.clear();
-    let remaining = `${prNotificationState(this.notification)!._expanded ? "▾" : "▸"} pr-watch-notification`;
+    const state = prNotificationState(this.notification)!;
+    let remaining = `${state._expanded ? "▾" : "▸"} ${notificationLabelFromDetails(state.message.details)}`;
     // Measure the actual rendered title, including wrapped rows and outputPad.
     // Stop before the payload: clicking details must still select text/open links.
     for (const [y, line] of lines.entries()) {

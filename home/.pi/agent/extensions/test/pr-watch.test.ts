@@ -62,6 +62,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
   } | undefined;
   const sentMessages: string[] = [];
   const sentMessageOptions: unknown[] = [];
+  const sentMessageDetails: unknown[] = [];
   let autoDeliverMessages = true;
   const queuedMessages: Array<{ customType: string; content: string; display: boolean }> = [];
   const savedStates: any[] = [];
@@ -143,9 +144,10 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
       savedStates.push(structuredClone(data));
       options.sessionManager?.appendCustomEntry(_customType, structuredClone(data));
     },
-    sendMessage(message: { customType: string; content: string; display: boolean }, deliveryOptions?: unknown): void {
+    sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, deliveryOptions?: unknown): void {
       sentMessages.push(message.content);
       sentMessageOptions.push(deliveryOptions);
+      sentMessageDetails.push(message.details);
       if (!autoDeliverMessages) {
         queuedMessages.push(message);
         return;
@@ -474,6 +476,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     },
     sentMessages,
     sentMessageOptions,
+    sentMessageDetails,
     savedStates,
     notifications,
     statuses,
@@ -597,6 +600,39 @@ test("PR Watch messages collapse without a background and expand without changin
     assert.deepEqual(plain(), ["", "   ▸ pr-watch-notification"]);
     assert.deepEqual(message, original, "only display changes; the transcript/model payload stays intact");
   }
+});
+
+test("coordination messages render with their sender's label; unlabeled notifications keep the PR Watch label", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  for (const [details, label] of [
+    [{ label: "orchestrator-message" }, "orchestrator-message"],
+    [{ label: "worker-message" }, "worker-message"],
+    [{ label: "pr-watch-notification" }, "pr-watch-notification"],
+    [undefined, "pr-watch-notification"],
+    [{ label: "unknown" }, "pr-watch-notification"],
+  ] as const) {
+    const component = new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+      content: "Message body", display: true, details, timestamp: 0 }, renderer);
+    assert.deepEqual(component.render(80).map(stripTerminalSequences).map((line) => line.trimEnd()), ["", ` \u25b8 ${label}`]);
+  }
+});
+
+test("Compact Tools toggles labeled coordination messages by clicking their title", () => {
+  initTheme("dark");
+  const renderer = createHarness().messageRenderers.get("pr-watch-harness")!;
+  const notice = new CustomMessageComponent({ role: "custom", customType: "pr-watch-harness",
+    content: "Message from the orchestrator.", display: true, details: { label: "orchestrator-message" }, timestamp: 0 },
+    renderer);
+  const chat = new Container();
+  chat.children = [new Text("Earlier transcript", 0, 0), notice];
+  installActivityView(chat, () => {}, (text) => text, () => false);
+  const output = chat.render(80).map(stripTerminalSequences);
+  const y = output.findIndex((line) => line.includes("orchestrator-message"));
+  const event = { type: "click", button: "left", x: 5, y, screenX: 5, screenY: y,
+    width: 80, height: output.length } as TuiMouseEvent;
+  assert.equal(chat.handleMouse(event)?.handled, true);
+  assert.match(chat.render(80).map(stripTerminalSequences).join("\n"), /\u25be orchestrator-message[\s\S]*Message from the orchestrator\./);
 });
 
 test("Compact Tools toggles PR Watch notifications by clicking their title in either state", () => {
@@ -1073,12 +1109,13 @@ test("orchestration delivers each latest no-PR settlement once and suppresses wa
     });
     await harness.startSession();
 
-    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+    assert.match(harness.sentMessages[0] ?? "", /^<worker-message>\nNot a user message\.[\s\S]*<\/worker-message>/);
     assert.match(
       harness.sentMessages[0] ?? "",
       /worker 009-worker-recovery stopped without opening a pr and responded with the following message:\n\nA required credential is missing\./,
     );
     assert.match(harness.sentMessages[0] ?? "", /<!-- pr-watch-delivery:/);
+    assert.deepEqual(harness.sentMessageDetails[0], { label: "worker-message" });
 
     await harness.runPoll();
     assert.equal(harness.sentMessages.length, 1);
@@ -1273,12 +1310,13 @@ for (const running of [false, true]) {
         await parent.runInboxPoll();
         assert.equal(parent.sentMessages.length, 1);
         const notice = parent.sentMessages[0]!;
-        assert.match(notice, /^<pr-watch-harness-notification>\nNot a user message\./);
+        assert.match(notice, /^<worker-message>\nNot a user message\.[\s\S]*<\/worker-message>/);
         assert.match(notice, /Message from worker repos@ticket-one:/);
         assert.match(notice, /Session: worker-session\nRepository: \/work\/repos\/\.git/);
         assert.ok(notice.includes(`Message ID: ${result.details.messageId}`));
         assert.match(notice, /Help determine the next diagnostic step\.\n\nContext:\nCI still fails after two fixes; local checks pass\./);
         assert.deepEqual(parent.sentMessageOptions[0], running ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: true });
+        assert.deepEqual(parent.sentMessageDetails[0], { label: "worker-message" });
         assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
         assert.deepEqual(await readdir(parentInbox(parent)), []);
         await parent.runInboxPoll();
@@ -1361,6 +1399,8 @@ test("batched worker messages retain each sender's session and branch", async ()
     }, { stateRoot: first.stateRoot, sessionId: "worker-two" });
     await withOrchestrator(async (parent) => {
       assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /^<worker-message>\nNot a user message\.\n\nMultiple messages arrived\./);
+      assert.deepEqual(parent.sentMessageDetails[0], { label: "worker-message" });
       assert.match(parent.sentMessages[0]!, /worker repos@ticket-one:\nSession: worker-session/);
       assert.match(parent.sentMessages[0]!, /worker repos@ticket-two:\nSession: worker-two/);
       assert.match(parent.sentMessages[0]!, /First worker's question/);
@@ -1559,7 +1599,8 @@ test("message-worker steers a running worker once, without waiting for it to set
     await harness.runInboxPoll();
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
-    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
+    assert.deepEqual(harness.sentMessageDetails[0], { label: "orchestrator-message" });
+    assert.match(harness.sentMessages[0] ?? "", /^<orchestrator-message>\nNot a user message\.[\s\S]*<\/orchestrator-message>/);
     assert.match(
       harness.sentMessages[0] ?? "",
       /Message from the orchestrator:\n\nAddress review 77 on the retry loop\./,
@@ -1607,6 +1648,7 @@ test("message-worker starts a turn for an idle worker", async () => {
     await harness.runInboxPoll();
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true });
+    assert.deepEqual(harness.sentMessageDetails[0], { label: "orchestrator-message" });
     assert.match(harness.sentMessages[0] ?? "", /Message from the orchestrator:\n\nUpdate onto the landing branch\./);
     assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
   });
@@ -1626,6 +1668,25 @@ test("orchestrator messages wait out a busy session with no run, then steer the 
     assert.equal(harness.sentMessages.length, 1);
     assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true, deliverAs: "steer" });
     assert.deepEqual(harness.savedStates.at(-1)?.pendingMessages, []);
+  });
+});
+
+test("a batch mixing PR updates and orchestrator messages keeps the PR Watch tag and label", async () => {
+  await withWorker(async (harness) => {
+    await harness.activate(104);
+    harness.setIdle(false);
+    harness.checks.set(104, [failingCheck("104")]);
+    await harness.runPoll();
+    assert.equal(runMessageWorker(["ticket-one", "Fix the failing check first."]).status, 0);
+    await harness.runInboxPoll();
+    assert.deepEqual(harness.sentMessages, []);
+
+    harness.setIdle(true);
+    await harness.settleAgent();
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>\nNot a user message\.\n\nPR watch detected multiple updates\./);
+    assert.match(harness.sentMessages[0] ?? "", /Message from the orchestrator:\n\nFix the failing check first\./);
+    assert.deepEqual(harness.sentMessageDetails[0], { label: "pr-watch-notification" });
   });
 });
 
@@ -3323,6 +3384,7 @@ test("buffers busy updates internally and delivers one batch after the agent set
 
   assert.equal(harness.sentMessages.length, 1);
   assert.deepEqual(harness.sentMessageOptions[0], { triggerTurn: true });
+  assert.deepEqual(harness.sentMessageDetails[0], { label: "pr-watch-notification" });
   assert.match(harness.sentMessages[0] ?? "", /^<pr-watch-harness-notification>/);
   assert.match(harness.sentMessages[0] ?? "", /Not a user message/);
   assert.match(harness.sentMessages[0] ?? "", /CI finished/);

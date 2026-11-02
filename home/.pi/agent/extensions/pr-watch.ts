@@ -228,7 +228,17 @@ type ShaSyncResult = {
 
 const CUSTOM_STATE = "pr-watch-state";
 const NOTIFICATION_TYPE = "pr-watch-harness";
-const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification> blocks as harness notifications, not user messages.`;
+// Coordination traffic shares PR Watch's delivery path; the label tells the
+// reader which kind of message arrived. Mixed batches keep the generic label.
+const NOTIFICATION_LABELS = ["pr-watch-notification", "orchestrator-message", "worker-message"] as const;
+type NotificationLabel = (typeof NOTIFICATION_LABELS)[number];
+// The model-facing wrapper tag for each label.
+const NOTIFICATION_TAGS: Record<NotificationLabel, string> = {
+  "pr-watch-notification": "pr-watch-harness-notification",
+  "orchestrator-message": "orchestrator-message",
+  "worker-message": "worker-message",
+};
+const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification>, <orchestrator-message>, and <worker-message> blocks as harness notifications, not user messages; the latter two carry messages from this session's orchestrator or workers.`;
 // Every session polls on its own and all of them share one GitHub rate limit,
 // so a session waits longer the more PRs it watches.
 const POLL_INTERVAL_MS = 60_000;
@@ -490,11 +500,31 @@ function isBotActivity(activity: Activity): boolean {
   return author?.is_bot === true || author?.type === "Bot" || login.endsWith("[bot]");
 }
 
+export function notificationLabelFromDetails(details: unknown): NotificationLabel {
+  const label = isObject(details) ? details.label : undefined;
+  return NOTIFICATION_LABELS.find((known) => known === label) ?? "pr-watch-notification";
+}
+
+function notificationLabel({
+  pendingPrUpdates = [],
+  pendingShaUpdate,
+  pendingWorkerSettlements = [],
+  pendingMessages = [],
+}: Partial<Omit<PendingDelivery, "id" | "message">>): NotificationLabel {
+  if (pendingPrUpdates.length > 0 || pendingShaUpdate) return "pr-watch-notification";
+  const fromWorkers = pendingWorkerSettlements.length + pendingMessages.filter((message) => message.worker).length;
+  const fromOrchestrator = pendingMessages.filter((message) => !message.worker).length;
+  if (fromWorkers > 0 && fromOrchestrator === 0) return "worker-message";
+  if (fromOrchestrator > 0 && fromWorkers === 0) return "orchestrator-message";
+  return "pr-watch-notification";
+}
+
 export default function prWatch(pi: ExtensionAPI): void {
   // Rendering only: retain the full harness payload in the transcript/model context.
   pi.registerMessageRenderer(NOTIFICATION_TYPE, (message, { expanded, outputPad }, theme) => {
     const box = new Box(outputPad, 0);
-    box.addChild(new Text(theme.fg("customMessageLabel", `${expanded ? "▾" : "▸"} pr-watch-notification`), 0, 0));
+    const label = notificationLabelFromDetails(message.details);
+    box.addChild(new Text(theme.fg("customMessageLabel", `${expanded ? "▾" : "▸"} ${label}`), 0, 0));
     if (expanded) {
       const text = typeof message.content === "string"
         ? message.content
@@ -1828,19 +1858,21 @@ export default function prWatch(pi: ExtensionAPI): void {
     return `worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`;
   }
 
-  function asHarnessNotification(body: string): string {
-    if (body.startsWith("<pr-watch-harness-notification>")) return body;
-    return `<pr-watch-harness-notification>\nNot a user message.\n\n${body}\n</pr-watch-harness-notification>`;
+  function asHarnessNotification(body: string, label: NotificationLabel): string {
+    if (Object.values(NOTIFICATION_TAGS).some((tag) => body.startsWith(`<${tag}>`))) return body;
+    const tag = NOTIFICATION_TAGS[label];
+    return `<${tag}>\nNot a user message.\n\n${body}\n</${tag}>`;
   }
 
-  function buildBatchMessage(messages: string[]): string {
+  function buildBatchMessage(messages: string[], label: NotificationLabel): string {
+    const heading = label === "pr-watch-notification" ? "PR watch detected multiple updates." : "Multiple messages arrived.";
     const body =
       messages.length === 1
         ? messages[0] ?? ""
-        : `PR watch detected multiple updates.\n\n${messages
+        : `${heading}\n\n${messages
             .map((message, index) => `## Update ${index + 1}\n\n${message}`)
             .join("\n\n---\n\n")}`;
-    return asHarnessNotification(body);
+    return asHarnessNotification(body, label);
   }
 
   function pendingPr(watched: WatchedPrState): PendingPrUpdate {
@@ -1942,7 +1974,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (pendingShaUpdate) messages.push(buildShaChecksMessage(pendingShaUpdate));
     for (const settlement of pendingWorkerSettlements) messages.push(buildWorkerSettlementMessage(settlement));
     for (const message of pendingMessages) messages.push(buildCoordinationMessage(message));
-    return buildBatchMessage(messages);
+    return buildBatchMessage(
+      messages,
+      notificationLabel({ pendingPrUpdates, pendingShaUpdate, pendingWorkerSettlements, pendingMessages }),
+    );
   }
 
   function deliveryMarker(id: string): string {
@@ -2027,14 +2062,16 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (messages.length === 0) return;
 
     const marker = `<!-- pr-watch-steer:${randomUUID()} -->`;
+    const label = notificationLabel({ pendingMessages: messages });
     (state.pendingSteers ??= []).push({ marker, messageIds: messages.map((message) => message.id) });
     save();
     try {
       pi.sendMessage(
         {
           customType: NOTIFICATION_TYPE,
-          content: `${buildBatchMessage(messages.map(buildCoordinationMessage))}\n\n${marker}`,
+          content: `${buildBatchMessage(messages.map(buildCoordinationMessage), label)}\n\n${marker}`,
           display: true,
+          details: { label },
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
@@ -2092,12 +2129,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (deliveryAttemptedId === state.pendingDelivery.id) return;
 
     deliveryAttemptedId = state.pendingDelivery.id;
+    const label = notificationLabel(state.pendingDelivery);
     try {
       pi.sendMessage(
         {
           customType: NOTIFICATION_TYPE,
-          content: asHarnessNotification(state.pendingDelivery.message),
+          content: asHarnessNotification(state.pendingDelivery.message, label),
           display: true,
+          details: { label },
         },
         { triggerTurn: true },
       );
