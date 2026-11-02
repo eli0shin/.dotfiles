@@ -137,6 +137,10 @@ type WatchState = {
   resolvedOrchestrationPrUrls?: string[];
   resolvedWorkerSettlementIds?: string[];
   mergedBranches?: string[];
+  // PR identity keys this session owns: it opened the PR, or was on its head
+  // branch. Every session shares one GitHub login, so the PR author alone cannot
+  // tell which session owns a PR.
+  ownedPrs?: string[];
   selfLogin?: string;
   lastPollAt?: number;
   lastNotifyAt?: number;
@@ -213,6 +217,8 @@ type DiscoverOptions = {
   ignoreUnresolved?: boolean;
   // Explicit opt-in overrides automatic enrollment rules, but requires an open PR.
   explicit?: boolean;
+  // The command that named the PR shows this session owns it (e.g. it opened the PR).
+  owned?: boolean;
 };
 
 type BranchResult = { ok: true; branch: string } | { ok: false; error: string };
@@ -238,7 +244,7 @@ const NOTIFICATION_TAGS: Record<NotificationLabel, string> = {
   "orchestrator-message": "orchestrator-message",
   "worker-message": "worker-message",
 };
-const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when action is needed. Treat <pr-watch-harness-notification>, <orchestrator-message>, and <worker-message> blocks as harness notifications, not user messages; the latter two carry messages from this session's orchestrator or workers.`;
+const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when a watched PR or commit changes. A notification that only reports status asks for nothing: act on it only if that PR is part of your current task. Treat <pr-watch-harness-notification>, <orchestrator-message>, and <worker-message> blocks as harness notifications, not user messages; the latter two carry messages from this session's orchestrator or workers.`;
 // Every session polls on its own and all of them share one GitHub rate limit,
 // so a session waits longer the more PRs it watches.
 const POLL_INTERVAL_MS = 60_000;
@@ -820,7 +826,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const repo = await ensureCurrentRepo(ctx);
     const branch = state.workerBranch;
     if (!repo || !branch || hasWatchedPrForBranch(repo, branch)) return;
-    await discover(ctx, branch, { ignoreUnresolved: true });
+    await discover(ctx, branch, { ignoreUnresolved: true, owned: true });
   }
 
   async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
@@ -1133,10 +1139,12 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   // A later merge or direct default-branch push replaces the previous fixed SHA.
-  // An orchestrator reaches this only for its worker PRs.
+  // An orchestrator reaches this only for its worker PRs. Any other session
+  // follows only the merges of PRs it owns.
   function startMergeWatch(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
     if (state.workerOrchestrationSessionId) return false;
     if (!merged.sha || !state.selfLogin || pr.authorLogin !== state.selfLogin) return false;
+    if (!state.orchestrationSessionId && !isOwnedPr(pr)) return false;
 
     const current = state.watchedSha?.mergedPr;
     if (current && state.watchedSha?.sha === merged.sha) return true;
@@ -1155,6 +1163,34 @@ export default function prWatch(pi: ExtensionAPI): void {
   function handleMergedPr(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
     recordMergedBranch(pr);
     return startMergeWatch(pr, merged);
+  }
+
+  function isOwnedPr(pr: Pick<WatchedPr, "repo" | "number">): boolean {
+    return (state.ownedPrs ?? []).includes(prIdentityKey(pr));
+  }
+
+  // Ownership is sticky: once a session opens a PR or works on its branch, it
+  // keeps owning the PR after it switches branches.
+  async function recordOwnership(
+    pr: Pick<WatchedPr, "repo" | "number" | "headRepo" | "branch">,
+    owned: boolean | undefined,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    if (isOwnedPr(pr)) return;
+    if (!owned && !(await isSessionBranch(pr, ctx))) return;
+    state.ownedPrs = [...(state.ownedPrs ?? []), prIdentityKey(pr)];
+  }
+
+  // Shell commands can cd into another worktree, but the session's own checkout
+  // is where it works.
+  async function isSessionBranch(
+    pr: Pick<WatchedPr, "repo" | "headRepo" | "branch">,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    const repo = await ensureCurrentRepo(ctx);
+    if (!repo || (pr.headRepo ?? pr.repo).toLowerCase() !== repo.toLowerCase()) return false;
+    const current = await currentBranchName();
+    return current.ok && current.branch === pr.branch;
   }
 
   async function watchCurrentBranch(
@@ -1325,6 +1361,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         headRepo: pr.headRepository?.nameWithOwner,
         authorLogin: pr.author?.login,
       };
+      await recordOwnership(watchedPr, options.owned, ctx);
       const watchedKey = prIdentityKey(watchedPr);
       const existing = state.watchedPrs.find((candidate) => prIdentityKey(candidate.pr) === watchedKey);
       const watched = existing ?? { pr: watchedPr, seenActivityIds: [] };
@@ -1369,6 +1406,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         (options.allowMergeWatch && (!state.orchestrationSessionId || isOrchestrationMember(mergedPr)));
       if (mayWatchMerge) {
         await refreshSelfLogin(ctx);
+        await recordOwnership(mergedPr, options.owned, ctx);
         const merged = { sha: pr.mergeCommit?.oid, mergedAt: pr.mergedAt ?? undefined };
         if (handleMergedPr(mergedPr, merged)) {
           removePr(mergedPr);
@@ -1788,18 +1826,16 @@ export default function prWatch(pi: ExtensionAPI): void {
     return activities.map((activity) => `- ${activity.id} by ${activity.authorLogin ?? "unknown"}`).join("\n");
   }
 
-  function prWatchMode(watched: WatchedPrState): "author" | "reviewer" | "unknown" {
-    if (!watched.pr.authorLogin || !state.selfLogin) return "unknown";
-    return watched.pr.authorLogin === state.selfLogin ? "author" : "reviewer";
+  // reviewer: someone else authored the PR. author: this session owns it.
+  // observer: any other PR, including the user's own PRs that other sessions
+  // own; its notices report status without asking for action.
+  function prWatchMode(watched: WatchedPrState): "author" | "reviewer" | "observer" {
+    if (watched.pr.authorLogin && state.selfLogin && watched.pr.authorLogin !== state.selfLogin) return "reviewer";
+    return isOwnedPr(watched.pr) ? "author" : "observer";
   }
 
   function reviewerSafetyNotice(watched: WatchedPrState): string {
-    const authorLogin = watched.pr.authorLogin;
-    if (prWatchMode(watched) === "reviewer") {
-      return `This PR is authored by ${authorLogin}, not you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.`;
-    }
-
-    return "I could not determine whether this PR is authored by you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.";
+    return `This PR is authored by ${watched.pr.authorLogin}, not you. Do not edit files, commit, or push unless the user explicitly asks you to take over implementation. Do not post comments or reviews, approve/request changes, merge/close/reopen, or otherwise mutate the PR unless the user explicitly asks for that specific action.`;
   }
 
   function prIdentity(watched: WatchedPrState): string {
@@ -1819,11 +1855,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     const authorLogin = watched.pr.authorLogin ?? "unknown";
-    const headline =
-      prWatchMode(watched) === "reviewer"
-        ? `CI finished for ${identity}, which you are reviewing.`
-        : `CI finished for watched ${identity}.`;
-    return `${headline}\n\n${reviewerSafetyNotice(watched)}\n\nPlease inspect the CI result as reviewer context. Summarize whether CI passed or failed, whether the result affects your review, and whether you recommend any follow-up comment.\n\n${details}\nAuthor: ${authorLogin}`;
+    if (prWatchMode(watched) === "observer") {
+      return `CI finished for ${identity}.\n\n${details}\nAuthor: ${authorLogin}`;
+    }
+    return `CI finished for ${identity}, which you are reviewing.\n\n${reviewerSafetyNotice(watched)}\n\nPlease inspect the CI result as reviewer context. Summarize whether CI passed or failed, whether the result affects your review, and whether you recommend any follow-up comment.\n\n${details}\nAuthor: ${authorLogin}`;
   }
 
   function buildPrFeedbackMessage(watched: WatchedPrState, triggeringActivities: TrackedActivity[]): string {
@@ -1840,11 +1875,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     const authorLogin = watched.pr.authorLogin ?? "unknown";
-    const headline =
-      prWatchMode(watched) === "reviewer"
-        ? `New activity was added for ${identity}, which you are reviewing.`
-        : `New activity was added for watched ${identity}.`;
-    return `${headline}\n\n${reviewerSafetyNotice(watched)}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${authorLogin}`;
+    if (prWatchMode(watched) === "observer") {
+      return `New activity was added for ${identity}.\n\nActivity:\n${activityList}\n\n${details}\nAuthor: ${authorLogin}`;
+    }
+    return `New activity was added for ${identity}, which you are reviewing.\n\n${reviewerSafetyNotice(watched)}\n\nTriggering activity:\n${activityList}\n\nPlease inspect these specific items as reviewer context. Summarize what changed and whether it affects your review. If a reply or follow-up review comment would be useful, say what you would write; do not assume you should modify the PR.\n\n${details}\nAuthor: ${authorLogin}`;
   }
 
   function buildCoordinationMessage(message: CoordinationMessage): string {
@@ -1935,6 +1969,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     const details = `Branch: ${watched.pr.branch}\nPR: ${watched.pr.url}`;
     if (prWatchMode(watched) === "author") {
       return `PR #${watched.pr.number} now has merge conflicts that need to be resolved.\n\nUse repos to resolve the conflicts, then push the resolved branch.\n\n${details}`;
+    }
+    if (prWatchMode(watched) === "observer") {
+      return `PR #${watched.pr.number} now has merge conflicts.\n\n${details}\nAuthor: ${watched.pr.authorLogin ?? "unknown"}`;
     }
     return `PR #${watched.pr.number} now has merge conflicts.\n\n${reviewerSafetyNotice(watched)}\n\nInspect the conflict status as reviewer context and summarize the follow-up needed; do not resolve or push the conflicts yourself.\n\n${details}`;
   }
@@ -2430,6 +2467,10 @@ export default function prWatch(pi: ExtensionAPI): void {
     return /(^|[;&|\n]\s*)gh\s+pr\s+(create|view|ready|edit|checkout)\b/.test(command);
   }
 
+  function isPrCreate(command: string): boolean {
+    return /(^|[;&|\n]\s*)gh\s+pr\s+create\b/.test(command);
+  }
+
   function isStackActivation(command: string): boolean {
     return /(^|[;&|\n]\s*)gh\s+stack\s+(link|submit|push|sync)\b/.test(command);
   }
@@ -2602,8 +2643,12 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (isActivationCommand(command)) {
-      const target = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0] ?? pullRequestUrlFromText(output);
-      await discover(ctx, target);
+      const namedTarget = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0];
+      // Only gh pr create shows this session owns a PR named elsewhere; view,
+      // edit, ready, and checkout also run on PRs other sessions own.
+      await discover(ctx, namedTarget ?? pullRequestUrlFromText(output), {
+        owned: !namedTarget && isPrCreate(command),
+      });
       return;
     }
 
@@ -2618,7 +2663,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       ];
       if (targets.length === 0) await discover(ctx);
       for (const target of targets) {
-        await discover(ctx, target, { ignoreUnresolved: true });
+        await discover(ctx, target, { ignoreUnresolved: true, owned: true });
       }
       return;
     }
@@ -2632,6 +2677,8 @@ export default function prWatch(pi: ExtensionAPI): void {
       const group = isPrMerge(command) ? "pr" : "stack";
       await discover(ctx, commandTargets(command, group, ["merge"])[0], {
         allowMergeWatch: true,
+        // The session that merges a PR checks that its merge deployed.
+        owned: true,
         // A bare gh stack merge number may name a stack rather than a PR.
         ignoreUnresolved: group === "stack",
       });

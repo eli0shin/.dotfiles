@@ -3118,6 +3118,128 @@ test("conflict notification does not tell a reviewer to modify another author's 
   assert.doesNotMatch(harness.sentMessages[0] ?? "", /Use repos to resolve/);
 });
 
+async function lookUpPr(harness: ReturnType<typeof createHarness>, command: string): Promise<void> {
+  await harness.withFakeTimer(() =>
+    harness.handlers.get("tool_result")?.(
+      { toolName: "bash", input: { command }, content: [{ type: "text", text: "{}\n" }] },
+      harness.ctx,
+    ),
+  );
+}
+
+const ACTION_REQUEST = /Use repos|Please inspect|address it|take appropriate action|Do not edit files|reviewing/;
+
+test("the user's own PR that this session only looked up gets status-only notices", async () => {
+  const harness = createHarness();
+  await lookUpPr(harness, "gh pr view 104 -R eli0shin/repos --json comments,reviews");
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+  harness.checks.set(104, [failingCheck("104")]);
+  harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.equal(harness.sentMessages.length, 1);
+  const message = harness.sentMessages[0] ?? "";
+  assert.match(message, /CI finished for branch remove-collapse-command \(PR #104\)\./);
+  assert.match(message, /PR #104 now has merge conflicts\./);
+  assert.match(message, /- review:77 by reviewer/);
+  assert.doesNotMatch(message, ACTION_REQUEST);
+});
+
+test("a PR this session only looked up from another worktree is not owned", async () => {
+  const harness = createHarness();
+  await harness.activate(104, "view");
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /PR #104 now has merge conflicts\./);
+  assert.doesNotMatch(harness.sentMessages[0] ?? "", ACTION_REQUEST);
+});
+
+test("a PR on the session's branch is owned however the session discovered it", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("remove-collapse-command");
+  await lookUpPr(harness, "gh pr view 104 --json comments");
+  harness.setCurrentBranch("another-branch");
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /Use repos to resolve the conflicts/);
+});
+
+test("ownership survives a session restart", async () => {
+  const first = createHarness();
+  await first.activate(104);
+  const saved = first.savedStates.at(-1);
+  assert.deepEqual(saved?.ownedPrs, ["eli0shin/repos#104"]);
+  await first.shutdown();
+
+  const harness = createHarness();
+  harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
+  await harness.startSession("resume");
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /Use repos to resolve the conflicts/);
+});
+
+test("unwatching and rewatching a PR keeps this session's ownership", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  await harness.callTool("unwatch_pr", "104");
+  await harness.callTool("watch_pr", "104");
+  harness.prs.get(104)!.mergeable = "CONFLICTING";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /Use repos to resolve the conflicts/);
+});
+
+test("explicitly watching the user's own PR from another branch is not ownership", async () => {
+  const harness = createHarness();
+  await harness.callTool("watch_pr", "104");
+  harness.checks.set(104, [failingCheck("104")]);
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.match(harness.sentMessages[0] ?? "", /CI finished for branch remove-collapse-command \(PR #104\)\./);
+  assert.doesNotMatch(harness.sentMessages[0] ?? "", ACTION_REQUEST);
+});
+
+test("a merged PR this session does not own does not start a merge-commit watch", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  await lookUpPr(harness, "gh pr view 104 --json comments");
+  harness.prs.get(104)!.state = "MERGED";
+  harness.prs.get(104)!.mergeCommitSha = "merged104";
+
+  await harness.runPoll();
+  await harness.shutdown();
+
+  assert.notEqual(harness.savedStates.at(-1)?.watchedSha?.sha, "merged104");
+  assert.equal(harness.savedStates.at(-1)?.ownedPrs?.length ?? 0, 0);
+});
+
+test("merging a PR the session does not own follows its merge commit", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  harness.prs.get(104)!.state = "MERGED";
+  harness.prs.get(104)!.mergeCommitSha = "merged104";
+
+  await lookUpPr(harness, "gh pr merge 104 --squash");
+  await harness.shutdown();
+
+  assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "merged104");
+});
+
 test("orchestration does not watch its landing branch tip", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");
@@ -4385,7 +4507,7 @@ test("watch tool resumes off and paused modes, while invalid or closed targets f
 test("explicit opt-out cancels a PR's merge-commit watch without restarting it on merge commands", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");
-  await harness.callTool("watch_pr", "104");
+  await harness.activate(104);
   harness.prs.get(104)!.state = "MERGED";
   harness.prs.get(104)!.mergeCommitSha = "merged104";
   await harness.runPoll();
@@ -4428,7 +4550,7 @@ test("opt-out during snapshot enrollment cannot recreate buffered CI", { timeout
 
 test("opt-out during merge CI polling cannot attribute old runs to the replacement SHA", { timeout: 5_000 }, async () => {
   const harness = createHarness();
-  await harness.callTool("watch_pr", "104");
+  await harness.activate(104);
   harness.setIdle(false);
   harness.prs.get(104)!.state = "MERGED";
   harness.prs.get(104)!.mergeCommitSha = "merged104";
