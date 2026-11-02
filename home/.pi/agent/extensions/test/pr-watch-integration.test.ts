@@ -73,7 +73,7 @@ async function startSession(cwd: string, root: string): Promise<AgentSession> {
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
   const { session } = await createAgentSession({
     cwd, agentDir, settingsManager, resourceLoader,
-    sessionManager: SessionManager.inMemory(cwd), tools: ["bash", "watch_pr", "unwatch_pr", "message_orchestrator"],
+    sessionManager: SessionManager.inMemory(cwd), tools: ["bash", "watch_pr", "unwatch_pr", "ask_orchestrator"],
   });
   await session.bindExtensions({ mode: "print", onError: (error) => { throw new Error(JSON.stringify(error)); } });
   return session;
@@ -84,7 +84,7 @@ async function startSession(cwd: string, root: string): Promise<AgentSession> {
 async function runCommand(session: AgentSession, command: string, toolName = "bash"): Promise<void> {
   const toolCall = {
     type: "toolCall", name: toolName, id: `fixture-command-${session.messages.length}`,
-    arguments: toolName === "bash" ? { command } : toolName === "message_orchestrator" ? { message: command } : { pr: command },
+    arguments: toolName === "bash" ? { command } : toolName === "ask_orchestrator" ? { request: command, context: "CI still fails after investigation and attempted repairs." } : { pr: command },
   };
   const model = session.modelRuntime.getModel("openai", "gpt-4o");
   assert.ok(model);
@@ -146,7 +146,7 @@ if (process.argv[2] === "worker") {
     await runCommand(session, automatic ? command : `sh -c '${command}'`);
     assert.deepEqual(watchState(session).watchedPrs.map(({ pr }: any) => pr.number), [104]);
     assert.equal(watchState(session).latestWorkerSettlement.hadWatchedPr, true);
-    await runCommand(session, "Which accepted contract should the repeated failing fixture follow?", "message_orchestrator");
+    await runCommand(session, "Which accepted contract should the repeated failing fixture follow?", "ask_orchestrator");
     if (automatic) await writeFile(join(process.env.REPRO_ROOT!, "ci-complete"), "");
   } finally {
     await stopSession(session);
@@ -251,6 +251,7 @@ esac
         entry.type === "custom_message" && JSON.stringify(entry.content).includes("Message from worker repo@ticket-one:"));
       assert.equal(questions.length, 1);
       assert.match(JSON.stringify(questions[0]), /Which accepted contract/);
+      assert.match(JSON.stringify(questions[0]), /CI still fails after investigation and attempted repairs/);
       assert.equal(session.messages.filter((message) => message.role === "user").length, 1);
       assert.deepEqual(state.pendingMessages, []);
       assert.equal(state.deliveredMessageIds.length, 1);

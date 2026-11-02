@@ -49,7 +49,10 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
   const handlers = new Map<string, (event: any, ctx: any) => Promise<void>>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const messageRenderers = new Map<string, MessageRenderer>();
-  const tools = new Map<string, { execute: (id: string, params: { pr?: string; message?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any> }>();
+  const tools = new Map<string, {
+    parameters: { required?: string[]; properties: Record<string, unknown> };
+    execute: (id: string, params: { pr?: string; request?: string; context?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any>;
+  }>();
   const execCalls: Array<{ command: string; args: string[] }> = [];
   let execGate: {
     matches: (command: string, args: string[]) => boolean;
@@ -444,10 +447,11 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     commands,
     messageRenderers,
     stateRoot,
-    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate" | "message_orchestrator", value?: string) {
+    tools,
+    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate" | "ask_orchestrator", value?: string, context?: string) {
       const tool = tools.get(name);
       assert.ok(tool, `${name} must be registered`);
-      const params = name === "message_orchestrator" ? { message: value } : value === undefined ? {} : { pr: value };
+      const params = name === "ask_orchestrator" ? { request: value, context } : value === undefined ? {} : { pr: value };
       return withFakeTimer(() => tool.execute("manual-watch", params, undefined, undefined, ctx));
     },
     setMessageDelivery(value: boolean) {
@@ -1207,24 +1211,30 @@ function parentInbox(harness: ReturnType<typeof createHarness>): string {
   return join(harness.stateRoot, "session-123", "orchestrator-inbox");
 }
 
-test("message_orchestrator rejects ordinary sessions and orchestrators", async () => {
+test("ask_orchestrator replaces the generic messaging tool and rejects ordinary sessions and orchestrators", async () => {
   const ordinary = createHarness();
-  await assert.rejects(ordinary.callTool("message_orchestrator", "Question"), /requires a worker session/);
+  assert.equal(ordinary.tools.has("message_orchestrator"), false);
+  const parameters = ordinary.tools.get("ask_orchestrator")!.parameters;
+  assert.deepEqual(parameters.required, ["request"]);
+  assert.deepEqual(Object.keys(parameters.properties), ["request", "context"]);
+  await assert.rejects(ordinary.callTool("ask_orchestrator", "Question"), /requires a worker session/);
   await withOrchestrator(async (parent) => {
-    await assert.rejects(parent.callTool("message_orchestrator", "Question"), /requires a worker session/);
+    await assert.rejects(parent.callTool("ask_orchestrator", "Question"), /requires a worker session/);
   });
 });
 
-test("message_orchestrator queues a private envelope using restored worker identity, not launch environment", async () => {
+test("ask_orchestrator queues a private envelope using restored worker identity, not launch environment", async () => {
   await withWorker(async (worker) => {
     const saved = worker.savedStates.at(-1);
     await worker.shutdown();
     worker.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: saved }]);
     await worker.startSession("resume");
     assert.equal(process.env.PI_PARENT_ORCHESTRATION_SESSION_ID, undefined);
-    await assert.rejects(worker.callTool("message_orchestrator", "   "), /non-empty/);
-    await assert.rejects(worker.callTool("message_orchestrator", "x".repeat(16_001)), /at most 16000/);
-    const result = await worker.callTool("message_orchestrator", "  Which contract should win?  ");
+    await assert.rejects(worker.callTool("ask_orchestrator", "   "), /non-empty/);
+    await assert.rejects(worker.callTool("ask_orchestrator", "   ", "Evidence alone is not a request"), /non-empty/);
+    await assert.rejects(worker.callTool("ask_orchestrator", "x".repeat(16_001)), /at most 16000/);
+    await assert.rejects(worker.callTool("ask_orchestrator", "x".repeat(8_000), "y".repeat(8_000)), /at most 16000/);
+    const result = await worker.callTool("ask_orchestrator", "  Which contract should win?  ");
     const { messageId, orchestrationId } = result.details;
     assert.equal(orchestrationId, "session-123");
     const files = await readdir(parentInbox(worker));
@@ -1239,7 +1249,16 @@ test("message_orchestrator queues a private envelope using restored worker ident
     assert.equal((await stat(join(parentInbox(worker), files[0]!))).mode & 0o777, 0o600);
     assert.equal((await stat(parentInbox(worker))).mode & 0o777, 0o700);
     assert.ok(worker.execCalls.every((call) => call.command !== "herdr" && call.command !== "tmux"));
-    assert.match(result.content[0].text, /Queued message/);
+    assert.match(result.content[0].text, /Queued request/);
+  });
+});
+
+test("ask_orchestrator accepts a maximum-length request with blank optional context", async () => {
+  await withWorker(async (worker) => {
+    const request = "x".repeat(16_000);
+    const sent = await worker.callTool("ask_orchestrator", request, "  \n  ");
+    const envelope = JSON.parse(await readFile(join(parentInbox(worker), `${sent.details.messageId}.json`), "utf8"));
+    assert.equal(envelope.text, request);
   });
 });
 
@@ -1250,7 +1269,7 @@ for (const running of [false, true]) {
         if (running) await parent.startAgent();
         // Any attempt to modify the user's draft fails the test.
         Object.assign(parent.ctx.ui, { setEditorText() { assert.fail("must not modify the prompt editor"); } });
-        const result = await worker.callTool("message_orchestrator", "CI still fails after two fixes. Should I change the contract?");
+        const result = await worker.callTool("ask_orchestrator", "Help determine the next diagnostic step.", "  CI still fails after two fixes; local checks pass.  ");
         await parent.runInboxPoll();
         assert.equal(parent.sentMessages.length, 1);
         const notice = parent.sentMessages[0]!;
@@ -1258,7 +1277,7 @@ for (const running of [false, true]) {
         assert.match(notice, /Message from worker repos@ticket-one:/);
         assert.match(notice, /Session: worker-session\nRepository: \/work\/repos\/\.git/);
         assert.ok(notice.includes(`Message ID: ${result.details.messageId}`));
-        assert.match(notice, /CI still fails after two fixes/);
+        assert.match(notice, /Help determine the next diagnostic step\.\n\nContext:\nCI still fails after two fixes; local checks pass\./);
         assert.deepEqual(parent.sentMessageOptions[0], running ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: true });
         assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
         assert.deepEqual(await readdir(parentInbox(parent)), []);
@@ -1271,8 +1290,8 @@ for (const running of [false, true]) {
 
 test("worker messages batch on startup even when the parent was offline", async () => {
   await withWorker(async (worker) => {
-    await worker.callTool("message_orchestrator", "First decision");
-    await worker.callTool("message_orchestrator", "Second decision");
+    await worker.callTool("ask_orchestrator", "First decision");
+    await worker.callTool("ask_orchestrator", "Second decision");
     await withOrchestrator(async (parent) => {
       assert.equal(parent.sentMessages.length, 1);
       assert.match(parent.sentMessages[0]!, /## Update 1/);
@@ -1286,7 +1305,7 @@ test("worker messages batch on startup even when the parent was offline", async 
 
 test("a fresh persistent parent retains inbox files until transcript acknowledgment is on disk", async () => {
   await withWorker(async (worker) => {
-    const sent = await worker.callTool("message_orchestrator", "Do not lose this question on startup");
+    const sent = await worker.callTool("ask_orchestrator", "Do not lose this question on startup");
     const inboxFile = join(parentInbox(worker), `${sent.details.messageId}.json`);
     const sessions = join(worker.stateRoot, "sessions");
     const firstManager = SessionManager.create(worker.stateRoot, sessions);
@@ -1316,7 +1335,7 @@ test("a fresh persistent parent retains inbox files until transcript acknowledgm
 
 test("batches larger than duplicate history are pruned without replaying old inbox files", async () => {
   await withWorker(async (worker) => {
-    const first = await worker.callTool("message_orchestrator", "Batch question");
+    const first = await worker.callTool("ask_orchestrator", "Batch question");
     const directory = parentInbox(worker);
     const template = JSON.parse(await readFile(join(directory, `${first.details.messageId}.json`), "utf8"));
     for (let index = 0; index < 105; index += 1) {
@@ -1335,10 +1354,10 @@ test("batches larger than duplicate history are pruned without replaying old inb
 
 test("batched worker messages retain each sender's session and branch", async () => {
   await withWorker(async (first) => {
-    await first.callTool("message_orchestrator", "First worker's question");
+    await first.callTool("ask_orchestrator", "First worker's question");
     await withWorker(async (second) => {
       second.setCurrentBranch("ticket-two");
-      await second.callTool("message_orchestrator", "Second worker's blocker");
+      await second.callTool("ask_orchestrator", "Second worker's blocker");
     }, { stateRoot: first.stateRoot, sessionId: "worker-two" });
     await withOrchestrator(async (parent) => {
       assert.equal(parent.sentMessages.length, 1);
@@ -1354,7 +1373,7 @@ test("worker messages wait during compaction and paused delivery", async () => {
   await withWorker(async (worker) => {
     await withOrchestrator(async (parent) => {
       parent.setIdle(false); // Busy without an active run: manual compaction.
-      await worker.callTool("message_orchestrator", "Need a decision");
+      await worker.callTool("ask_orchestrator", "Need a decision");
       await parent.runInboxPoll();
       assert.deepEqual(parent.sentMessages, []);
       assert.equal(parent.savedStates.at(-1)?.pendingMessages.length, 1);
@@ -1374,7 +1393,7 @@ test("unobserved worker steers remain durable, are not repeatedly queued, and re
     await withOrchestrator(async (parent) => {
       parent.setMessageDelivery(false);
       await parent.startAgent();
-      const sent = await worker.callTool("message_orchestrator", "Question before proceeding");
+      const sent = await worker.callTool("ask_orchestrator", "Question before proceeding");
       await parent.runInboxPoll();
       assert.equal(parent.savedStates.at(-1)?.pendingMessages.length, 1);
       assert.equal(parent.savedStates.at(-1)?.pendingSteers.length, 1);
@@ -1401,7 +1420,7 @@ test("worker steers observed before a crash are acknowledged on resume without r
     await withOrchestrator(async (parent) => {
       parent.setMessageDelivery(false);
       await parent.startAgent();
-      await worker.callTool("message_orchestrator", "Already reached the transcript");
+      await worker.callTool("ask_orchestrator", "Already reached the transcript");
       await parent.runInboxPoll();
       const saved = parent.savedStates.at(-1);
       await parent.shutdown();
@@ -1425,7 +1444,7 @@ test("worker steers dropped by an abort replay and acknowledge only on transcrip
     await withOrchestrator(async (parent) => {
       parent.setMessageDelivery(false);
       await parent.startAgent();
-      await worker.callTool("message_orchestrator", "Blocked on an ambiguous requirement");
+      await worker.callTool("ask_orchestrator", "Blocked on an ambiguous requirement");
       await parent.runInboxPoll();
       parent.setIdle(true);
       await parent.settleAgent();
@@ -1441,7 +1460,7 @@ test("worker steers dropped by an abort replay and acknowledge only on transcrip
 
 test("invalid and foreign worker messages are quarantined without blocking valid messages", async () => {
   await withWorker(async (worker) => {
-    const sent = await worker.callTool("message_orchestrator", "Valid question");
+    const sent = await worker.callTool("ask_orchestrator", "Valid question");
     const directory = parentInbox(worker);
     const valid = JSON.parse(await readFile(join(directory, `${sent.details.messageId}.json`), "utf8"));
     const invalid = [

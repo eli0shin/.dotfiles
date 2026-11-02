@@ -11,7 +11,7 @@ metadata:
 
 Act as an **event-driven control plane**. Coordinate workers and reviewers. One executable ticket belongs to one ordinary worker session, one stacked `repos` worktree, and one pull request into the orchestration landing branch. Workers publish their ordinary PR Watch membership to the harness, which watches the union of their PRs and injects notifications into this session for relevant PR events. **Yield** by ending the turn instead of blocking on a watch command or repeatedly checking for changes; PR Watch re-enters on relevant activity.
 
-Workers can send labeled inbox notifications with `message_orchestrator` for blockers, repeated CI failures, or judgment questions; reply with `message-worker`.
+Workers request help with `ask_orchestrator`; reply with `message-worker`.
 
 ## Hard boundary
 

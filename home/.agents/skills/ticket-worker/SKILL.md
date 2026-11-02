@@ -20,6 +20,6 @@ Commit and push the changes, then open a PR against the supplied PR base using t
 
 Do not merge the PR or resolve the ticket; the orchestrator owns that.
 
-Use `message_orchestrator({ message: "…" })` for a judgment question, a blocker, or checks that still fail after repeated repair attempts; include the evidence and decision you need, and leave PR creation and routine CI updates to PR Watch.
+Work autonomously within the accepted ticket and repository contracts. Use `ask_orchestrator` when you need help resolving a blocker or making a decision, including checks that remain failing after investigation and attempted repairs. Ask once; follow up when new evidence materially changes the request.
 
 Do not poll the PR or its checks. PR Watch delivers failed CI, merge conflicts, and messages from the orchestrator. It does not deliver passing CI or PR feedback; the orchestrator reviews those and sends you the items to act on. Act on each notification, run the relevant checks and `run_code_review`, then commit and push the fixes.

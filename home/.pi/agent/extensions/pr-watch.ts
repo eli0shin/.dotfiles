@@ -2704,18 +2704,21 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "message_orchestrator",
-    label: "Message orchestrator",
-    description: "Ask your orchestrator a judgment question or report a blocker or repeatedly failing checks. Not for PR creation or routine CI updates. Worker sessions only; sender identity and parent are supplied by the harness.",
+    name: "ask_orchestrator",
+    label: "Ask orchestrator",
+    description: "Request the orchestrator's help resolving a blocker or making a decision needed to advance the assigned work. State the help needed and include relevant evidence and attempted remedies. Worker sessions only; sender identity and parent are supplied by the harness.",
     parameters: Type.Object({
-      message: Type.String({ minLength: 1, maxLength: MAX_WORKER_MESSAGE_LENGTH, description: "Concise question or escalation, with relevant evidence or references" }),
+      request: Type.String({ minLength: 1, maxLength: MAX_WORKER_MESSAGE_LENGTH, description: "The specific help, decision, or intervention you need" }),
+      context: Type.Optional(Type.String({ maxLength: MAX_WORKER_MESSAGE_LENGTH, description: "Relevant evidence, attempted remedies, alternatives, and your recommendation" })),
     }),
     executionMode: "sequential",
-    async execute(_id, { message }, _signal, _onUpdate, ctx) {
+    async execute(_id, { request, context }, _signal, _onUpdate, ctx) {
       const orchestrationId = state.workerOrchestrationSessionId;
-      if (!orchestrationId || state.orchestrationSessionId) throw new Error("message_orchestrator requires a worker session");
-      const text = message.trim();
-      if (!text || text.length > MAX_WORKER_MESSAGE_LENGTH) throw new Error("message_orchestrator requires a non-empty message of at most 16000 characters");
+      if (!orchestrationId || state.orchestrationSessionId) throw new Error("ask_orchestrator requires a worker session");
+      if (!request.trim()) throw new Error("ask_orchestrator requires a non-empty request");
+      const evidence = context?.trim();
+      const text = request.trim() + (evidence ? `\n\nContext:\n${evidence}` : "");
+      if (text.length > MAX_WORKER_MESSAGE_LENGTH) throw new Error("ask_orchestrator request and context must total at most 16000 characters, including formatting");
       const generation = sessionGeneration;
       if (!(await refreshWorkerBranch())) throw new Error("Could not resolve worker branch");
       const gitCommonDir = await resolveWorkerGitCommonDir();
@@ -2744,7 +2747,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         throw error;
       }
       return {
-        content: [{ type: "text", text: `Queued message ${id} for your orchestrator. It steers an active run or starts a turn when idle; this is not acknowledgment of a reply.` }],
+        content: [{ type: "text", text: `Queued request ${id} for your orchestrator. It steers an active run or starts a turn when idle; this is not acknowledgment of a reply.` }],
         details: { messageId: id, orchestrationId },
       };
     },
