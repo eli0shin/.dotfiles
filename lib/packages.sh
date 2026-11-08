@@ -527,6 +527,10 @@ cmd_package() {
             local profile
             profile=$(_get_profile)
 
+            # Casks with `auto_updates true` update themselves; upgrading them via brew
+            # fails when the app's own updater lags the tap version.
+            export HOMEBREW_NO_UPGRADE_AUTO_UPDATES_CASKS=1
+
             # Always install base packages
             info "Installing from Brewfile..."
             brew bundle --file="$PACKAGES_DIR/Brewfile" || warn "Some Brewfile packages failed to install"
