@@ -3,6 +3,7 @@ local M = {}
 local diffview = require 'diff_review_comments.extractors.diffview'
 local octo = require 'diff_review_comments.extractors.octo'
 local generic = require 'diff_review_comments.extractors.generic'
+local buffer = require 'diff_review_comments.extractors.buffer'
 
 local function run_git(repo, args)
   if vim.fn.executable 'git' ~= 1 then
@@ -153,9 +154,9 @@ function M.capture(max_lines)
     return nil, 'No visual selection found'
   end
 
-  local extracted = diffview.extract(selection) or octo.extract(selection) or generic.extract(selection)
+  local extracted = diffview.extract(selection) or octo.extract(selection) or generic.extract(selection) or buffer.extract(selection)
   if not extracted then
-    return nil, 'Current buffer is not a diff view'
+    return nil, 'Current buffer is not a file buffer or diff view'
   end
 
   local root = repo_root()

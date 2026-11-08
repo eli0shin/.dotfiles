@@ -70,15 +70,15 @@ function M.add_from_visual()
   end
 
   local target = captured.extracted.file.repo_relpath or captured.extracted.file.abs_path or '[no file]'
-  local side = utils.side_info(captured.extracted.diff.selected_side)
+  local side_suffix = utils.side_suffix(captured.extracted.diff.selected_side)
 
   input_float.open {
-    title = string.format('Comment %s (%s)', target, side.label),
+    title = 'Comment ' .. target .. side_suffix,
     on_submit = function(text)
       local comment = make_comment(captured, text)
       store.add_comment(state.config.storage_path, scope_key(captured.repo_root), comment)
       sync_review_file(captured.repo_root)
-      notify(string.format('Saved %s diff review comment %s', side.label, comment.id))
+      notify('Saved review comment ' .. comment.id .. side_suffix)
     end,
   }
 end
@@ -118,16 +118,14 @@ function M.list_comments()
       local deleted = store.delete_comment(state.config.storage_path, scope_key(repo_root), comment.id)
       if deleted then
         sync_review_file(repo_root)
-        local side = utils.side_info(comment.diff.selected_side)
-        notify(string.format('Deleted %s comment %s', side.label, comment.id))
+        notify('Deleted comment ' .. comment.id .. utils.side_suffix(comment.diff.selected_side))
       end
     end,
     update_comment = function(comment, text)
       local ok = store.update_comment_text(state.config.storage_path, scope_key(repo_root), comment.id, text)
       if ok then
         sync_review_file(repo_root)
-        local side = utils.side_info(comment.diff.selected_side)
-        notify(string.format('Updated %s comment %s', side.label, comment.id))
+        notify('Updated comment ' .. comment.id .. utils.side_suffix(comment.diff.selected_side))
       end
     end,
     clear_all = function()

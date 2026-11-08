@@ -1,12 +1,12 @@
 # diff-review-comments.nvim
 
-Annotate code diffs with review comments and send them to an AI provider for analysis.
+Annotate code with review comments and send them to an AI provider for analysis.
 
-Works with [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvim](https://github.com/pwntester/octo.nvim), and native Vim diff mode.
+Works with ordinary file buffers, [diffview.nvim](https://github.com/sindrets/diffview.nvim), [octo.nvim](https://github.com/pwntester/octo.nvim), and native Vim diff mode.
 
 ## Usage
 
-1. Open a diff view (diffview, octo PR review, or `:diffsplit`)
+1. Open any file (including unchanged code on `main`), or a diff view (diffview, octo PR review, or `:diffsplit`)
 2. Visually select code and press `<leader>dca` to add a comment
 3. Repeat across files — comments are stored as JSON per checkout, or per PR when launched via `pr` (`PR_DIFF_URL` set). A PR's comments are shared across every checkout of that repo
 4. Press `<leader>dcy` to copy all comments, or `<leader>dcx` to copy and delete them
@@ -15,6 +15,8 @@ Open comments are also kept in a Review comments file that agents can read. It i
 
 - PR review (`pr` / `PR_DIFF_URL` set): `/tmp/review/<org>/<repo>/<pr-number>.txt`
 - Otherwise: `/tmp/review/current/<org>/<repo>/<branch>.txt` (skipped without an `origin` remote or on a detached HEAD)
+
+Ordinary file comments use the same storage, list, edit, yank, and review commands as diff comments. They capture the selected buffer text (including unsaved edits) without side labels or `+`/`-` change markers. For example, commenting on `main` writes `/tmp/review/current/<org>/<repo>/main.txt`.
 
 Fish commands provide the same actions outside Neovim. With no argument they use the current checkout's comments; pass a PR number to use that PR's comments instead (resolved against the `origin` remote):
 
@@ -127,8 +129,9 @@ The list view (`<leader>dcl`) shows all open comments with code previews and dif
 | `r`    | Refresh list         |
 | `q`    | Close                |
 
-## Supported diff sources
+## Supported sources
 
+- **File buffers** — any named, ordinary file buffer, including unchanged and untracked files; scratch, help, and terminal buffers are excluded
 - **diffview.nvim** — full support including commit comparison context
 - **octo.nvim** — GitHub PR review diffs with base/head commit tracking
 - **Generic vim diff** — any `:diffsplit` or diff mode window

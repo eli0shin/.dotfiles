@@ -62,7 +62,9 @@ function M.build(repo_root, comments)
     local changed = utils.get_changed_for_comment(repo_root, c, changed_cache)
     table.insert(out, '## Comment ' .. i)
     table.insert(out, 'File: ' .. file_reference(c))
-    table.insert(out, 'Selected side: ' .. selected_side.label)
+    if selected_side.label ~= '' then
+      table.insert(out, 'Selected side: ' .. selected_side.label)
+    end
     table.insert(out, '')
 
     if c.diff.selected then

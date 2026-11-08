@@ -33,11 +33,11 @@ end
 local function fmt_comment(comment, repo_root, cache)
   local path = comment.file.repo_relpath or comment.file.abs_path or '[no file]'
   local selected = comment.diff.selected
-  local side = utils.side_info(comment.diff.selected_side)
+  local side_suffix = utils.side_suffix(comment.diff.selected_side)
   local changed = utils.get_changed_for_comment(repo_root, comment, cache)
 
   local lines = {
-    string.format('%s (%s)', path, side.label),
+    path .. side_suffix,
     '  Selected code:',
   }
 
@@ -192,7 +192,7 @@ function M.open(opts)
       return
     end
     input_float.open {
-      title = string.format('Edit Comment %s (%s)', c.id, utils.side_info(c.diff.selected_side).label),
+      title = 'Edit Comment ' .. c.id .. utils.side_suffix(c.diff.selected_side),
       initial_text = c.comment_text,
       on_submit = function(text)
         opts.update_comment(c, text)

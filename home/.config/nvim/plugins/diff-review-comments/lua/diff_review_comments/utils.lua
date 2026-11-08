@@ -3,6 +3,12 @@ local M = {}
 local git_diff_status = require 'diff_review_comments.git_diff_status'
 
 function M.side_info(side)
+  if side == 'buffer' then
+    return {
+      label = '',
+      sign = ' ',
+    }
+  end
   if side == 'from' then
     return {
       label = 'OLD (-)',
@@ -19,6 +25,11 @@ function M.side_info(side)
     label = 'UNKNOWN (?)',
     sign = '?',
   }
+end
+
+function M.side_suffix(side)
+  local label = M.side_info(side).label
+  return label ~= '' and (' (' .. label .. ')') or ''
 end
 
 -- The PR under review when launched via `pr` (PR_DIFF_URL set), else nil.
@@ -44,6 +55,13 @@ function M.get_lines(bufnr, start_line, end_line)
 end
 
 function M.get_changed_for_comment(repo_root, comment, cache)
+  if comment.diff and comment.diff.selected_side == 'buffer' then
+    return {
+      from = {},
+      to = {},
+    }
+  end
+
   local repo_relpath = comment.file and comment.file.repo_relpath
   local compare = comment.diff and comment.diff.compare or nil
   local base = compare and compare.base or ''
