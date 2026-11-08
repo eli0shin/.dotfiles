@@ -7,7 +7,10 @@ import test from "node:test";
 
 const functionsDir = resolve(import.meta.dirname, "../../../../.config/fish/functions");
 const spawnWorker = resolve(import.meta.dirname, "../../../../.agents/skills/orchestrator/scripts/spawn-worker");
-for (const name of ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"]) {
+for (const name of [
+  "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID",
+  "HC_TERMINAL_ID", "HC_TERMINAL_SOCKET", "HC_SCOPE", "TMUX",
+]) {
   delete process.env[name];
 }
 
@@ -366,6 +369,137 @@ fi
     assert.match(log, /<w3:p1> <bash \/tmp\/pi-worker\./);
     assert.equal(await readInitialPrompt(log), "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.");
     assert.doesNotMatch(log, /tmux/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker launches Pi in a Herdr app space and returns focus to the orchestrator", async () => {
+  const { root, fakeBin } = await fixture();
+  const calls = join(root, "calls");
+  const received = join(root, "received");
+  const existingSpace = join(root, "existing-space");
+  const worktree = join(root, "repo-042-implement-widget");
+  await import("node:fs/promises").then(({ mkdir }) => mkdir(worktree));
+
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") echo main ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo /work/repo/.git ;;
+  show-ref*) test -f ${JSON.stringify(existingSpace)} ;;
+  ls-remote*) exit 1 ;;
+  *) echo abc123 ;;
+esac
+`);
+  await executable(join(fakeBin, "repos"), `#!/bin/sh
+printf 'repos %s\\n' "$*" >> ${JSON.stringify(calls)}
+echo "Creating worktree..." >&2
+echo "setup output"
+echo ${JSON.stringify(worktree)}
+`);
+  await executable(join(fakeBin, "herdr-app"), `#!/bin/sh
+printf 'herdr-app' >> ${JSON.stringify(calls)}
+for arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done
+printf '\\n' >> ${JSON.stringify(calls)}
+case "$1 $2" in
+  "ls ")
+    if [ -f ${JSON.stringify(existingSpace)} ]; then
+      echo '{"spaces":[{"id":"vps/sp9","name":"repo@042-implement-widget","machine":"vps","tabs":[{"terminals":[{"terminal":"vps/t4"}]}]},{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]},{"id":"sp2","name":"repo@042-implement-widget","machine":null,"tabs":[]}]}'
+    else
+      echo '{"spaces":[{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]}]}'
+    fi ;;
+  "do space.new"|"do tab.new") echo '{"terminal":"t9"}'; exit "\${FAIL_DISPATCH:-0}" ;;
+  "do pane.focus") echo '{"ok":true}' ;;
+esac
+`);
+  await executable(join(fakeBin, "tmux"), `#!/bin/sh\nprintf 'tmux %s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
+  await executable(join(fakeBin, "pi"), `#!/bin/sh
+[ -z "\${PI_ORCHESTRATION_SESSION_ID+x}" ] || exit 3
+[ "$PI_PARENT_ORCHESTRATION_SESSION_ID" = session-123 ] || exit 4
+printf '%s' "$1" > ${JSON.stringify(received)}
+`);
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}:${process.env.PATH}`,
+    TMPDIR: root,
+    HC_TERMINAL_ID: "t4",
+    PI_ORCHESTRATION_SESSION_ID: "session-123",
+  };
+  const launcherOf = (log: string) => {
+    const match = log.match(/<--argv> <\["bash","(\/tmp\/pi-worker\.[A-Za-z0-9]+)"\]>/);
+    assert.ok(match, log);
+    return match[1];
+  };
+
+  try {
+    const result = spawnSync(spawnWorker, ["042-implement-widget", "--context", "Keep API stable."], { encoding: "utf8", env });
+    assert.equal(result.status, 0, result.stderr);
+    let log = await readFile(calls, "utf8");
+    const launcher = launcherOf(log);
+    assert.equal(
+      log.replace(launcher, "LAUNCHER"),
+      "herdr-app <ls>\n" +
+        "repos stack --no-tmux 042-implement-widget\n" +
+        "herdr-app <ls>\n" +
+        `herdr-app <do> <space.new> <--name> <repo@042-implement-widget> <--tab> <pi> <--folder> <${worktree}> <--argv> <["bash","LAUNCHER"]>\n` +
+        "herdr-app <do> <pane.focus> <--terminal> <t4>\n",
+    );
+    const launched = spawnSync("bash", [launcher], { encoding: "utf8", env });
+    assert.equal(launched.status, 0, launched.stderr);
+    await assert.rejects(stat(launcher), { code: "ENOENT" });
+    assert.equal(
+      await readFile(received, "utf8"),
+      "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.",
+    );
+
+    // A recovered worker reuses its branch and its local space.
+    await rm(calls);
+    await writeFile(existingSpace, "");
+    const recovered = spawnSync(spawnWorker, ["042-implement-widget"], { encoding: "utf8", env, input: "" });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    log = await readFile(calls, "utf8");
+    assert.match(log, /^herdr-app <ls>\nrepos work --no-tmux 042-implement-widget\n/);
+    assert.match(log, new RegExp(`herdr-app <do> <tab.new> <--space> <sp2> <--name> <pi> <--folder> <${worktree}> <--argv> `));
+    assert.doesNotMatch(log, /space\.new/);
+    await rm(launcherOf(log));
+
+    // A failed launch removes the launcher and leaves focus alone.
+    await rm(calls);
+    const failed = spawnSync(spawnWorker, ["042-implement-widget"], {
+      encoding: "utf8", env: { ...env, FAIL_DISPATCH: "1" }, input: "",
+    });
+    assert.equal(failed.status, 1, failed.stderr);
+    log = await readFile(calls, "utf8");
+    await assert.rejects(stat(launcherOf(log)), { code: "ENOENT" });
+    assert.doesNotMatch(log, /pane\.focus/);
+
+    // A terminal this window doesn't show, such as one on another machine
+    // with the same markers, keeps tmux.
+    await rm(calls);
+    const elsewhere = spawnSync(spawnWorker, ["042-implement-widget"], {
+      encoding: "utf8", env: { ...env, HC_TERMINAL_ID: "t2" }, input: "",
+    });
+    assert.equal(elsewhere.status, 0, elsewhere.stderr);
+    log = await readFile(calls, "utf8");
+    assert.match(log, /^herdr-app <ls>\nrepos work --no-focus 042-implement-widget\ntmux has-session/);
+    const elsewhereLauncher = log.match(/bash (\/tmp\/pi-worker\.[A-Za-z0-9]+)/);
+    assert.ok(elsewhereLauncher, log);
+    await rm(elsewhereLauncher[1]);
+
+    // tmux inside the Herdr app stays the Workspace Manager.
+    await rm(calls);
+    const inTmux = spawnSync(spawnWorker, ["042-implement-widget"], {
+      encoding: "utf8", env: { ...env, TMUX: "/tmp/tmux-1/default,1,0" }, input: "",
+    });
+    assert.equal(inTmux.status, 0, inTmux.stderr);
+    log = await readFile(calls, "utf8");
+    assert.match(log, /^repos work --no-focus 042-implement-widget\ntmux has-session/);
+    assert.doesNotMatch(log, /herdr-app/);
+    const tmuxLauncher = log.match(/bash (\/tmp\/pi-worker\.[A-Za-z0-9]+)/);
+    assert.ok(tmuxLauncher, log);
+    await rm(tmuxLauncher[1]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

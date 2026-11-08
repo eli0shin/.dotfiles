@@ -9,7 +9,7 @@
   "theme": "arctic",
   "pane_scrollbars": false,
   "telemetry": false,
-  "font": "Operator Mono Medium",
-  "font_size": 15,
-  "ui_font": "Operator Mono Medium"
+  "font": "Operator Mono Book Herdr",
+  "font_size": 16,
+  "ui_font": "Operator Mono Book Herdr"
 }

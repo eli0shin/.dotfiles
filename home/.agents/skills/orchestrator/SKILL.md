@@ -21,7 +21,7 @@ Never implement ticket changes yourself. After spawning a worker:
 - Never read a worker diff, changed-file contents, or worker worktree yourself; delegate code inspection to `run_code_review`. You may read changed-file paths and commit metadata for the merge compatibility gate below, but never patches or file contents. You may fetch and read PR metadata, descriptions, comments, reviews, and check summaries to direct the review and judge feedback against the ticket, ADRs, designs, and repository contracts. Never tell the reviewer how to conduct it's review or what to focus on, do not bias the reviewer, give it only the ticket and pr refrerence as instructed in the tool description.
 - Never edit, commit, or push a worker branch.
 - Start and restart every worker with `spawn-worker`. It is the only launch that links the worker's PRs to this session's PR Watch; a worker started any other way is invisible to it.
-- Send instructions to a worker only with `message-worker`. Never type into a worker's terminal with `herdr agent prompt`, `herdr pane send-text`, `herdr pane run`, or `tmux send-keys`.
+- Send instructions to a worker only with `message-worker`. Never type into a worker's terminal with `herdr agent prompt`, `herdr pane send-text`, `herdr pane run`, `hc send`, `hc keys`, or `tmux send-keys`.
 - Never tell a worker about merge conflicts or failed CI. PR Watch notifies the worker of both automatically.
 
 If information is missing, ask the worker with `message-worker`, wait for an event, or delegate another review. Do not inspect worker changes to answer it directly.
@@ -168,7 +168,7 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 3. Run `tickets done <ticket-name>` so downstream blockers are removed.
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
-6. In the worker's repo, run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch.
+6. In the worker's repo, run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch. When `spawn-worker` opened the worker in a Herdr app space, `repos` does not manage that space, so first close it: if `herdr-app ls` lists a local space (`machine` is null) whose `name` is the worker identity, run `herdr-app do space.close --id <id> --confirmed true`.
 7. Run `git pull` to pull in the changes from the merged PR
 8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. When the merge took the bottom of a stack, rebase the rest of the stack (above) before anything else. After a stack merge, do steps 2–6 for every PR it merged, then this step once. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
 9. Find and spawn the newly unblocked frontier immediately.

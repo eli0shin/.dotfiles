@@ -12,15 +12,22 @@ untracked. Don't commit those files.
 
 ## Setup
 
-Run `dot stow` before first launching Herdr on a new machine. After launching:
+Run `dot stow` before first launching Herdr on a new machine. It automatically
+selects the `eli` layout and removes the top-right Files/Changes buttons. No
+manual layout switch or welcome setup is needed. For an existing installation,
+quit Herdr, run `dot stow`, then reopen it.
 
-```sh
-herdr-app do layout.switch --name eli
-herdr-app status
-```
+`shared.defaults.json` tracks these preferences and marks the welcome setup as
+finished. `scripts/configure-herdr-app.sh` applies those keys to the ignored
+`shared.json` during stow, preserving all other machine-local mod state. Managed
+keys are reapplied on each stow; arrays are replaced, not concatenated. If an
+app is running and its preferences need changing, stow stops with instructions
+to quit it first; already-correct settings are left untouched. Do not convert
+this to `shared.base.json`: the regular merger would erase local state.
 
-The selected layout is runtime state, not shared between machines. `eli` is a
-personal clone of the shipped `main` layout; shipped files are never edited.
+`eli` is a layout, not a color theme; the color theme is `arctic`, tracked in
+`settings.json`. `eli` is a personal clone of the shipped `main` layout;
+shipped files are never edited.
 It uses a hidden sidebar (toggle with Ctrl+G, B), top tabs even for a single
 tab, and square, gapless panes without individual pane headers. Borders appear
 only when split. The old 48/24/72-character sidebar sizes are approximated as
@@ -29,9 +36,43 @@ Agents mod. The new app does not offer the old exact inner-border-only or
 tab-bar hostname options; its stock status bar identifies the machine.
 
 `settings.json` disables sounds and terminal scrollbars and fixes appearance
-to dark. The Arctic theme retains the legacy semantic UI colors and uses the
-same terminal background, foreground and ANSI palette as Ghostty/Neovim.
-Kitty graphics are supported by the app without an experimental setting.
+to dark. Terminal and UI fonts select the app-local `Operator Mono Book Herdr`
+family: Book / Book Italic for ordinary cells and Bold / Bold Italic only when
+requested. Terminal Neovim uses that same renderer. The terminal size is 16px.
+
+Herdr 0.1.13 only selects families and hardcodes Medium (500) for normal cells.
+The installed original Operator fonts label Book as 325, Medium as 350 and
+Bold as 400, causing family matching to select Bold even for ordinary text.
+`scripts/prepare-herdr-fonts.py` creates an isolated family with corrected
+selection metadata (Book=500, Bold=700), unique names, and **unchanged glyph
+outlines**. System fonts are never modified. Generated fonts live in the
+ignored `fonts/` folder, which Herdr loads itself; they are not installed
+system-wide or committed.
+
+`dot stow` runs the generator with uv. Install the licensed Book, Book Italic,
+Bold and Bold Italic OTF files locally on each GUI machine first. The generator
+looks in user/system font folders on macOS and Linux. Missing sources produce
+an explicit warning; without the prepared family Herdr falls back to JetBrains
+Mono. To prepare explicitly or use another source directory:
+
+```sh
+uv run scripts/prepare-herdr-fonts.py
+uv run scripts/prepare-herdr-fonts.py --source-dir /path/to/licensed/fonts
+```
+
+Restart Herdr after regenerating fonts it has already loaded. This repo tracks
+only the generator and settings, never the licensed files.
+
+The Arctic theme retains the legacy semantic UI colors and uses the same
+terminal background, foreground and ANSI palette as Ghostty/Neovim. Kitty
+graphics are supported by the app without an experimental setting.
+
+These behaviors are verified against Herdr app 0.1.13's source:
+[`terminal_font` in settings.rs](https://github.com/herdrdev/herdr-app/blob/v0.1.13/src/settings.rs#L814-L822),
+[`cell_font` in terminal.rs](https://github.com/herdrdev/herdr-app/blob/v0.1.13/src/terminal.rs#L1372-L1378),
+and [startup layout selection](https://github.com/herdrdev/herdr-app/blob/v0.1.13/src/window.rs#L567-L572).
+There is no separate default-layout setting in this version; startup reads
+`shared.json`, which is why stow needs the small preference adapter.
 
 ## Keys
 
@@ -77,6 +118,10 @@ Other app layouts retain native pane navigation; use `eli` for the bridge.
 Regression checks:
 
 ```sh
+python3 tests/herdr-app-config.py
+uv run tests/herdr-font-preparation.py
+# macOS after preparing fonts: verify native normal/bold/italic face selection.
+swift tests/herdr-app-font.swift
 node tests/herdr-app-navigation.mjs
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status

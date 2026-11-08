@@ -1,18 +1,19 @@
 ---
 name: agent-status
-description: Triage every agent running in herdr — sessions that need Eli, orchestrators waiting on a stopped worker, PRs to push, sessions to close. Use when Eli asks for the state of his agents, what needs his attention, or which sessions are stalled or can be closed.
+description: Triage every agent running in herdr or the Herdr app — sessions that need Eli, orchestrators waiting on a stopped worker, PRs to push, sessions to close. Use when Eli asks for the state of his agents, what needs his attention, or which sessions are stalled or can be closed.
 ---
 
 The answer is a **triage**: what Eli must do, what to push, and what to close. The agent table is its appendix.
 
 ## 1. Gather
 
-Run [`scripts/agent-status --signals`](scripts/agent-status) for per-agent JSON and `scripts/agent-status` for the table. Fields that need reading:
+Run [`scripts/agent-status --signals`](scripts/agent-status) for per-agent JSON and `scripts/agent-status` for the table. It covers legacy herdr (`manager: herdr`) when its server is running, and the Herdr app's local spaces (`manager: herdr-app`) when its window is open or you run inside it. Fields that need reading:
 
 - `herdr_status: done` means the agent finished a turn Eli hasn't viewed yet.
 - `last_turn_reaches_orchestrator: false` means the orchestrator never learns that this worker stopped. PR Watch forwards a worker's finished turn only when the worker watches no PR, and failed CI and conflicts go only to the worker.
 - `linked_prs` and `linked_runs` are GitHub PRs and runs that the last assistant message links. A run's `waiting_jobs` are waiting for approval.
 - `human_reviews` excludes bots and the PR author.
+- A Herdr app Pi with no `session_file` ("session unknown" in the table) started before the `hc-session-label` extension loaded, so its role, watch, and messages are unknown. Classify it from `hc read <terminal> --lines 100`, and tell Eli that `/reload` in it fixes this.
 
 ## 2. Classify
 
@@ -33,7 +34,7 @@ Separately, list every open watched or linked PR that is **stuck on a human** as
 
 ## 3. Report
 
-Use the sections Needs you, Check on worker, Drive, Close after reply, Close, and Parked, then the table. Give each session one line: workspace and tab, what's going on, and the action Eli takes. Pane IDs, session IDs, and pr-watch errors stay out. Then stop for Eli's call.
+Use the sections Needs you, Check on worker, Drive, Close after reply, Close, and Parked, then the table. Give each session one line: workspace (a Herdr app space) and tab, what's going on, and the action Eli takes. When both legacy herdr and the Herdr app have agents, say which one each session is in. Pane IDs, terminal IDs, session IDs, and pr-watch errors stay out. Then stop for Eli's call.
 
 ## 4. Act
 

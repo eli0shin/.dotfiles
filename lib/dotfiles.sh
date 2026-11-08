@@ -39,6 +39,16 @@ cmd_stow() {
 
     cd "$DOTFILES_DIR"
 
+    # Herdr mixes portable preferences with local runtime state. Apply only
+    # the tracked keys, and propagate errors rather than silently skipping them.
+    bash "$SCRIPTS_DIR/configure-herdr-app.sh" "$DOTFILES_DIR/home/.config/herdr-app" || return 1
+    if has uv; then
+        uv run --script "$SCRIPTS_DIR/prepare-herdr-fonts.py" --if-available \
+            --output "$DOTFILES_DIR/home/.config/herdr-app/fonts" || return 1
+    else
+        warn "Herdr Book fonts need uv. Install uv and rerun dot stow."
+    fi
+
     # Merge configs before stowing
     cmd_merge 2>/dev/null || true
 

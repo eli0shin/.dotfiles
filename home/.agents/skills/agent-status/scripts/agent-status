@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Report every agent running in herdr and its PR watch.
+"""Report every agent running in herdr or the Herdr app, and its PR watch.
 
-  agent-status            Markdown table: Workspace | Tab | Watching | Role
+  agent-status            Markdown table: Herdr | Workspace | Tab | Watching | Role
   agent-status --signals  JSON triage signals for every agent
+
+Legacy herdr (the TUI) is read when its server is running. The Herdr app is
+read when its window is open or this runs inside herdr-core; only local
+spaces are read. Neither check starts a server.
 
 PR watch state is the newest `pr-watch-state` entry on the session's active
 branch, the entry the pr-watch extension restores on resume.
@@ -11,6 +15,7 @@ branch, the entry the pr-watch extension restores on resume.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -19,11 +24,105 @@ from datetime import datetime, timezone
 PR_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
 RUN_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/actions/runs/(\d+)")
 NOW = datetime.now(timezone.utc)
+# Set by the hc-session-label Pi extension: herdr-core has no agent session.
+HC_SESSION_LABEL = "dotfiles.pi_session"
+
+
+def run_json(*args):
+    out = subprocess.run(list(args), capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
 
 
 def herdr(*args):
-    out = subprocess.run(["herdr", *args], capture_output=True, text=True, check=True).stdout
-    return json.loads(out)["result"]
+    return run_json("herdr", *args)["result"]
+
+
+def herdr_agents():
+    """Legacy herdr panes running an agent."""
+    if not shutil.which("herdr") or not run_json("herdr", "status", "server", "--json").get("running"):
+        return []
+    workspaces = herdr("workspace", "list")["workspaces"]
+    tabs = {t["tab_id"]: t for t in herdr("tab", "list")["tabs"]}
+    ws_label = {w["workspace_id"]: w.get("label") or w["workspace_id"] for w in workspaces}
+    ws_order = {w["workspace_id"]: i for i, w in enumerate(workspaces)}
+    agents = []
+    for agent in herdr("agent", "list")["agents"]:
+        tab = tabs.get(agent["tab_id"], {})
+        agents.append({
+            "manager": "herdr",
+            "ids": {"pane_id": agent["pane_id"], "workspace_id": agent["workspace_id"]},
+            "workspace": ws_label.get(agent["workspace_id"], agent["workspace_id"]),
+            "tab_label": tab.get("label") or "",
+            "order": (0, ws_order.get(agent["workspace_id"], len(ws_order)), tab.get("number", 0)),
+            "cwd": agent.get("cwd"),
+            "agent": agent.get("agent"),
+            "status": agent.get("agent_status"),
+            "session_file": (agent.get("agent_session") or {}).get("value"),
+        })
+    return agents
+
+
+def hc_terminal(address):
+    # A terminal can end between listing and this read.
+    try:
+        return run_json("hc", "get", address, "--json")
+    except subprocess.CalledProcessError:
+        return {}
+
+
+def herdr_app_agents():
+    """Herdr app terminals running an agent, in local spaces and tabs."""
+    if not shutil.which("hc"):
+        return []
+    window = None
+    if shutil.which("herdr-app"):
+        listed = subprocess.run(["herdr-app", "ls"], capture_output=True, text=True)
+        if listed.returncode == 0:
+            window = json.loads(listed.stdout)
+    # Without a window, only a herdr-core terminal knows its core is running;
+    # hc starts a core otherwise. Labels then stand in for spaces and tabs.
+    if window is None and not os.environ.get("HC_TERMINAL_ID"):
+        return []
+
+    placed = []
+    if window is None:
+        for t in run_json("hc", "ls", "--json")["terminals"]:
+            if "/" not in t["address"] and t.get("status"):
+                space, _, tab = (t.get("where") or "").partition(" / ")
+                placed.append(({"terminal": t["address"], "status": t["status"]}, {}, space, tab, (1, 0, 0)))
+    else:
+        for s_index, space in enumerate(window["spaces"]):
+            if space.get("machine"):
+                continue
+            for t_index, tab in enumerate(space["tabs"]):
+                for term in tab["terminals"]:
+                    if term.get("app"):
+                        ids = {"space_id": space["id"], "tab_id": tab["id"], "pane_id": term["pane"]}
+                        placed.append((term, ids, space["name"] or "", tab["name"] or str(t_index + 1), (1, s_index, t_index)))
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        details = list(pool.map(lambda p: hc_terminal(p[0]["terminal"]), placed))
+    agents = []
+    for (term, ids, space, tab, order), detail in zip(placed, details):
+        foreground = detail.get("foreground") or {}
+        labels = detail.get("labels") or {}
+        # The window's status counts a turn Eli has seen as idle, as herdr
+        # does; without it, the app's seen marker says the same.
+        status = term.get("status")
+        if window is None and status == "done" and labels.get("herdr.seen") == str(detail.get("turn")):
+            status = "idle"
+        agents.append({
+            "manager": "herdr-app",
+            "ids": {"terminal": term["terminal"], **ids},
+            "workspace": space,
+            "tab_label": tab,
+            "order": order,
+            "cwd": foreground.get("cwd") or detail.get("cwd"),
+            "agent": term.get("app") or (detail.get("status") or {}).get("app"),
+            "status": status,
+            "session_file": labels.get(HC_SESSION_LABEL),
+        })
+    return agents
 
 
 def gh(*args):
@@ -99,28 +198,25 @@ def is_named(label):
 
 
 def collect():
-    agents = herdr("agent", "list")["agents"]
-    workspaces = herdr("workspace", "list")["workspaces"]
-    tabs = {t["tab_id"]: t for t in herdr("tab", "list")["tabs"]}
-    ws_label = {w["workspace_id"]: w.get("label") or w["workspace_id"] for w in workspaces}
-    ws_order = {w["workspace_id"]: i for i, w in enumerate(workspaces)}
     this_session = os.environ.get("PI_SESSION_FILE")
+    this_terminal = os.environ.get("HC_TERMINAL_ID")
 
     rows = []
-    for agent in agents:
-        tab = tabs.get(agent["tab_id"], {})
-        session_file = (agent.get("agent_session") or {}).get("value")
-        session = load_session(session_file) if agent.get("agent") == "pi" and session_file else {}
+    for agent in herdr_agents() + herdr_app_agents():
+        # This session started before hc-session-label loaded still knows itself.
+        if agent["manager"] == "herdr-app" and agent["ids"]["terminal"] == this_terminal and this_session:
+            agent["session_file"] = agent["session_file"] or this_session
+        session_file = agent["session_file"]
+        session = load_session(session_file) if agent["agent"] == "pi" and session_file else {}
         rows.append({
             "agent": agent,
-            "workspace": ws_label.get(agent["workspace_id"], agent["workspace_id"]),
-            "tab_label": tab.get("label") or "",
-            "tab_number": tab.get("number", 0),
+            "workspace": agent["workspace"],
+            "tab_label": agent["tab_label"],
             "session": session,
             "state": session.get("state") or {},
             "this": bool(session_file) and session_file == this_session,
         })
-    rows.sort(key=lambda r: (ws_order.get(r["agent"]["workspace_id"], len(ws_order)), r["tab_number"]))
+    rows.sort(key=lambda r: r["agent"]["order"])
 
     # A worker points at its orchestrator by the orchestrator's named tab,
     # falling back to the orchestrator's workspace.
@@ -167,8 +263,8 @@ def collect():
 
 
 def print_table(rows):
-    print("| Workspace | Tab | Watching | Role |")
-    print("|---|---|---|---|")
+    print("| Herdr | Workspace | Tab | Watching | Role |")
+    print("|---|---|---|---|---|")
     for r in rows:
         state = r["state"]
         tab = r["tab_label"] + (" (this session)" if r["this"] else "")
@@ -181,7 +277,10 @@ def print_table(rows):
             role = f"worker → {r['orchestrator']}"
         else:
             role = r["role"] or "—"
-        print(f"| {r['workspace']} | {tab} | {watched} | {role} |")
+        if r["agent"]["agent"] == "pi" and not r["agent"]["session_file"]:
+            role = "session unknown"
+        herdr_kind = "app" if r["agent"]["manager"] == "herdr-app" else "TUI"
+        print(f"| {herdr_kind} | {r['workspace']} | {tab} | {watched} | {role} |")
 
 
 def pr_details(url):
@@ -282,15 +381,15 @@ def print_signals(rows):
         last_user = session.get("last_user")
         last_assistant = session.get("last_assistant")
         signal = {
+            "manager": agent["manager"],
             "workspace": r["workspace"],
             "tab": r["tab_label"],
-            "pane_id": agent["pane_id"],
-            "workspace_id": agent["workspace_id"],
-            "cwd": agent.get("cwd"),
-            "agent": agent.get("agent"),
-            "herdr_status": agent.get("agent_status"),
+            **agent["ids"],
+            "cwd": agent["cwd"],
+            "agent": agent["agent"],
+            "herdr_status": agent["status"],
             "this_session": r["this"],
-            "session_file": (agent.get("agent_session") or {}).get("value"),
+            "session_file": agent["session_file"],
             "role": r["role"],
             "watch_mode": state.get("mode"),
             "idle_minutes": minutes_since(session.get("last_activity_at")),

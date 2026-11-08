@@ -4,6 +4,7 @@
 !/README.md
 !/keys.json
 !/settings.json
+!/shared.defaults.json
 !/layouts/
 /layouts/*
 !/layouts/eli.json

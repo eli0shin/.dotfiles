@@ -99,19 +99,54 @@ if [[ -n $ticket ]]; then
   tickets show "$ticket" || exit
 fi
 
+# herdr-core also runs terminals on machines the app reaches over SSH, with
+# the same markers, so this computer's open window must show this terminal.
+herdr_app_shows_terminal() {
+  [[ -n ${HC_TERMINAL_ID:-} ]] && command -v herdr-app >/dev/null &&
+    herdr-app ls 2>/dev/null | python3 -c '
+import json, sys
+terminal = sys.argv[1]
+shown = any(
+    not space.get("machine") and terminal in (t["terminal"] for tab in space["tabs"] for t in tab["terminals"])
+    for space in json.load(sys.stdin)["spaces"]
+)
+sys.exit(0 if shown else 1)
+' "$HC_TERMINAL_ID" 2>/dev/null
+}
+
+# The innermost manager wins: legacy Herdr, then tmux, then the Herdr app.
+# The Herdr app runs terminals in herdr-core, which repos does not manage, so
+# repos only creates the worktree and the worker gets a Herdr app space.
 workspace_manager=tmux
 if [[ ${HERDR_ENV:-} == 1 ]]; then
   workspace_manager=herdr
+elif [[ -z ${TMUX:-} ]] && herdr_app_shows_terminal; then
+  workspace_manager=herdr-app
+fi
+repos_flag=--no-focus
+if [[ $workspace_manager == herdr-app ]]; then
+  repos_flag=--no-tmux
 fi
 
 # An existing branch or worktree means the worker is being recovered: reuse it
 # with `repos work`, which also reuses or creates its Managed Workspace.
+# repos prints the worktree path as the last line of stdout.
 remote=${upstream%%/*}
 if git show-ref --verify --quiet "refs/heads/$branch" ||
   git ls-remote --exit-code --heads "$remote" "refs/heads/$branch" >/dev/null 2>&1; then
-  repos work --no-focus "$branch" || exit
+  repos_command=work
 else
-  repos stack --no-focus "$branch" || exit
+  repos_command=stack
+fi
+if [[ $workspace_manager == herdr-app ]]; then
+  repos_output=$(repos "$repos_command" "$repos_flag" "$branch") || exit
+  worktree=${repos_output##*$'\n'}
+  if [[ ! -d $worktree ]]; then
+    echo "repos did not print the worktree path for $branch" >&2
+    exit 1
+  fi
+else
+  repos "$repos_command" "$repos_flag" "$branch" || exit
 fi
 
 # repos names the workspace <repo>@<branch>, with "/" in the branch as "-".
@@ -131,6 +166,16 @@ panes = [p["pane_id"] for p in herdr("pane", "list")["panes"] if p["workspace_id
 if not panes:
     raise SystemExit(f"no pane in Managed Workspace {label}")
 print(panes[0])
+' "$worker_identity") || exit
+elif [[ $workspace_manager == herdr-app ]]; then
+  # A recovered worker reuses its space; otherwise it gets a new one.
+  space_id=$(herdr-app ls | python3 -c '
+import json, sys
+label = sys.argv[1]
+ids = [s["id"] for s in json.load(sys.stdin)["spaces"] if s["name"] == label and not s.get("machine")]
+if len(ids) > 1:
+    raise SystemExit(f"expected at most one Herdr space named {label}, found {len(ids)}")
+print(ids[0] if ids else "")
 ' "$worker_identity") || exit
 elif ! tmux has-session -t "=$worker_identity:" 2>/dev/null; then
   echo "repos did not create worker session $worker_identity for $branch" >&2
@@ -173,6 +218,22 @@ command="bash $launcher"
 if [[ $workspace_manager == herdr ]]; then
   herdr pane run "$pane_id" "$command"
   launch_status=$?
+elif [[ $workspace_manager == herdr-app ]]; then
+  # mktemp names contain no JSON-special characters. The app shows new spaces
+  # and tabs, so focus returns to the orchestrator afterwards.
+  argv="[\"bash\",\"$launcher\"]"
+  if [[ -n $space_id ]]; then
+    herdr-app do tab.new --space "$space_id" --name "$orchestration_harness" \
+      --folder "$worktree" --argv "$argv" >&2
+  else
+    herdr-app do space.new --name "$worker_identity" --tab "$orchestration_harness" \
+      --folder "$worktree" --argv "$argv" >&2
+  fi
+  launch_status=$?
+  if [[ $launch_status -eq 0 ]] &&
+    ! herdr-app do pane.focus --terminal "$HC_TERMINAL_ID" >/dev/null; then
+    echo "spawn-worker: launched $worker_identity but could not refocus $HC_TERMINAL_ID" >&2
+  fi
 else
   tmux send-keys -l -t "$worker_identity:0" -- "$command" &&
     tmux send-keys -t "$worker_identity:0" Enter
