@@ -4,6 +4,11 @@ config-version = 2
 start-at-login = true
 auto-reload-config = true
 
+# At startup, AeroSpace switches the focused workspace to accordion when it holds
+# more than three windows. After login, every window is on that workspace.
+# Restore horizontal tiles.
+after-startup-command = ["layout --root h_tiles"]
+
 exec.env-vars.PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # SketchyBar shows each workspace's focused window, so it must update on window
 # focus changes as well as workspace changes. This callback covers both. Pass
