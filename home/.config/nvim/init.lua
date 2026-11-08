@@ -1,6 +1,7 @@
 require 'nvim-config'
 require 'motions'
 require 'autocommands'
+require('herdr-app-navigator').setup()
 require 'lazy-setup'
 
 --  To check the current status of your plugins, run

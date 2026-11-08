@@ -39,7 +39,22 @@ client_socket="${api_socket%/*}/$stem-client.sock"
 if [[ -z ${HERDR_SOCKET_PATH:-} && -z ${2:-} && -n ${HERDR_CLIENT_SOCKET_PATH:-} ]]; then
     client_socket=$HERDR_CLIENT_SOCKET_PATH
 fi
-for socket in "$api_socket" "$client_socket"; do
+# The desktop app uses herdr-core, not the TUI server. Forward its existing
+# socket too when present; custom endpoints can opt in explicitly. Do not start
+# a core or change the original TUI sharing behavior when it is absent.
+core_session=${HC_SESSION:-default}
+core_socket=${HERDR_SHARE_HC_SOCKET:-${HC_SOCKET:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-core/$core_session/$core_session.sock}}
+extra_forwards=()
+shared_sockets=("$api_socket" "$client_socket")
+if [[ -S $core_socket ]]; then
+    shared_sockets+=("$core_socket")
+elif [[ -n ${HERDR_SHARE_HC_SOCKET:-} ]]; then
+    printf 'herdr-share: core socket not found: %s\n' "$core_socket" >&2
+    exit 1
+else
+    core_socket=
+fi
+for socket in "${shared_sockets[@]}"; do
     if [[ ! -S $socket ]]; then
         printf 'herdr-share: socket not found: %s\n' "$socket" >&2
         exit 1
@@ -91,6 +106,10 @@ REMOTE
             exit 1
         fi
 
+        extra_forwards=()
+        if [[ -n $core_socket ]]; then
+            extra_forwards=(-R "$remote_dir/hc.sock:$core_socket")
+        fi
         # Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
         quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
         printf 'Connecting Herdr to %s. Press Ctrl-C to stop sharing.\n' "$target"
@@ -100,6 +119,7 @@ REMOTE
             -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177 \
             -R "$remote_dir/herdr.sock:$api_socket" \
             -R "$remote_dir/herdr-client.sock:$client_socket" \
+            "${extra_forwards[@]}" \
             "$target" "sh -s -- $quoted_remote_dir" <<'REMOTE' &
 set -eu
 dir=$1
@@ -108,7 +128,7 @@ cleanup() {
     if [ "$(readlink "$base/current" 2>/dev/null || true)" = "$dir" ]; then
         rm -f "$base/current"
     fi
-    rm -f "$dir/herdr.sock" "$dir/herdr-client.sock"
+    rm -f "$dir/herdr.sock" "$dir/herdr-client.sock" "$dir/hc.sock"
     rmdir "$dir" 2>/dev/null || true
 }
 trap cleanup EXIT

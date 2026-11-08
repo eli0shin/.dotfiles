@@ -4,7 +4,7 @@ return {
   config = function()
     require('tmux').setup {
       navigation = {
-        enable_default_keybindings = vim.env.HERDR_ENV ~= '1',
+        enable_default_keybindings = vim.env.HERDR_ENV ~= '1' and not require('herdr-app-navigator').active(),
       },
       copy_sync = {
         enable = false,

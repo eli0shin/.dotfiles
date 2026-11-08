@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""SSH adapter for the TUI and core sockets published by herdr-share.
+
+Install as an authorized_keys forced command on Devbox. This is deliberately
+not a shell: unknown bootstrap commands fail rather than discovering or starting
+Devbox's own servers. Supports Herdr TUI 0.9.5 and herdr-core 0.1.18.
+"""
+
+import json
+import os
+from pathlib import Path
+import selectors
+import shlex
+import socket
+import subprocess
+import sys
+import time
+
+MARKER = "herdr-remote-output-ready:1"
+FRAME = f"printf '\n%s\n' '{MARKER}'\n"
+API_CAPABILITY = "herdr-api-bridge-v1"
+IDLE_SECONDS = 60
+BUFFER_LIMIT = 1024 * 1024
+CORE_CONNECT = (
+    'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; '
+    '[ -x "$p" ] || { echo "herdr-core is not installed here" >&2; exit 127; }; '
+    'exec "$p" connect'
+)
+
+
+def endpoint(name):
+    # Resolve current once: an attachment belongs to one tunnel, never a mix of
+    # old/new sockets while herdr-share reconnects. Never create any directories.
+    directory = (Path.home() / ".cache/herdr-work/current").resolve(strict=True)
+    path = directory / name
+    if not path.is_socket():
+        raise RuntimeError("work tunnel is unavailable; run herdr-share on the work Mac")
+    return path
+
+
+def status(kind):
+    config = json.loads(Path(__file__).resolve().with_name("config.json").read_text())
+    env = {key: value for key, value in os.environ.items() if not key.startswith("HERDR_")}
+    if kind == "server":
+        env["HERDR_SOCKET_PATH"] = str(endpoint("herdr.sock"))
+    result = subprocess.run(
+        [config["herdr"], "status", kind, "--json"], env=env,
+        check=True, stdout=subprocess.PIPE, text=True, timeout=10,
+    )
+    data = json.loads(result.stdout)
+    if kind == "client":
+        data["binary"] = str(Path(__file__).resolve())
+        data["remote_host_bridge"] = True
+        data["remote_bridge_idle_timeout"] = True
+    return data
+
+
+def relay(path, idle_timeout=False):
+    """Bounded, bidirectional stdio relay, including half-close and backpressure."""
+    with socket.socket(socket.AF_UNIX) as stream, selectors.DefaultSelector() as selector:
+        stream.settimeout(10)
+        stream.connect(str(path))  # No autodetect, daemon startup, or socket unlink.
+        stream.setblocking(False)
+        stdin, stdout = sys.stdin.fileno(), sys.stdout.fileno()
+        original = {fd: os.get_blocking(fd) for fd in (stdin, stdout)}
+        upstream, downstream = bytearray(), bytearray()
+        input_open, peer_open, write_open = True, True, True
+        last_activity = time.monotonic()
+        try:
+            for fd in original:
+                os.set_blocking(fd, False)
+            while peer_open or downstream:
+                if not input_open and not upstream and write_open:
+                    stream.shutdown(socket.SHUT_WR)
+                    write_open = False
+                interests = {}
+                if input_open and peer_open and len(upstream) < BUFFER_LIMIT:
+                    interests[stdin] = selectors.EVENT_READ
+                if downstream:
+                    interests[stdout] = selectors.EVENT_WRITE
+                events = (selectors.EVENT_READ if peer_open and len(downstream) < BUFFER_LIMIT else 0)
+                if upstream and peer_open:
+                    events |= selectors.EVENT_WRITE
+                if events:
+                    interests[stream.fileno()] = events
+                for fd in list(selector.get_map()):
+                    if fd not in interests:
+                        selector.unregister(fd)
+                for fd, events in interests.items():
+                    if fd in selector.get_map():
+                        selector.modify(fd, events)
+                    else:
+                        selector.register(fd, events)
+                timeout = max(0, IDLE_SECONDS - (time.monotonic() - last_activity)) if idle_timeout else None
+                ready = selector.select(timeout)
+                if not ready:
+                    return
+                for key, events in ready:
+                    try:
+                        if key.fd == stdin:
+                            chunk = os.read(stdin, 65536)
+                            upstream.extend(chunk)
+                            input_open = bool(chunk)
+                        elif key.fd == stdout:
+                            count = os.write(stdout, downstream)
+                            del downstream[:count]
+                        else:
+                            if events & selectors.EVENT_WRITE:
+                                count = stream.send(upstream)
+                                del upstream[:count]
+                            if events & selectors.EVENT_READ:
+                                chunk = stream.recv(65536)
+                                downstream.extend(chunk)
+                                peer_open = bool(chunk)
+                        last_activity = time.monotonic()
+                    except BlockingIOError:
+                        pass
+        finally:
+            for fd, blocking in original.items():
+                os.set_blocking(fd, blocking)
+
+
+def api_check():
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(10)
+        stream.connect(str(endpoint("herdr.sock")))
+
+
+def herdr(args):
+    if args[:2] == ["--session", "default"]:
+        args = args[2:]
+    if args == ["status", "client", "--json"]:
+        print(json.dumps(status("client")))
+    elif args == ["status", "server", "--json"]:
+        print(json.dumps(status("server")))
+    elif args == ["session", "list", "--json"]:
+        data = status("server")
+        print(json.dumps({"sessions": [{"name": "default", "default": True, "running": data["running"]}]}))
+    elif args in (["remote-client-bridge"], ["remote-client-bridge", "--idle-timeout-v1"]):
+        relay(endpoint("herdr-client.sock"), idle_timeout="--idle-timeout-v1" in args)
+    elif args == ["remote-api-bridge", "--check"]:
+        api_check()
+        print(API_CAPABILITY)
+    elif args == ["remote-api-bridge"]:
+        relay(endpoint("herdr.sock"))
+    else:
+        raise RuntimeError(f"unsupported Herdr command: {shlex.join(args)}")
+
+
+def dispatch(command):
+    """Recognize Herdr's POSIX SSH bootstrap, never evaluate shell input."""
+    executable = str(Path(__file__).resolve())
+    quoted = shlex.quote(executable)
+    tokens = shlex.split(command)
+    if tokens == ["sh", "-c", CORE_CONNECT]:
+        # Core's native protocol handshake provides the actual Mac identity,
+        # terminal/file APIs and version. Never run hc connect on Devbox: its
+        # autodetect could start a local core after the work tunnel disappears.
+        return relay(endpoint("hc.sock"))
+    if tokens == ["exit"]:
+        return  # hc machine login only needs a successful authentication check.
+    if tokens == ["/bin/sh", "-s"]:
+        command = sys.stdin.read(BUFFER_LIMIT + 1)
+        if len(command) > BUFFER_LIMIT:
+            raise RuntimeError("bootstrap script is too large")
+        return dispatch(command)
+    if len(tokens) == 3 and tokens[:2] == ["/bin/sh", "-c"]:
+        return dispatch(tokens[2])
+    if command.startswith(FRAME):
+        print("\n" + MARKER, flush=True)
+        return dispatch(command[len(FRAME):])
+    command = command.strip()
+    if command == "uname -s\nuname -m":
+        print(os.uname().sysname + "\n" + os.uname().machine)
+    elif command == "command -v herdr":
+        print(executable)
+    elif command.startswith("home=${HOME:-}\nuser=${USER:-}\nversion=") and "\nemit() {\n" in command:
+        # Candidate discovery is answered, not executed. Only advertise this
+        # adapter, even if other Herdr executables are installed on Devbox.
+        print(executable)
+    elif command.startswith("set -f\ncandidates=$(\ncommand -v herdr\n") and (
+        '"$candidate" --session default remote-api-bridge --check' in command
+    ):
+        api_check()
+        print(executable)
+    else:
+        cached = (
+            f'if capability=$({quoted} --session default remote-api-bridge --check </dev/null 2>/dev/null) '
+            f'&& [ "$capability" = {API_CAPABILITY} ]; then\n'
+            f'{FRAME}exec {quoted} --session default remote-api-bridge\n'
+            "else\n    printf '%s\\n' 'herdr-machine-metadata-stale-v1' >&2\n    exit 78\nfi"
+        )
+        if command == cached:
+            api_check()
+            print("\n" + MARKER, flush=True)
+            return herdr(["remote-api-bridge"])
+        tokens = shlex.split(command)
+        if tokens[:4] == ["test", "-x", executable, "&&"]:
+            tokens = tokens[4:]
+        if tokens[:1] == ["exec"]:
+            tokens = tokens[1:]
+        if tokens[-1:] == ["</dev/null"]:
+            tokens = tokens[:-1]
+        if tokens[:1] != [executable]:
+            raise RuntimeError("unsupported SSH command (this key only serves the work tunnel)")
+        herdr(tokens[1:])
+
+
+def main():
+    try:
+        command = os.environ.get("SSH_ORIGINAL_COMMAND")
+        if not command:
+            raise RuntimeError("use this adapter as an SSH forced command, not a login shell")
+        dispatch(command)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"herdr-work-bridge: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
