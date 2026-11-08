@@ -2642,6 +2642,71 @@ test("a merge commit looks up runs in the merged PR's repository", async () => {
   );
 });
 
+test("a timeout-wrapped cross-repo PR creation follows its merge through polling", async () => {
+  const harness = createHarness();
+  harness.setCurrentBranch("main");
+  const pr = harness.prs.get(104)!;
+  pr.url = "https://github.com/another-owner/another-repo/pull/104";
+  pr.headRepo = "another-owner/another-repo";
+  await harness.startSession();
+
+  try {
+    await runBash(harness, "timeout 90 gh pr create -R another-owner/another-repo --title test --body test", pr.url);
+    assert.deepEqual(harness.savedStates.at(-1)?.ownedPrs, ["another-owner/another-repo#104"]);
+    mergePr(harness, 104, "merge-104-sha");
+    harness.runs.push({ ...completedRun(104), event: "push" });
+    await harness.runPoll();
+
+    assert.match(harness.sentMessages[0] ?? "", /CI finished for the merge commit of PR #104/);
+    assert.match(harness.sentMessages[0]!, /Repo: another-owner\/another-repo/);
+  } finally {
+    await harness.shutdown();
+  }
+});
+
+for (const prefix of ["", "timeout 90 ", "timeout --signal TERM --kill-after 5s 90s "]) {
+for (const authorLogin of ["eli0shin", "release-bot[bot]"]) {
+  test(`a cross-repo merge followed by view follows CI (${prefix || "plain gh"}, ${authorLogin})`, async () => {
+    const harness = createHarness();
+    harness.setCurrentBranch("main");
+    const pr = harness.prs.get(105)!;
+    pr.url = "https://github.com/another-owner/another-repo/pull/105";
+    pr.headRepo = "another-owner/another-repo";
+    pr.authorLogin = authorLogin;
+    await harness.startSession();
+
+    try {
+      await harness.activate(104);
+      mergePr(harness, 104, "older-merge-sha", "2026-11-08T20:55:59Z");
+      await harness.runPoll();
+      // Matches the reported session: an older merge is still watched, and
+      // the next merge uses -R and timeout from a different session checkout.
+      if (authorLogin === "eli0shin") await harness.callTool("watch_pr", pr.url);
+      mergePr(harness, 105, "cross-repo-merge-sha", "2026-11-08T21:16:51Z");
+      await runBash(harness,
+        `${prefix}gh pr merge 105 -R another-owner/another-repo --squash 2>&1 | tail -2; timeout 30 gh pr view 105 -R another-owner/another-repo --json state,mergeCommit`,
+        "MERGED cross-repo-merge-sha\n");
+      assert.equal(harness.savedStates.at(-1)?.watchedSha?.sha, "cross-repo-merge-sha");
+      assert.equal(harness.savedStates.at(-1)?.watchedSha?.repo, "another-owner/another-repo");
+      harness.runs.push({ ...completedRun(105), event: "push" });
+      await harness.runPoll();
+      await harness.runPoll();
+
+      assert.equal(harness.sentMessages.length, 1);
+      assert.match(harness.sentMessages[0]!, /CI finished for the merge commit of PR #105/);
+      assert.match(harness.sentMessages[0]!, /Repo: another-owner\/another-repo/);
+      assert.match(harness.sentMessages[0]!, /SHA: cross-repo-merge-sha/);
+      assert.ok(harness.execCalls.some(({ command, args }) =>
+        command === "gh" && args[0] === "run" && args.includes("cross-repo-merge-sha") && args.includes("another-owner/another-repo")));
+      assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined, "the merge reports once");
+    } finally {
+      await harness.shutdown();
+    }
+  });
+}
+
+}
+
 test("a chained direct push to main watches the pushed SHA without following later commits", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");

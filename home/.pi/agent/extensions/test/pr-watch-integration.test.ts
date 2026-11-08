@@ -154,6 +154,61 @@ if (process.argv[2] === "worker") {
   }
   await writeFile(join(process.env.REPRO_ROOT!, "worker-done"), "");
 } else {
+  test("real Pi follows CI after a timeout-wrapped cross-repo release PR merge", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-pr-watch-cross-repo-"));
+    const bin = join(root, "bin"), repo = join(root, "repo");
+    const envNames = ["PATH", "PI_PR_WATCH_STATE_DIR", "PI_ORCHESTRATION_SESSION_ID",
+      "PI_PARENT_ORCHESTRATION_SESSION_ID", "PI_CODING_AGENT_DIR"];
+    const original = new Map(envNames.map((name) => [name, process.env[name]]));
+    const timer = capturePolling();
+    let session: AgentSession | undefined;
+    try {
+      await mkdir(bin); await mkdir(repo);
+      process.env.PATH = `${bin}:${process.env.PATH}`;
+      process.env.PI_PR_WATCH_STATE_DIR = join(root, "state");
+      process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+      delete process.env.PI_ORCHESTRATION_SESSION_ID;
+      delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+      execFileSync("git", ["init", "-b", "main"], { cwd: repo, stdio: "ignore" });
+      // The session checkout is owner/current, not the repository being merged.
+      await writeFile(join(bin, "timeout"), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 });
+      await writeFile(join(bin, "gh"), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(join(root, "gh-calls"))}, JSON.stringify(args) + '\\n');
+if(args[0]==='repo') console.log(JSON.stringify({nameWithOwner:'owner/current',defaultBranchRef:{name:'main'}}));
+else if(args[0]==='pr'&&args[1]==='merge') console.log('Merged');
+else if(args[0]==='pr'&&args[1]==='view') console.log(JSON.stringify({number:84,url:'https://github.com/owner/foreign/pull/84',headRefName:'changeset-release/main',headRefOid:'release-sha',headRepository:{nameWithOwner:'owner/foreign'},state:'MERGED',author:{login:'release-bot[bot]'},mergeCommit:{oid:'foreign-merge-sha'},mergedAt:'2026-11-08T21:20:44Z'}));
+else if(args[0]==='api'&&args[1]==='user') console.log(JSON.stringify({login:'owner'}));
+else if(args[0]==='run') console.log(JSON.stringify([{databaseId:84,attempt:1,name:'Version',workflowName:'Version',status:'completed',conclusion:'success',url:'https://github.com/owner/foreign/actions/runs/84',event:'push',updatedAt:'2026-01-01T00:00:00Z'}]));
+else console.log('[]');
+`, { mode: 0o755 });
+      session = await startSession(repo, root);
+      await runCommand(session, 'timeout 90 gh pr merge 84 -R owner/foreign --squash 2>&1 | tail -2; timeout 30 gh pr view 84 -R owner/foreign --json state,mergeCommit');
+      assert.equal(watchState(session).watchedSha?.repo, "owner/foreign");
+      assert.equal(watchState(session).watchedSha?.sha, "foreign-merge-sha");
+      for (const poll of timer.polls) await poll();
+      await session.waitForIdle();
+      for (const poll of timer.polls) await poll();
+      const notices = session.sessionManager.getBranch().filter((entry) =>
+        entry.type === "custom_message" && entry.customType === "pr-watch-harness");
+      assert.equal(notices.length, 1);
+      assert.match(JSON.stringify(notices[0]), /CI finished for the merge commit of PR #84/);
+      assert.match(JSON.stringify(notices[0]), /Repo: owner\/foreign/);
+      assert.equal(watchState(session).watchedSha, undefined);
+      const calls: string[][] = (await readFile(join(root, "gh-calls"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(calls.some((args) => args[0] === "run" && args.includes("foreign-merge-sha") && args.includes("owner/foreign")));
+    } finally {
+      if (session) await stopSession(session);
+      timer.restore();
+      for (const [name, value] of original) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   for (const automatic of [false, true]) {
   test(`real Pi worker publishes its PR to an orchestrator on main (${automatic ? "automatic timer, plain command" : "wrapped command"})`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-pr-watch-integration-"));

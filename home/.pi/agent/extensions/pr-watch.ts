@@ -1140,10 +1140,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   // A later merge or direct default-branch push replaces the previous fixed SHA.
   // An orchestrator reaches this only for its worker PRs. Any other session
-  // follows only the merges of PRs it owns.
-  function startMergeWatch(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
+  // follows its own PRs, or a PR it explicitly merged (including release bots).
+  function startMergeWatch(
+    pr: WatchedPr,
+    merged: { sha?: string; mergedAt?: string },
+    mergedBySession = false,
+  ): boolean {
     if (state.workerOrchestrationSessionId) return false;
-    if (!merged.sha || !state.selfLogin || pr.authorLogin !== state.selfLogin) return false;
+    if (!merged.sha || (!mergedBySession && (!state.selfLogin || pr.authorLogin !== state.selfLogin))) return false;
     if (!state.orchestrationSessionId && !isOwnedPr(pr)) return false;
 
     const current = state.watchedSha?.mergedPr;
@@ -1160,9 +1164,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     return true;
   }
 
-  function handleMergedPr(pr: WatchedPr, merged: { sha?: string; mergedAt?: string }): boolean {
+  function handleMergedPr(
+    pr: WatchedPr,
+    merged: { sha?: string; mergedAt?: string },
+    mergedBySession = false,
+  ): boolean {
     recordMergedBranch(pr);
-    return startMergeWatch(pr, merged);
+    return startMergeWatch(pr, merged, mergedBySession);
   }
 
   function isOwnedPr(pr: Pick<WatchedPr, "repo" | "number">): boolean {
@@ -1408,7 +1416,7 @@ export default function prWatch(pi: ExtensionAPI): void {
         await refreshSelfLogin(ctx);
         await recordOwnership(mergedPr, options.owned, ctx);
         const merged = { sha: pr.mergeCommit?.oid, mergedAt: pr.mergedAt ?? undefined };
-        if (handleMergedPr(mergedPr, merged)) {
+        if (handleMergedPr(mergedPr, merged, options.allowMergeWatch)) {
           removePr(mergedPr);
           // A worker snapshot can still list the merged PR; do not rediscover it.
           if (state.orchestrationSessionId) {
@@ -2463,20 +2471,37 @@ export default function prWatch(pi: ExtensionAPI): void {
     state.recentGhOutputs = [...state.recentGhOutputs, output].slice(-MAX_RECENT_GH_OUTPUTS);
   }
 
+  function isGhCommand(command: string, group: string, subcommands: string[]): boolean {
+    return commandSegments(command).some((tokens) => {
+      let index = 0;
+      // timeout is an execution wrapper, not the command being observed.
+      if (tokens[index] === "timeout") {
+        index += 1;
+        while (tokens[index]?.startsWith("-")) {
+          const flag = tokens[index++];
+          if (flag === "--") break;
+          if (["-k", "--kill-after", "-s", "--signal"].includes(flag ?? "")) index += 1;
+        }
+        index += 1; // duration
+      }
+      return tokens[index] === "gh" && tokens[index + 1] === group && subcommands.includes(tokens[index + 2] ?? "");
+    });
+  }
+
   function isActivationCommand(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+pr\s+(create|view|ready|edit|checkout)\b/.test(command);
+    return isGhCommand(command, "pr", ["create", ...PR_TARGET_SUBCOMMANDS]);
   }
 
   function isPrCreate(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+pr\s+create\b/.test(command);
+    return isGhCommand(command, "pr", ["create"]);
   }
 
   function isStackActivation(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+stack\s+(link|submit|push|sync)\b/.test(command);
+    return isGhCommand(command, "stack", ["link", "submit", "push", "sync"]);
   }
 
   function isStackMerge(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+stack\s+merge\b/.test(command);
+    return isGhCommand(command, "stack", ["merge"]);
   }
 
   function isGitPush(command: string): boolean {
@@ -2484,11 +2509,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function isPrMerge(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+pr\s+merge\b/.test(command);
+    return isGhCommand(command, "pr", ["merge"]);
   }
 
   function isRunRerun(command: string): boolean {
-    return /(^|[;&|\n]\s*)gh\s+run\s+rerun\b/.test(command);
+    return isGhCommand(command, "run", ["rerun"]);
   }
 
   pi.on("before_agent_start", (event) => {
@@ -2642,6 +2667,20 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
     }
 
+    // A merge may be followed by `gh pr view` in the same shell call. Observe
+    // the merge first so the read-only lookup cannot hide who merged the PR.
+    if (isPrMerge(command) || isStackMerge(command)) {
+      const group = isPrMerge(command) ? "pr" : "stack";
+      await discover(ctx, commandTargets(command, group, ["merge"])[0], {
+        allowMergeWatch: true,
+        // The session that merges a PR checks that its merge deployed.
+        owned: true,
+        // A bare gh stack merge number may name a stack rather than a PR.
+        ignoreUnresolved: group === "stack",
+      });
+      return;
+    }
+
     if (isActivationCommand(command)) {
       const namedTarget = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0];
       // Only gh pr create shows this session owns a PR named elsewhere; view,
@@ -2670,18 +2709,6 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (isGitPush(command)) {
       if (!(await watchPushedDefaultBranch(ctx, command, output))) await discover(ctx);
-      return;
-    }
-
-    if (isPrMerge(command) || isStackMerge(command)) {
-      const group = isPrMerge(command) ? "pr" : "stack";
-      await discover(ctx, commandTargets(command, group, ["merge"])[0], {
-        allowMergeWatch: true,
-        // The session that merges a PR checks that its merge deployed.
-        owned: true,
-        // A bare gh stack merge number may name a stack rather than a PR.
-        ignoreUnresolved: group === "stack",
-      });
       return;
     }
 
