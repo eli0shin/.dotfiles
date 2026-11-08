@@ -1,8 +1,9 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, focused, terminals, hc, notify, nextCommand, shared } from "herdr";
+import { spaces, agents, theme, run, window, keys, focused, terminals, hc, notify, nextCommand, shared, setShared } from "herdr";
 import { createNavigator } from "./navigation.js";
 import { focusNumberedAgent } from "./agent-order.js";
+import { applySharedPreferences } from "./preferences.js";
 
 export default class NavigatorStatus extends View {
   init(_props, cx) {
@@ -10,6 +11,7 @@ export default class NavigatorStatus extends View {
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();
+        if (applySharedPreferences(command, { setShared, notify })) continue;
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
     });

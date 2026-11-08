@@ -14,15 +14,19 @@ untracked. Don't commit those files.
 
 Run `dot stow` before first launching Herdr on a new machine. It automatically
 selects the `eli` layout and removes the top-right Files/Changes buttons. No
-manual layout switch or welcome setup is needed. For an existing installation,
-quit Herdr, run `dot stow`, then reopen it.
+manual layout switch or welcome setup is needed. On an existing installation,
+`dot stow` applies them to the running app too; no restart is needed.
 
 `shared.defaults.json` tracks these preferences and marks the welcome setup as
-finished. `scripts/configure-herdr-app.sh` applies those keys to the ignored
+finished unless it was already finished or skipped. `scripts/configure-herdr-app.sh` applies those keys to the ignored
 `shared.json` during stow, preserving all other machine-local mod state. Managed
-keys are reapplied on each stow; arrays are replaced, not concatenated. If an
-app is running and its preferences need changing, stow stops with instructions
-to quit it first; already-correct settings are left untouched. Do not convert
+keys are reapplied on each stow; arrays are replaced, not concatenated. A running
+app holds `shared.json` in memory (read once at launch, rewritten on every
+shared change), so stow never edits the file under it. It sends the changes
+instead: `layout.switch` for the layout, and
+`navigator-status.set-shared:<json>` for other keys, which `navigator-status`
+passes to `setShared`. The app then persists them itself. If the app doesn't
+respond, stow warns and continues; it never blocks the rest of stow. Do not convert
 this to `shared.base.json`: the regular merger would erase local state.
 
 `eli` is a layout, not a color theme; the color theme is `arctic`, tracked in

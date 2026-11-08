@@ -20,7 +20,8 @@ done
 tmp=$(mktemp "$config_dir/.shared.json.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 if [[ -e "$state" ]]; then
-    jq -s '.[0] + .[1]' "$state" "$defaults" > "$tmp"
+    # Managed keys win, except a welcome the user already dismissed either way.
+    jq -s '.[1] + .[0] + (.[1] | del(."frame.welcomed"))' "$state" "$defaults" > "$tmp"
     # A no-op must not touch the app's state, including while it is running.
     if jq -e -s '.[0] == .[1]' "$state" "$tmp" >/dev/null; then
         exit 0
@@ -29,8 +30,40 @@ else
     cp "$defaults" "$tmp"
 fi
 
-# shared.json is read at launch, not hot-reloaded. Editing it underneath a live
-# app would be ineffective and its next save could undo our preferences.
+app() { HERDR_APP_HOME="$config_dir" herdr-app "$@"; }
+
+# The running app holds shared.json in memory: it reads it once at launch and
+# rewrites it on every shared change, so a file edit would be ignored and then
+# undone. Set the values inside the app instead; it persists them itself.
+apply_live() {
+    local changes layout rest i
+    changes=$(jq -c -s '.[0] as $old | .[1] | with_entries(select(.value != $old[.key]))' \
+        <(if [[ -e "$state" ]]; then cat "$state"; else echo '{}'; fi) "$tmp")
+    layout=$(jq -r '.layout // empty' <<<"$changes")
+    rest=$(jq -c 'del(.layout)' <<<"$changes")
+    # layout.switch both shows the layout and persists it as shared "layout".
+    if [[ -n "$layout" ]]; then
+        app do layout.switch --name "$layout" >/dev/null 2>&1 || return 1
+    fi
+    if [[ "$rest" != '{}' ]]; then
+        # navigator-status (in the eli layout) sets them; allow it to load.
+        for ((i = 0; ; i++)); do
+            app do "navigator-status.set-shared:$rest" >/dev/null 2>&1 && break
+            ((i < 20)) || return 1
+            sleep 0.25
+        done
+    fi
+    # The app saves asynchronously; confirm the values actually landed.
+    for ((i = 0; i < 20; i++)); do
+        if [[ -e "$state" ]] && jq -e --argjson want "$changes" \
+            '. as $s | $want | to_entries | all(.value == $s[.key])' "$state" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 if [[ -S "$config_dir/herdr-app.sock" ]]; then
     running=true
     if command -v herdr-app >/dev/null 2>&1; then
@@ -40,10 +73,15 @@ if [[ -S "$config_dir/herdr-app.sock" ]]; then
             running=false # Confirmed connection failure: stale socket.
         fi
     fi
-    # A busy/hung-up window (or unavailable CLI) is not proof the app exited.
+    # A busy/hung-up window (or unavailable CLI) is not proof the app exited,
+    # so never write the file under it. Never block the rest of stow either.
     if [[ "$running" == true ]]; then
-        echo 'Quit Herdr and rerun dot stow to apply the tracked app preferences.' >&2
-        exit 1
+        if command -v herdr-app >/dev/null 2>&1 && apply_live; then
+            echo 'Configured running Herdr: eli layout, no Files/Changes buttons.'
+        else
+            echo 'Could not apply tracked preferences to the running Herdr; rerun dot stow once it responds.' >&2
+        fi
+        exit 0
     fi
 fi
 

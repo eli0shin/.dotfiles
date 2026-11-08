@@ -146,4 +146,18 @@ const clone = readFileSync(new URL('mods/eli-agents/main.js', root), 'utf8');
 const source = readFileSync(new URL('mods/navigator-status/agent-order.js', root), 'utf8');
 const definition = (text) => text.match(/const orderInputs = .*$/m)?.[0];
 assert.ok(definition(clone) && definition(clone) === definition(source), 'orderInputs drifted between eli-agents and agent-order.js');
-console.log('PASS: spaces picker key, numbered agent focus order');
+// dot stow sets tracked preferences in a running app through this command.
+const { applySharedPreferences } = await import(new URL('mods/navigator-status/preferences.js', root));
+const set = [];
+const notes = [];
+const prefs = { setShared: (key, value) => set.push([key, value]), notify: (m) => notes.push(m) };
+assert.equal(applySharedPreferences('left', prefs), false);
+assert.equal(applySharedPreferences('set-shared:{"workspace.panels":[],"a":1}', prefs), true);
+assert.deepEqual(set, [['workspace.panels', []], ['a', 1]]);
+for (const bad of ['set-shared:{', 'set-shared:[]', 'set-shared:null']) {
+  assert.equal(applySharedPreferences(bad, prefs), true);
+}
+assert.equal(set.length, 2, 'invalid payloads set nothing');
+assert.equal(notes.length, 3);
+assert.deepEqual(notes[0], { title: 'navigator-status', body: 'set-shared needs one JSON object', level: 'error' });
+console.log('PASS: spaces picker key, numbered agent focus order, live preferences');

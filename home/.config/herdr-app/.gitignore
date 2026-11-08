@@ -20,6 +20,7 @@
 !/mods/navigator-status/mod.json
 !/mods/navigator-status/navigation.js
 !/mods/navigator-status/agent-order.js
+!/mods/navigator-status/preferences.js
 !/mods/space-picker/
 /mods/space-picker/*
 !/mods/space-picker/main.js

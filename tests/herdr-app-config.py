@@ -91,6 +91,12 @@ cmd_stow
         self.stow()
         self.assertEqual(self.state.stat().st_mtime_ns, before, 'No-op must not rewrite runtime state')
 
+    def test_dismissed_welcome_is_kept(self):
+        self.state.write_text(json.dumps({'frame.welcomed': 'skipped'}))
+        self.stow()
+        self.assert_preferences()
+        self.assertEqual(json.loads(self.state.read_text())['frame.welcomed'], 'skipped')
+
     def test_invalid_runtime_is_not_clobbered(self):
         for content in ('{broken', '[]', 'null'):
             with self.subTest(content=content):
@@ -98,28 +104,49 @@ cmd_stow
                 self.stow(success=False)
                 self.assertEqual(self.state.read_text(), content)
 
-    def test_running_app_is_not_overwritten(self):
-        # A socket and successful status query stand in for a live app.
-        self.stow()
+    def fake_app(self, script):
         stub = self.root / 'bin'
-        stub.mkdir()
+        stub.mkdir(exist_ok=True)
         app = stub / 'herdr-app'
-        app.write_text('#!/bin/sh\n[ "$1" = status ]\n')
+        app.write_text('#!/bin/bash\n' + script + '\n')
         app.chmod(0o755)
         self.env['PATH'] = f"{stub}:{self.env['PATH']}"
+
+    # Stands in for a live app: it owns shared.json and applies commands itself.
+    LIVE_APP = '''
+state="$HERDR_APP_HOME/shared.json"
+case "$1 $2" in
+  status*) exit 0 ;;
+  "do layout.switch") jq --arg l "$4" '.layout = $l' "$state" > "$state.new" ;;
+  "do navigator-status.set-shared:"*) jq --argjson v "${2#navigator-status.set-shared:}" '. + $v' "$state" > "$state.new" ;;
+  *) exit 1 ;;
+esac
+mv "$state.new" "$state"
+'''
+
+    def test_running_app_is_configured_live(self):
+        self.fake_app(self.LIVE_APP)
+        self.state.write_text('{"layout":"main","local":"keep","frame.welcomed":"skipped"}')
         with socket.socket(socket.AF_UNIX) as sock:
             sock.bind(str(self.config / 'herdr-app.sock'))
-            self.stow()  # Already configured: safe even while running.
-            self.state.write_text('{"layout":"main","local":"keep"}')
-            before = self.state.read_bytes()
-            for response in ('exit 0',
+            result = self.stow()
+        self.assertIn('Configured running Herdr', result.stdout)
+        self.assert_preferences()
+        state = json.loads(self.state.read_text())
+        self.assertEqual((state['local'], state['frame.welcomed']), ('keep', 'skipped'))
+
+    def test_unresponsive_app_is_not_overwritten(self):
+        self.state.write_text('{"layout":"main","local":"keep"}')
+        before = self.state.read_bytes()
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(self.config / 'herdr-app.sock'))
+            for response in ('[ "$1" = status ]',  # Answers, but its commands fail.
                              'echo \'{"error":"the window did not answer"}\'; exit 1',
                              'echo "herdr-app: the window hung up" >&2; exit 1'):
                 with self.subTest(response=response):
-                    app.write_text('#!/bin/sh\n' + response + '\n')
-                    self.state.write_bytes(before)
-                    result = self.stow(success=False)
-                    self.assertIn('Quit Herdr', result.stdout + result.stderr)
+                    self.fake_app(response)
+                    result = self.stow()  # Must never block the rest of stow.
+                    self.assertIn('Could not apply', result.stderr)
                     self.assertEqual(self.state.read_bytes(), before)
 
     def test_stale_socket_does_not_block_setup(self):
