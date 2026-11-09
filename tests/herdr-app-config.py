@@ -69,6 +69,13 @@ cmd_stow
         layout = json.loads((self.config / 'layouts/eli.json').read_text())
         self.assertNotIn('font', layout, 'eli must inherit the tracked terminal font')
 
+    def test_paste_uses_normal_clipboard(self):
+        keys = json.loads((self.config / 'keys.json').read_text())
+        # Linux's universal Super+V sends Ctrl+V, just as in Ghostty.
+        self.assertEqual(keys['terminal']['ctrl-v'], 'terminal.paste')
+        self.assertEqual(keys['terminal']['cmd-v'], 'terminal.paste')
+        self.assertEqual(keys['terminal']['ctrl-shift-v'], 'terminal.paste_image')
+
     def test_ui_backgrounds_match_terminal(self):
         settings = json.loads((self.config / 'settings.json').read_text())
         theme = json.loads((self.config / 'themes' / f"{settings['theme']}.json").read_text())
