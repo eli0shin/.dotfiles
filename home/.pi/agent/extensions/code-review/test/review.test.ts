@@ -23,7 +23,7 @@ test("buildReviewPrompt references the skill and preserves the requirements boun
   assert.doesNotMatch(p, /code-review-skill/);
   assert.match(p, /uncommitted changes/);
   assert.match(p, /verify the implementation, not write the specification/);
-  assert.match(p, /accepted design boundaries/);
+  assert.match(p, /Judge the change's direction/);
   assert.match(p, /Do not create, strengthen, or reinterpret requirements/);
   assert.match(p, /new product decision.*outside the review/);
   assert.match(p, /Do not modify any files/);

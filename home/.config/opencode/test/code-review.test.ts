@@ -13,7 +13,7 @@ test("buildReviewPrompt preserves the Pi review requirements boundary", () => {
   assert.match(prompt, /using the code-review skill/);
   assert.match(prompt, /uncommitted changes/);
   assert.match(prompt, /verify the implementation, not write the specification/);
-  assert.match(prompt, /accepted design boundaries/);
+  assert.match(prompt, /Judge the change's direction/);
   assert.match(prompt, /Do not create, strengthen, or reinterpret requirements/);
   assert.match(prompt, /new product decision.*outside the review/);
   assert.match(prompt, /Do not modify any files/);
