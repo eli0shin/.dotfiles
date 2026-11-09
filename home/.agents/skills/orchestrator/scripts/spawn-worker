@@ -220,13 +220,14 @@ if [[ $workspace_manager == herdr ]]; then
   launch_status=$?
 elif [[ $workspace_manager == herdr-app ]]; then
   # mktemp names contain no JSON-special characters. The app shows new spaces
-  # and tabs, so focus returns to the orchestrator afterwards.
+  # and tabs, so focus returns to the orchestrator afterwards. Tabs stay
+  # unnamed: the eli-tabs mod titles only unnamed tabs after the Pi session.
   argv="[\"bash\",\"$launcher\"]"
   if [[ -n $space_id ]]; then
-    herdr-app do tab.new --space "$space_id" --name "$orchestration_harness" \
+    herdr-app do tab.new --space "$space_id" \
       --folder "$worktree" --argv "$argv" >&2
   else
-    herdr-app do space.new --name "$worker_identity" --tab "$orchestration_harness" \
+    herdr-app do space.new --name "$worker_identity" \
       --folder "$worktree" --argv "$argv" >&2
   fi
   launch_status=$?
