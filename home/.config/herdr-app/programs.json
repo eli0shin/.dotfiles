@@ -1,0 +1,11 @@
+{
+  "programs": {
+    "pi": {
+      "color": "#a78bfa"
+    },
+    "nvim": {
+      "icon": "program-icons/neovim.svg",
+      "tint": false
+    }
+  }
+}

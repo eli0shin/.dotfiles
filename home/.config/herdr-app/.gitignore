@@ -4,6 +4,10 @@
 !/README.md
 !/keys.json
 !/settings.json
+!/programs.json
+!/program-icons/
+/program-icons/*
+!/program-icons/neovim.svg
 !/shared.defaults.json
 !/layouts/
 /layouts/*
@@ -25,7 +29,13 @@
 /mods/space-picker/*
 !/mods/space-picker/main.js
 !/mods/space-picker/mod.json
+!/mods/eli-tabs/
+/mods/eli-tabs/*
+!/mods/eli-tabs/main.js
+!/mods/eli-tabs/mod.json
+!/mods/eli-tabs/names.js
 !/mods/eli-agents/
 /mods/eli-agents/*
 !/mods/eli-agents/main.js
 !/mods/eli-agents/mod.json
+!/mods/eli-agents/names.js

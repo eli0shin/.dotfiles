@@ -69,6 +69,17 @@ cmd_stow
         layout = json.loads((self.config / 'layouts/eli.json').read_text())
         self.assertNotIn('font', layout, 'eli must inherit the tracked terminal font')
 
+    def test_ui_backgrounds_match_terminal(self):
+        settings = json.loads((self.config / 'settings.json').read_text())
+        theme = json.loads((self.config / 'themes' / f"{settings['theme']}.json").read_text())
+        for token in ('canvas', 'chrome', 'surface', 'popover'):
+            with self.subTest(token=token):
+                self.assertEqual(theme['colors'][token], theme['background'])
+        # Interactive states must remain distinguishable from the base background.
+        for token in ('hover', 'raised', 'selected'):
+            with self.subTest(token=token):
+                self.assertNotEqual(theme['colors'][token], theme['background'])
+
     def test_first_launch(self):
         self.stow()
         self.assert_preferences()

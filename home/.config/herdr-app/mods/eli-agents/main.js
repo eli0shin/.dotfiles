@@ -6,6 +6,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { tabNames } from "./names.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -286,12 +287,15 @@ export default class Agents extends View {
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
-    // A row reads "space \u00b7 detail": the detail is a tab someone named or the
-    // agent's own title, never an automatic tab number unless two rows would
-    // otherwise read the same.
+    // A row's title is a tab someone named or the agent's own title, never an
+    // automatic tab number unless two rows in a space would otherwise read the same.
     // Read the pane snapshot once: every host read copies the whole list into JS.
-    const leads = leadPanes(panes());
-    const tabLabels = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));
+    const allPanes = panes();
+    const leads = leadPanes(allPanes);
+    const tabLabels = new Map(spaces().flatMap(s => {
+      const names = tabNames(s.tabs, allPanes);
+      return s.tabs.map(tab => [tab.id, tab.named || names.get(tab.id) !== tab.name ? names.get(tab.id) : title(tab, leads.get(tab.id))]);
+    }));
     const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
     const label = (a) => labels.get(a.address);
     const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
@@ -339,18 +343,20 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
-      // Under a space header the space goes without saying; an automatic tab number says nothing.
-      // Without a space header above (priority, pinned) the row names its space.
+      // Two lines: the tab's title gets the first to itself, up to the status and
+      // number; the space, the machine (when remote) and the time go beneath.
+      // An automatic tab number says nothing, so the program stands in for it.
+      // Under a space header the space goes without saying; without one above
+      // (priority, pinned) the second line names it.
       const full = byPriority || isPinned;
-      const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      return h_flex()
+      const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+      const space = full ? a.space_name : null;
+      return v_flex()
         .id(`ag-${a.address}`)
         .px(8)
-        .h(30)
+        .py(4)
         .flex_none()
         .rounded(8)
-        .items_center()
-        .gap(9)
         .when(a.focused, (el) => el.bg(t.selected))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover))
@@ -360,21 +366,22 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
-        .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
-          .when(subs.length > 0, el => el.on_click((_e, cx) => {
-            cx.stop_propagation();
-            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
-            cx.notify();
-          })).child(pic)))
-        .child(h_flex().flex_1().min_w(0).gap(5).items_center()
-          .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
-          .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
-        .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
-        .when(subs.length > 0, el => el.child(fold(a, subs)))
-        .when(this.hovered === a.address, el => el.child(pin))
-        .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
-        .child(this.status(t, a, byPriority && !isPinned))
-        .child(number(a));
+        .child(h_flex().h(20).gap(9).items_center()
+          .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
+            .when(subs.length > 0, el => el.on_click((_e, cx) => {
+              cx.stop_propagation();
+              this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
+              cx.notify();
+            })).child(pic)))
+          .child(div().flex_1().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(name))
+          .when(subs.length > 0, el => el.child(fold(a, subs)))
+          .child(this.status(t, a, byPriority && !isPinned))
+          .child(number(a)))
+        .child(h_flex().h(17).gap(9).items_center().text_size(11).text_color(t.dim)
+          .child(div().flex_1().min_w(0).truncate().child(space ?? ""))
+          .when(Boolean(machine), el => el.child(div().flex_none().text_size(10).child(machine)))
+          .when(this.hovered === a.address, el => el.child(pin))
+          .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().child(duration(now - when)))));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a

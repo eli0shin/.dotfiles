@@ -94,12 +94,12 @@ if OS.mac?
   cask "t3-code"
   cask "logitune"
   cask "superwhisper"
+  cask "anomalyco/tap/hex"
 end
 
 cask "codex"
 cask "lm-studio"
 cask "obsidian"
-cask "anomalyco/tap/hex"
 
 go "github.com/air-verse/air"
 go "github.com/go-delve/delve/cmd/dlv"

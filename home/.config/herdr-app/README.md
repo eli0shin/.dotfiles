@@ -39,6 +39,26 @@ only when split. The old 48/24/72-character sidebar sizes are approximated as
 Agents mod. The new app does not offer the old exact inner-border-only or
 tab-bar hostname options; its stock status bar identifies the machine.
 
+`eli-tabs` clones the stock tab bar but draws tinted glyphs in their program's
+color instead of muted gray. `programs.json` makes Pi purple and replaces the
+monochrome Neovim glyph with its blue/green logo in `program-icons/neovim.svg`
+([source: Devicon](https://github.com/devicons/devicon/blob/master/icons/neovim/neovim-original.svg)).
+Full-color pictures keep their original colors. These personal files survive
+app restarts and upgrades; the shipped tab bar and icons remain untouched.
+
+Unnamed tabs and the `eli-agents` sidebar display the Pi session name from its
+live terminal title, without the `π -` prefix or working directory. Pi's
+`auto-session-name.ts` extension generates that name and reassesses it after the
+second and third user prompts. Explicit Herdr tab names always win; clear a tab's
+name to resume following Pi. Duplicate automatic names within a space gain a
+`· <tab position>` suffix. Split tabs use their first Pi pane, not whichever pane
+has focus. Remote panes work through the same terminal-title stream; there is no
+local session-file read or app-to-model request. These are display names, not
+permanent `tab.rename` writes (CLI layout names remain unchanged).
+
+Herdr sandboxes each mod's imports to its own directory, so `names.js` is present
+in both personal mods; `tests/herdr-app-session-names.mjs` enforces identical copies.
+
 `settings.json` disables sounds and terminal scrollbars and fixes appearance
 to dark. Terminal and UI fonts select the app-local `Operator Mono Book Herdr`
 family: Book / Book Italic for ordinary cells and Bold / Bold Italic only when
@@ -67,9 +87,11 @@ uv run scripts/prepare-herdr-fonts.py --source-dir /path/to/licensed/fonts
 Restart Herdr after regenerating fonts it has already loaded. This repo tracks
 only the generator and settings, never the licensed files.
 
-The Arctic theme retains the legacy semantic UI colors and uses the same
-terminal background, foreground and ANSI palette as Ghostty/Neovim. Kitty
-graphics are supported by the app without an experimental setting.
+The Arctic theme uses the same terminal background, foreground and ANSI palette
+as Ghostty/Neovim. UI backgrounds (canvas, bars, sidebars, surfaces and popovers)
+match the terminal's `#1e1e1e`; hover, raised and selected states retain their
+distinct highlight colors. Kitty graphics are supported by the app without an
+experimental setting.
 
 These behaviors are verified against Herdr app 0.1.13's source:
 [`terminal_font` in settings.rs](https://github.com/herdrdev/herdr-app/blob/v0.1.13/src/settings.rs#L814-L822),
@@ -127,8 +149,11 @@ uv run tests/herdr-font-preparation.py
 # macOS after preparing fonts: verify native normal/bold/italic face selection.
 swift tests/herdr-app-font.swift
 node tests/herdr-app-navigation.mjs
+node tests/herdr-app-tab-icons.mjs
+node tests/herdr-app-session-names.mjs
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status
+herdr-app check ~/.config/herdr-app/mods/eli-tabs
 ```
 
 The old Lumen Alt+J/K shell aliases also depend on the legacy pane API and
@@ -152,6 +177,12 @@ priority (a parent takes its most urgent sub-agent's rank) or by space when
 grouped. That fallback can differ from the list for an agent you're viewing
 that just finished, or for ties within a section; open the sidebar once
 (Ctrl+G, B) to use the exact order.
+
+Each `eli-agents` row takes two lines. The first holds the tab title, which
+can use the whole width up to the status and number. The second holds the
+space, then, right-aligned, the machine (remote agents only) and the idle
+time. Under a space header (grouped view) the second line leaves out the
+space.
 
 ### Not migrated: no built-in equivalent
 

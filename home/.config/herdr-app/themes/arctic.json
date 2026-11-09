@@ -11,9 +11,9 @@
   ],
   "colors": {
     "canvas": "#1e1e1e",
-    "chrome": "#252526",
-    "surface": "#2D2D2D",
-    "popover": "#252526",
+    "chrome": "#1e1e1e",
+    "surface": "#1e1e1e",
+    "popover": "#1e1e1e",
     "raised": "#2A2D2E",
     "hover": "#2D2D2D",
     "selected": "#04395E",

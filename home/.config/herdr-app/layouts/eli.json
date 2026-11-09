@@ -49,19 +49,6 @@
               "min": 90
             }
           ]
-        },
-        {
-          "id": "sidebar-footer",
-          "type": "block",
-          "content": {
-            "mod": "workspace-chrome",
-            "props": {
-              "footer": true
-            }
-          },
-          "size": {
-            "px": 69
-          }
         }
       ],
       "size": {
@@ -81,7 +68,7 @@
           "id": "tabs",
           "type": "block",
           "content": {
-            "mod": "tabs"
+            "mod": "eli-tabs"
           },
           "size": {
             "px": 42
