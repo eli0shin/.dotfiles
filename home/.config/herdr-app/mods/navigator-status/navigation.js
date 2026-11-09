@@ -1,6 +1,9 @@
 // The app owns the chords; editors own their windows. Neovim labels an edge
 // handoff so the same protocol works on remote cores without a remote app CLI.
 const LABEL = "dotfiles.navigator";
+// Neovim's process group. The core reports only the group leader, which is a
+// wrapper (`fish -c`, `git`, an agent) whenever Neovim was started by one.
+const EDITOR = "dotfiles.navigator.editor";
 const KEYS = { left: "h", down: "j", up: "k", right: "l" };
 const PASSTHROUGH = /^(?:g?\.?)(?:view|l?n?vim?x?|fzf)(?:diff)?(?:-wrapped)?$/i;
 
@@ -25,9 +28,11 @@ export function createNavigator({ focused, terminals, hc, run, notify }) {
         const result = await hc(["get", source.terminal, "--json"]);
         if (result.code !== 0) throw new Error(result.stderr || "Could not inspect terminal");
         if (!sameFocus(source)) return;
-        const foreground = JSON.parse(result.stdout).foreground;
+        const terminal = JSON.parse(result.stdout);
+        const foreground = terminal.foreground;
         const name = (foreground?.name ?? "").split(/[\\/]/).pop();
-        if (PASSTHROUGH.test(name)) {
+        const editorInFront = foreground?.pid != null && terminal.labels?.[EDITOR] === String(foreground.pid);
+        if (editorInFront || PASSTHROUGH.test(name)) {
           const sent = await hc(["keys", source.terminal, `ctrl+${KEYS[direction]}`]);
           if (sent.code !== 0) throw new Error(sent.stderr || "Could not send navigation key");
         } else {

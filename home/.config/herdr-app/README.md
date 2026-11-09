@@ -125,7 +125,12 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 In the `eli` layout, `navigator-status` (a personal clone of the status bar)
 checks the focused terminal's foreground process via `hc`. For Neovim/Vim
 and fzf it forwards the original key with `hc keys`; elsewhere it moves to
-the adjacent Herdr pane. Neovim's local `herdr-app-navigator` module moves
+the adjacent Herdr pane. `hc` reports only the foreground process group's
+leader, which is a wrapper whenever one starts Neovim (`fish -c` in the PR
+diff tab, `git commit`, an agent's external editor). So Neovim also labels
+its terminal `dotfiles.navigator.editor=<its process group>` at startup and
+on resume and clears it on exit; a label matching the reported leader's pid
+forwards the key too. A suspended or exited Neovim's label never matches. Neovim's local `herdr-app-navigator` module moves
 between editor splits in normal mode, then labels its core terminal with a
 unique `dotfiles.navigator` request only at an edge. The app consumes the
 request once, and only while its source terminal is still focused. This

@@ -14,6 +14,7 @@ const { createNavigator } = await import(new URL('mods/navigator-status/navigati
 let focus = { terminal: 't1', pane: 'p1', tab: 'tab1' };
 let records = [{ address: 't1', labels: {} }];
 let foreground = { name: 'nvim', argv: ['nvim'] };
+let labels = {};
 let code = 0;
 const calls = [];
 const warnings = [];
@@ -22,7 +23,7 @@ const nav = createNavigator({
   terminals: () => records,
   hc: async (args) => {
     calls.push(args);
-    return { code, stdout: JSON.stringify({ foreground }), stderr: 'core unavailable' };
+    return { code, stdout: JSON.stringify({ foreground, labels }), stderr: 'core unavailable' };
   },
   run: (name, args) => calls.push([name, args]),
   notify: (message) => warnings.push(message),
@@ -43,6 +44,20 @@ foreground = { name: 'fish', argv: ['fish'] };
 calls.length = 0;
 await nav.navigate('left');
 assert.deepEqual(calls.at(-1), ['pane.go', { direction: 'left' }]);
+
+// Neovim under a wrapper: the core reports the group leader, not Neovim.
+// Its claim on that group forwards keys; a claim on another group does not.
+foreground = { name: 'fish', argv: ['fish', '-c', 'pr'], pid: 20523 };
+labels = { 'dotfiles.navigator.editor': '20523' };
+calls.length = 0;
+await nav.navigate('left');
+assert.deepEqual(calls.at(-1), ['keys', 't1', 'ctrl+h']);
+foreground = { name: 'fish', argv: ['fish'], pid: 4242 };
+calls.length = 0;
+await nav.navigate('left');
+assert.deepEqual(calls.at(-1), ['pane.go', { direction: 'left' }], 'a suspended or exited editor claim must not capture keys');
+foreground = { name: 'fish', argv: ['fish'] };
+labels = {};
 
 // Consume an edge handoff once, only while its source still has focus.
 records[0].labels['dotfiles.navigator'] = '123:1:right';

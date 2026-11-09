@@ -3,18 +3,35 @@ vim.opt.rtp:prepend(vim.fn.getcwd() .. '/home/.config/nvim')
 vim.env.HERDR_ENV = nil
 vim.env.TMUX = nil
 vim.env.HC_TERMINAL_ID = 'test-navigation'
+vim.env.NVIM = nil
 local requests = {}
 vim.system = function(argv, _, callback)
   requests[#requests + 1] = argv
+  local result = { code = 0, stdout = '', stderr = '' }
   if callback then
-    callback { code = 0, stdout = '', stderr = '' }
+    callback(result)
   end
-  return {}
+  return {
+    wait = function()
+      return result
+    end,
+  }
 end
 
 local navigator = require 'herdr-app-navigator'
 assert(navigator.active())
 navigator.setup()
+
+-- Claim this process group so the app forwards keys even when a wrapper leads it.
+local ffi = require 'ffi'
+pcall(ffi.cdef, 'int getpgid(int pid);')
+local claim = 'dotfiles.navigator.editor=' .. ffi.C.getpgid(0)
+assert(#requests == 1 and vim.deep_equal(requests[1], { 'hc', 'label', 'test-navigation', claim }), vim.inspect(requests))
+vim.api.nvim_exec_autocmds('VimResume', {})
+assert(#requests == 2 and requests[2][4] == claim, 'resuming must reclaim the terminal')
+vim.api.nvim_exec_autocmds('VimLeavePre', {})
+assert(#requests == 3 and requests[3][4] == 'dotfiles.navigator.editor=', 'exiting must release the claim')
+requests = {}
 local directions = { left = 'h', down = 'j', up = 'k', right = 'l' }
 local function press(key)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<C-' .. key .. '>', true, false, true), 'xt', false)
@@ -58,6 +75,12 @@ expect_edge 'up'
 local previous = requests[#requests][4]
 expect_edge 'up'
 assert(requests[#requests][4] ~= previous, 'repeated edge requests need unique tokens')
+
+vim.env.NVIM = '/tmp/outer-nvim.sock'
+count = #requests
+navigator.setup()
+assert(#requests == count, 'a Neovim inside a Neovim :terminal must not claim the outer terminal')
+vim.env.NVIM = nil
 
 vim.env.TMUX = '/tmp/test-tmux'
 assert(not navigator.active(), 'nested tmux must retain its own navigator')
