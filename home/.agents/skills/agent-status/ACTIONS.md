@@ -1,6 +1,6 @@
 # Acting on the triage
 
-Take the session's `manager`, IDs, cwd, and session file from a fresh `scripts/agent-status --signals` run. Each action targets the session Eli named and never the current session. Leave Eli's focus where he put it: legacy herdr tabs use `--no-focus`, and the Herdr app always shows a new tab, so refocus your own terminal right after with `herdr-app do pane.focus --terminal "$HC_TERMINAL_ID"`.
+Take the session's `manager`, IDs, cwd, and session file from a fresh `scripts/agent-status --signals` run. Each action targets the session Eli named and never the current session. Leave Eli's focus where he put it: open tabs without focus. Legacy herdr tabs use `--no-focus`. In the Herdr app, `tab.new` and `space.new` always focus what they open, so start the terminal with `hc run` and Herdr labels, as in Resume below.
 
 ## Legacy herdr (`manager: herdr`)
 
@@ -29,6 +29,7 @@ The app arranges spaces and tabs; herdr-core (`hc`) talks to the terminals.
   hc send --if idle <orchestrator_terminal> "Worker <branch> (<repo>#<pr>) stopped <N> minutes ago and PR Watch did not tell you. Its last message: <one-line summary>. Check on it."
   ```
 - **Resume** a closed session:
-  1. Run `herdr-app do tab.new --space <space_id> --name "<old tab label>" --folder <cwd> --argv '["pi","--session","<session-uuid>"]'`, then refocus your own terminal. The new terminal is `terminal` in the reply.
-  2. The resume is complete when `hc get <terminal>` has the label `dotfiles.pi_session` set to that same session file.
+  1. Pick a new tab ID, `tb` followed by 32 hex characters (`tb$(uuidgen | tr -d - | tr A-F a-f)`), and run `hc run --bg --keep --no-parent --cwd <cwd> --label herdr.space=<space_id> --label herdr.tab=<tab_id> -- fish -lic 'pi --session <session-uuid>; exec fish -li'`. The app adds the tab to that space without focusing it, and the login shell gives Pi the environment the app's own tabs get. The new terminal is `address` in the reply.
+  2. Once `herdr-app ls` lists the tab, run `herdr-app do tab.rename --id <tab_id> --name "<old tab label>"`.
+  3. The resume is complete when `hc get <terminal>` has the label `dotfiles.pi_session` set to that same session file.
 - **Close when done:** run `hc wait <terminal> --timeout 600`, then confirm the result with `hc read <terminal> --lines 100`, then close the pane. If the read shows a question or a failure, report it to Eli and leave the pane open.

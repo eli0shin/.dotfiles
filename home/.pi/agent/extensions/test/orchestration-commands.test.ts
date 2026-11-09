@@ -374,11 +374,12 @@ fi
   }
 });
 
-test("spawn-worker launches Pi in a Herdr app space and returns focus to the orchestrator", async () => {
+test("spawn-worker launches Pi in a Herdr app space without changing focus", async () => {
   const { root, fakeBin } = await fixture();
   const calls = join(root, "calls");
   const received = join(root, "received");
   const existingSpace = join(root, "existing-space");
+  const adopted = join(root, "adopted");
   const worktree = join(root, "repo-042-implement-widget");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(worktree));
 
@@ -399,19 +400,32 @@ echo "Creating worktree..." >&2
 echo "setup output"
 echo ${JSON.stringify(worktree)}
 `);
+  // The app adopts a labeled core terminal into the space it names.
+  await executable(join(fakeBin, "hc"), `#!/bin/sh
+printf 'hc' >> ${JSON.stringify(calls)}
+for arg in "$@"; do
+  printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}
+  case "$arg" in herdr.space=*) printf '%s' "\${arg#herdr.space=}" > ${JSON.stringify(adopted)} ;; esac
+done
+printf '\\n' >> ${JSON.stringify(calls)}
+exit "\${FAIL_DISPATCH:-0}"
+`);
   await executable(join(fakeBin, "herdr-app"), `#!/bin/sh
 printf 'herdr-app' >> ${JSON.stringify(calls)}
 for arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done
 printf '\\n' >> ${JSON.stringify(calls)}
 case "$1 $2" in
   "ls ")
+    extra=
+    if [ -f ${JSON.stringify(adopted)} ] && [ -z "\${FAIL_DISPATCH:-}" ]; then
+      extra=",{\\"id\\":\\"$(cat ${JSON.stringify(adopted)})\\",\\"name\\":\\"\\",\\"machine\\":null,\\"tabs\\":[]}"
+    fi
     if [ -f ${JSON.stringify(existingSpace)} ]; then
-      echo '{"spaces":[{"id":"vps/sp9","name":"repo@042-implement-widget","machine":"vps","tabs":[{"terminals":[{"terminal":"vps/t4"}]}]},{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]},{"id":"sp2","name":"repo@042-implement-widget","machine":null,"tabs":[]}]}'
+      echo '{"spaces":[{"id":"vps/sp9","name":"repo@042-implement-widget","machine":"vps","tabs":[{"terminals":[{"terminal":"vps/t4"}]}]},{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]},{"id":"sp2","name":"repo@042-implement-widget","machine":null,"tabs":[]}'"$extra"']}'
     else
-      echo '{"spaces":[{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]}]}'
+      echo '{"spaces":[{"id":"sp1","name":"repo@main","machine":null,"tabs":[{"terminals":[{"terminal":"t4"}]}]}'"$extra"']}'
     fi ;;
-  "do space.new"|"do tab.new") echo '{"terminal":"t9"}'; exit "\${FAIL_DISPATCH:-0}" ;;
-  "do pane.focus") echo '{"ok":true}' ;;
+  "do space.rename") echo '{"ok":true}' ;;
 esac
 `);
   await executable(join(fakeBin, "tmux"), `#!/bin/sh\nprintf 'tmux %s\\n' "$*" >> ${JSON.stringify(calls)}\n`);
@@ -424,14 +438,20 @@ printf '%s' "$1" > ${JSON.stringify(received)}
     ...process.env,
     PATH: `${fakeBin}:${process.env.PATH}`,
     TMPDIR: root,
+    SHELL: "/usr/local/bin/fish",
     HC_TERMINAL_ID: "t4",
     PI_ORCHESTRATION_SESSION_ID: "session-123",
   };
   const launcherOf = (log: string) => {
-    const match = log.match(/<--argv> <\["bash","(\/tmp\/pi-worker\.[A-Za-z0-9]+)"\]>/);
+    const match = log.match(/<bash> <(\/tmp\/pi-worker\.[A-Za-z0-9]+)>/);
     assert.ok(match, log);
     return match[1];
   };
+  const normalize = (log: string) =>
+    log.replace(launcherOf(log), "LAUNCHER").replace(/sp[0-9a-f]{32}/g, "SPACE").replace(/tb[0-9a-f]{32}/g, "TAB");
+  const launch = (space: string) =>
+    `hc <run> <--bg> <--keep> <--no-parent> <--cwd> <${worktree}> <--label> <herdr.space=${space}> <--label> <herdr.tab=TAB> ` +
+    "<--> </usr/local/bin/fish> <-lic> <command $argv[2..]; exec $argv[1] -li> </usr/local/bin/fish> <bash> <LAUNCHER>\n";
 
   try {
     const result = spawnSync(spawnWorker, ["042-implement-widget", "--context", "Keep API stable."], { encoding: "utf8", env });
@@ -439,13 +459,15 @@ printf '%s' "$1" > ${JSON.stringify(received)}
     let log = await readFile(calls, "utf8");
     const launcher = launcherOf(log);
     assert.equal(
-      log.replace(launcher, "LAUNCHER"),
+      normalize(log),
       "herdr-app <ls>\n" +
         "repos stack --no-tmux 042-implement-widget\n" +
         "herdr-app <ls>\n" +
-        `herdr-app <do> <space.new> <--name> <repo@042-implement-widget> <--tab> <pi> <--folder> <${worktree}> <--argv> <["bash","LAUNCHER"]>\n` +
-        "herdr-app <do> <pane.focus> <--terminal> <t4>\n",
+        launch("SPACE") +
+        "herdr-app <ls>\n" +
+        "herdr-app <do> <space.rename> <--id> <SPACE> <--name> <repo@042-implement-widget>\n",
     );
+    assert.doesNotMatch(log, /focus|space\.new|tab\.new/);
     const launched = spawnSync("bash", [launcher], { encoding: "utf8", env });
     assert.equal(launched.status, 0, launched.stderr);
     await assert.rejects(stat(launcher), { code: "ENOENT" });
@@ -454,26 +476,32 @@ printf '%s' "$1" > ${JSON.stringify(received)}
       "/skill:ticket-worker \n\nTicket: 042-implement-widget\nWorker identity: repo@042-implement-widget\nPR base: main\n\nContext:\nKeep API stable.",
     );
 
-    // A recovered worker reuses its branch and its local space.
+    // A recovered worker reuses its branch and gets a new tab in its local space.
     await rm(calls);
     await writeFile(existingSpace, "");
     const recovered = spawnSync(spawnWorker, ["042-implement-widget"], { encoding: "utf8", env, input: "" });
     assert.equal(recovered.status, 0, recovered.stderr);
     log = await readFile(calls, "utf8");
-    assert.match(log, /^herdr-app <ls>\nrepos work --no-tmux 042-implement-widget\n/);
-    assert.match(log, new RegExp(`herdr-app <do> <tab.new> <--space> <sp2> <--name> <pi> <--folder> <${worktree}> <--argv> `));
-    assert.doesNotMatch(log, /space\.new/);
+    assert.equal(
+      normalize(log),
+      "herdr-app <ls>\n" +
+        "repos work --no-tmux 042-implement-widget\n" +
+        "herdr-app <ls>\n" +
+        launch("sp2"),
+    );
     await rm(launcherOf(log));
 
-    // A failed launch removes the launcher and leaves focus alone.
+    // A failed launch removes the launcher and names no space.
     await rm(calls);
+    await rm(existingSpace);
     const failed = spawnSync(spawnWorker, ["042-implement-widget"], {
       encoding: "utf8", env: { ...env, FAIL_DISPATCH: "1" }, input: "",
     });
     assert.equal(failed.status, 1, failed.stderr);
     log = await readFile(calls, "utf8");
     await assert.rejects(stat(launcherOf(log)), { code: "ENOENT" });
-    assert.doesNotMatch(log, /pane\.focus/);
+    assert.doesNotMatch(log, /space\.rename/);
+    await writeFile(existingSpace, "");
 
     // A terminal this window doesn't show, such as one on another machine
     // with the same markers, keeps tmux.

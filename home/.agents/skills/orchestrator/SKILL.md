@@ -168,7 +168,7 @@ After each merge, follow the repository's demonstrated tracker resolution proces
 3. Run `tickets done <ticket-name>` so downstream blockers are removed.
 4. Update parent or map bookkeeping required by tracker instructions.
 5. Run `tickets lint`.
-6. In the worker's repo, run `repos clean --no-focus <ticket-name>` to remove the merged worktree and worker session without leaving the landing branch. When `spawn-worker` opened the worker in a Herdr app space, `repos` does not manage that space, so first close it: if `herdr-app ls` lists a local space (`machine` is null) whose `name` is the worker identity, run `herdr-app do space.close --id <id> --confirmed true`.
+6. In the worker's repo, run `repos clean --no-focus <ticket-name>`. It removes the merged worktree and closes the worker's session and space, so this one command is the whole cleanup.
 7. Run `git pull` to pull in the changes from the merged PR
 8. Reconcile every remaining open worker PR with one-shot `gh pr list`/`gh pr view` calls, since a landing merge may change PR state without producing a PR Watch event. When the merge took the bottom of a stack, rebase the rest of the stack (above) before anything else. After a stack merge, do steps 2–6 for every PR it merged, then this step once. Apply the merge compatibility gate to PRs that are otherwise ready to merge; leave other PRs in their normal event-driven flow.
 9. Find and spawn the newly unblocked frontier immediately.

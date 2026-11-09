@@ -115,8 +115,8 @@ sys.exit(0 if shown else 1)
 }
 
 # The innermost manager wins: legacy Herdr, then tmux, then the Herdr app.
-# The Herdr app runs terminals in herdr-core, which repos does not manage, so
-# repos only creates the worktree and the worker gets a Herdr app space.
+# Under the Herdr app, repos creates only the worktree (--no-tmux) and this
+# script opens the worker's space; `repos clean` later closes it by its folder.
 workspace_manager=tmux
 if [[ ${HERDR_ENV:-} == 1 ]]; then
   workspace_manager=herdr
@@ -219,21 +219,45 @@ if [[ $workspace_manager == herdr ]]; then
   herdr pane run "$pane_id" "$command"
   launch_status=$?
 elif [[ $workspace_manager == herdr-app ]]; then
-  # mktemp names contain no JSON-special characters. The app shows new spaces
-  # and tabs, so focus returns to the orchestrator afterwards. Tabs stay
-  # unnamed: the eli-tabs mod titles only unnamed tabs after the Pi session.
-  argv="[\"bash\",\"$launcher\"]"
-  if [[ -n $space_id ]]; then
-    herdr-app do tab.new --space "$space_id" \
-      --folder "$worktree" --argv "$argv" >&2
-  else
-    herdr-app do space.new --name "$worker_identity" \
-      --folder "$worktree" --argv "$argv" >&2
+  # space.new and tab.new always focus what they open (herdr-app#447). A core
+  # terminal labeled with a space and tab id shows up there without focus; an
+  # id the app doesn't know becomes a new space or tab. Like the app, run the
+  # agent in a login shell that stays open after it exits. Tabs stay unnamed:
+  # the eli-tabs mod titles only unnamed tabs after the Pi session.
+  new_id() { python3 -c 'import uuid; print(uuid.uuid4().hex)'; }
+  new_space=
+  if [[ -z $space_id ]]; then
+    space_id=sp$(new_id) || exit
+    new_space=1
   fi
+  tab_id=tb$(new_id) || exit
+  shell=${SHELL:-/bin/bash}
+  if [[ ${shell##*/} == fish ]]; then
+    run_argv=("$shell" -lic 'command $argv[2..]; exec $argv[1] -li' "$shell" bash "$launcher")
+  else
+    run_argv=("$shell" -lic 'bash "$1"; exec "$0" -li' "$shell" "$launcher")
+  fi
+  hc run --bg --keep --no-parent --cwd "$worktree" \
+    --label "herdr.space=$space_id" --label "herdr.tab=$tab_id" \
+    -- "${run_argv[@]}" >&2
   launch_status=$?
-  if [[ $launch_status -eq 0 ]] &&
-    ! herdr-app do pane.focus --terminal "$HC_TERMINAL_ID" >/dev/null; then
-    echo "spawn-worker: launched $worker_identity but could not refocus $HC_TERMINAL_ID" >&2
+  # A new space is unnamed until the app adopts the terminal; then give it the
+  # worker identity, which recovery and repos match.
+  if [[ $launch_status -eq 0 && -n $new_space ]]; then
+    renamed=
+    for _ in {1..50}; do
+      if herdr-app ls | python3 -c '
+import json, sys
+sys.exit(0 if any(s["id"] == sys.argv[1] for s in json.load(sys.stdin)["spaces"]) else 1)
+' "$space_id" 2>/dev/null; then
+        herdr-app do space.rename --id "$space_id" --name "$worker_identity" >/dev/null && renamed=1
+        break
+      fi
+      sleep 0.1
+    done
+    if [[ -z $renamed ]]; then
+      echo "spawn-worker: launched $worker_identity but could not name its space $space_id" >&2
+    fi
   fi
 else
   tmux send-keys -l -t "$worker_identity:0" -- "$command" &&

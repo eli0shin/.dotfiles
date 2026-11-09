@@ -1,6 +1,6 @@
 ---
 name: repos-git-workflows
-description: Enforces `repos` for worktrees and rebases. Use when entering a worktree, stacking a branch, updating a branch onto its parent or base, or finishing a paused rebase.
+description: Enforces `repos` for worktrees and rebases. Use when entering or removing a worktree, stacking a branch, updating a branch onto its parent or base, or finishing a paused rebase.
 ---
 
 # repos Git Workflows
@@ -13,10 +13,11 @@ Run `repos list`. Its stack and worktree state is authoritative over branch name
 
 ## 2. Run the operation
 
-Worktrees — continue all work from the path the command prints:
+Worktrees — `repos` opens and closes each worktree's workspace, and moves Eli's focus there unless you pass `--no-focus`. Pass it every time, so his focus stays where he put it. Continue all work from the path the command prints:
 
-- Enter a worktree for an independent branch: `repos work <branch>`
-- Create a child branch stacked on the current branch: `repos stack <child>`
+- Enter a worktree for an independent branch: `repos work --no-focus <branch>`
+- Create a child branch stacked on the current branch: `repos stack --no-focus <child>`
+- Remove a finished worktree and close its workspace: `repos clean --no-focus <branch>`. This one command is the whole cleanup.
 
 Updates — first identify which relationship changed:
 
