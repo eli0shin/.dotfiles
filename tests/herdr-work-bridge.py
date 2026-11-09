@@ -73,6 +73,17 @@ class DispatchTests(unittest.TestCase):
         endpoint.assert_called_once_with("hc.sock")
         relay.assert_called_once_with(Path("/work/hc.sock"))
 
+    def test_official_ios_connect_only_relays_the_forwarded_core_socket(self):
+        for executable in ("hc", "herdr-core"):
+            with self.subTest(executable=executable), patch.object(
+                bridge, "endpoint", return_value=Path("/work/hc.sock")
+            ) as endpoint, patch.object(bridge, "relay") as relay, patch.object(
+                bridge.subprocess, "run", side_effect=AssertionError("local core executed")
+            ):
+                self.output(f"{executable} connect")
+                endpoint.assert_called_once_with("hc.sock")
+                relay.assert_called_once_with(Path("/work/hc.sock"))
+
     def test_authentication_probe_has_no_side_effects(self):
         self.assertEqual(self.output("exit"), "")
 
@@ -81,6 +92,8 @@ class DispatchTests(unittest.TestCase):
             "/bin/sh -c 'touch /tmp/not-a-shell'", "/usr/bin/herdr status server --json",
             f"{EXE} --session work remote-client-bridge", f"{EXE} server",
             f"{EXE} server stop", f"{EXE} update", "",
+            "hc server start", "hc connect; uname -a", "hc connect --session other",
+            "hc --version; uname -a", "hc --version extra", "herdr-core update",
             "sh -c " + shlex.quote(bridge.CORE_CONNECT.replace('exec "$p" connect', 'HC_SESSION=other exec "$p" connect')),
             "sh -c " + shlex.quote(bridge.CORE_CONNECT + "; touch /tmp/not-a-shell"),
         ):
@@ -187,6 +200,88 @@ class RelayTests(unittest.TestCase):
         path.unlink()
         result = subprocess.run(
             [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": command},
+            input=b"", capture_output=True, timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / ".local/state/herdr-core").exists())
+
+    def test_official_ios_connect_roundtrip_and_missing_tunnel(self):
+        listener = socket.socket(socket.AF_UNIX)
+        self.addCleanup(listener.close)
+        path = self.tunnel / "hc.sock"
+        listener.bind(str(path))
+        listener.listen()
+        listener.settimeout(1)
+
+        def peer():
+            try:
+                stream, _ = listener.accept()
+            except OSError:
+                return
+            with stream:
+                stream.settimeout(5)
+                while data := stream.recv(65536):
+                    stream.sendall(data)
+
+        thread = threading.Thread(target=peer, daemon=True)
+        thread.start()
+        result = subprocess.run(
+            [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "hc connect"},
+            input=b"ios-core-handshake\x00\xff", capture_output=True, timeout=5,
+        )
+        thread.join(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"ios-core-handshake\x00\xff")
+        listener.close()
+        path.unlink()
+        result = subprocess.run(
+            [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "hc connect"},
+            input=b"", capture_output=True, timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / ".local/state/herdr-core").exists())
+
+    def test_official_ios_version_comes_from_work_core_not_devbox(self):
+        for reply, expected in (
+            ({"jsonrpc": "2.0", "id": 0, "result": {"version": "0.1.42"}}, b"hc 0.1.42\n"),
+            ({"jsonrpc": "2.0", "id": 0, "error": {"message": "unavailable"}}, None),
+        ):
+            with self.subTest(reply=reply):
+                path = self.tunnel / "hc.sock"
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.bind(str(path))
+                    listener.listen()
+                    listener.settimeout(1)
+                    requests = []
+
+                    def peer():
+                        try:
+                            stream, _ = listener.accept()
+                        except OSError:
+                            return
+                        stream.settimeout(5)
+                        with stream, stream.makefile("rb") as reader:
+                            requests.append(json.loads(reader.readline()))
+                            stream.sendall(json.dumps(reply).encode() + b"\n")
+
+                    thread = threading.Thread(target=peer, daemon=True)
+                    thread.start()
+                    result = subprocess.run(
+                        [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "hc --version"},
+                        input=b"", capture_output=True, timeout=5,
+                    )
+                    thread.join(timeout=1)
+                path.unlink()
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected)
+                    self.assertEqual(requests[0]["method"], "hello")
+                    self.assertEqual(requests[0]["params"]["generation"], 1)
+
+        result = subprocess.run(
+            [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "hc --version"},
             input=b"", capture_output=True, timeout=5,
         )
         self.assertNotEqual(result.returncode, 0)

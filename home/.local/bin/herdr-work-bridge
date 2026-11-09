@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SSH adapter for the TUI and core sockets published by herdr-share.
 
-Install as an authorized_keys forced command on Devbox. This is deliberately
+Install as an SSH forced command on Devbox (port-specific or authorized_keys). This is deliberately
 not a shell: unknown bootstrap commands fail rather than discovering or starting
 Devbox's own servers. Supports Herdr TUI 0.9.5 and herdr-core 0.1.18.
 """
@@ -126,6 +126,25 @@ def api_check():
         stream.connect(str(endpoint("herdr.sock")))
 
 
+def core_version():
+    """Report the forwarded WorkMac core's version, never Devbox's binary."""
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(10)
+        stream.connect(str(endpoint("hc.sock")))
+        request = {"jsonrpc": "2.0", "id": 0, "method": "hello", "params": {"generation": 1}}
+        stream.sendall(json.dumps(request).encode() + b"\n")
+        with stream.makefile("rb") as reader:
+            reply = reader.readline(BUFFER_LIMIT + 1)
+    if len(reply) > BUFFER_LIMIT:
+        raise RuntimeError("work core hello is too large")
+    data = json.loads(reply)
+    result = data.get("result") if isinstance(data, dict) else None
+    version = result.get("version") if isinstance(result, dict) else None
+    if not isinstance(version, str) or version.split() != [version]:
+        raise RuntimeError("work core did not report its version")
+    return version
+
+
 def herdr(args):
     if args[:2] == ["--session", "default"]:
         args = args[2:]
@@ -152,11 +171,14 @@ def dispatch(command):
     executable = str(Path(__file__).resolve())
     quoted = shlex.quote(executable)
     tokens = shlex.split(command)
-    if tokens == ["sh", "-c", CORE_CONNECT]:
+    if tokens in (["sh", "-c", CORE_CONNECT], ["hc", "connect"], ["herdr-core", "connect"]):
         # Core's native protocol handshake provides the actual Mac identity,
         # terminal/file APIs and version. Never run hc connect on Devbox: its
         # autodetect could start a local core after the work tunnel disappears.
         return relay(endpoint("hc.sock"))
+    if len(tokens) == 2 and tokens[0] in ("hc", "herdr-core") and tokens[1] in ("--version", "-V"):
+        print("hc " + core_version())
+        return
     if tokens == ["exit"]:
         return  # hc machine login only needs a successful authentication check.
     if tokens == ["/bin/sh", "-s"]:
@@ -202,7 +224,7 @@ def dispatch(command):
         if tokens[-1:] == ["</dev/null"]:
             tokens = tokens[:-1]
         if tokens[:1] != [executable]:
-            raise RuntimeError("unsupported SSH command (this key only serves the work tunnel)")
+            raise RuntimeError("unsupported SSH command (this endpoint only serves the work tunnel)")
         herdr(tokens[1:])
 
 
