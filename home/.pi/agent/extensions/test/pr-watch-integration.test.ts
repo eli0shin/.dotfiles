@@ -215,7 +215,9 @@ else console.log('[]');
     const bin = join(root, "bin"), repo = join(root, "repo"), worker = join(root, "worker");
     const envNames = ["PATH", "REPRO_ROOT", "REPRO_WORKER", "PI_PR_WATCH_STATE_DIR", "PI_ORCHESTRATION_SESSION_ID",
       "PI_PARENT_ORCHESTRATION_SESSION_ID", "OPENCODE_ORCHESTRATION_SESSION_ID", "OPENCODE_PARENT_ORCHESTRATION_SESSION_ID", "HERDR_ENV", "REPRO_AUTOMATIC",
-      "PI_CODING_AGENT_DIR"];
+      "PI_CODING_AGENT_DIR",
+      // Run inside the Herdr app, these make spawn-worker drive the real app instead of the stubbed tmux path.
+      "HC_TERMINAL_ID", "HC_SCOPE", "HC_TERMINAL_SOCKET"];
     const original = new Map(envNames.map((name) => [name, process.env[name]]));
     const timer = capturePolling(automatic);
     let session: AgentSession | undefined;
