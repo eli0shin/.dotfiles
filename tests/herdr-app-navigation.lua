@@ -20,17 +20,33 @@ end
 
 local navigator = require 'herdr-app-navigator'
 assert(navigator.active())
+-- Headless: no screen, so no claim on the terminal.
+navigator.setup()
+assert(#requests == 0, 'a Neovim without a UI must not claim the terminal')
+local list_uis = vim.api.nvim_list_uis
+local uis = { {} }
+vim.api.nvim_list_uis = function()
+  return uis
+end
 navigator.setup()
 
--- Claim this process group so the app forwards keys even when a wrapper leads it.
-local ffi = require 'ffi'
-pcall(ffi.cdef, 'int getpgid(int pid);')
-local claim = 'dotfiles.navigator.editor=' .. ffi.C.getpgid(0)
+-- Claim the terminal with this editor's server, so the app sends it the keys
+-- directly; release it while suspended and on exit.
+local claim = 'dotfiles.navigator.editor=' .. vim.json.encode { nvim = vim.fn.exepath 'nvim', server = vim.v.servername }
+assert(vim.v.servername ~= '')
 assert(#requests == 1 and vim.deep_equal(requests[1], { 'hc', 'label', 'test-navigation', claim }), vim.inspect(requests))
+vim.api.nvim_exec_autocmds('VimSuspend', {})
+assert(#requests == 2 and requests[2][4] == 'dotfiles.navigator.editor=', 'suspending must release the claim')
 vim.api.nvim_exec_autocmds('VimResume', {})
-assert(#requests == 2 and requests[2][4] == claim, 'resuming must reclaim the terminal')
+assert(#requests == 3 and requests[3][4] == claim, 'resuming must reclaim the terminal')
 vim.api.nvim_exec_autocmds('VimLeavePre', {})
-assert(#requests == 3 and requests[3][4] == 'dotfiles.navigator.editor=', 'exiting must release the claim')
+assert(#requests == 4 and requests[4][4] == 'dotfiles.navigator.editor=', 'exiting must release the claim')
+vim.api.nvim_exec_autocmds('UILeave', {})
+assert(#requests == 4, 'a remaining UI keeps the claim')
+uis = {}
+vim.api.nvim_exec_autocmds('UILeave', {})
+assert(#requests == 5 and requests[5][4] == 'dotfiles.navigator.editor=', ':detach must release the claim')
+vim.api.nvim_list_uis = list_uis
 requests = {}
 local directions = { left = 'h', down = 'j', up = 'k', right = 'l' }
 local function press(key)

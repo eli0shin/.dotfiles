@@ -1,13 +1,13 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, focused, terminals, hc, notify, nextCommand, shared, setShared } from "herdr";
+import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared } from "herdr";
 import { createNavigator } from "./navigation.js";
 import { focusNumberedAgent } from "./agent-order.js";
 import { applySharedPreferences } from "./preferences.js";
 
 export default class NavigatorStatus extends View {
   init(_props, cx) {
-    this.navigator = createNavigator({ focused, terminals, hc, run, notify });
+    this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();

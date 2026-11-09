@@ -122,26 +122,37 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 
 ### Neovim-aware Ctrl+H/J/K/L
 
-In the `eli` layout, `navigator-status` (a personal clone of the status bar)
-checks the focused terminal's foreground process via `hc`. For Neovim/Vim
-and fzf it forwards the original key with `hc keys`; elsewhere it moves to
-the adjacent Herdr pane. `hc` reports only the foreground process group's
-leader, which is a wrapper whenever one starts Neovim (`fish -c` in the PR
-diff tab, `git commit`, an agent's external editor). So Neovim also labels
-its terminal `dotfiles.navigator.editor=<its process group>` at startup and
-on resume and clears it on exit; a label matching the reported leader's pid
-forwards the key too. A suspended or exited Neovim's label never matches. Neovim's local `herdr-app-navigator` module moves
-between editor splits in normal mode, then labels its core terminal with a
-unique `dotfiles.navigator` request only at an edge. The app consumes the
-request once, and only while its source terminal is still focused. This
-also works with remote cores when these Neovim dotfiles are installed there;
-no remote `herdr-app` binary is required. Insert-mode keys keep their normal
-Neovim behavior. The mod uses core commands/labels, with no network access
-or external file reads.
+This follows vim-tmux-navigator. In the `eli` layout, `navigator-status` (a
+personal clone of the status bar) owns the chords. When Neovim is in front
+of the focused terminal, it hands Neovim the key directly:
+`nvim --server <its server> --remote-send <C-h>`, which Neovim treats exactly
+like a typed key. Neovim's local `herdr-app-navigator` module labels its
+terminal `dotfiles.navigator.editor={"nvim": <exepath("nvim"), else v:progpath>, "server": v:servername}`
+at startup and on resume, and clears it on suspend, `:detach` and exit;
+headless runs never set it. The label works
+even when a wrapper leads the terminal (`fish -c` in the PR diff tab,
+`git commit`, an agent's external editor), which `hc` would report instead of
+Neovim. The app only ever runs a program named `nvim` from that label.
+
+It never uses `hc keys` for Neovim: herdr-core holds agent keys until the
+person has stopped typing in that terminal for ~3 s (`HC_QUIET_MS`), so a
+Ctrl+L right after Alt+J in Diffview would wait 3 s. Without a label (or when
+its server is gone) the mod checks the foreground process via `hc`: Vim and
+fzf get the key with `hc keys` (subject to that wait); anything else moves
+to the adjacent Herdr pane.
+
+In normal mode Neovim moves between its splits, then labels its core
+terminal with a unique `dotfiles.navigator` request only at an edge. The app
+consumes the request once, and only while its source terminal is still
+focused. This also works with remote cores when these Neovim dotfiles are
+installed there; the app reaches a remote server through `exec` on that
+machine, and no remote `herdr-app` binary is required. Insert-mode keys keep
+their normal Neovim behavior.
 
 The bridge loads automatically for new Neovim sessions inside herdr-core.
-For an already-open Neovim, run `:lua require('herdr-app-navigator').setup()`
-to replace its existing normal-mode navigation mappings. New sessions disable
+For an already-open Neovim, run
+`:lua package.loaded['herdr-app-navigator'] = nil; require('herdr-app-navigator').setup()`
+to load the current module and claim its terminal. New sessions disable
 conflicting tmux.nvim bindings automatically. Legacy Herdr keeps its existing plugin, nested
 tmux keeps its own navigation, and ordinary terminals remain unchanged.
 Other app layouts retain native pane navigation; use `eli` for the bridge.

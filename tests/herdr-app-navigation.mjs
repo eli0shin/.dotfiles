@@ -14,8 +14,8 @@ const { createNavigator } = await import(new URL('mods/navigator-status/navigati
 let focus = { terminal: 't1', pane: 'p1', tab: 'tab1' };
 let records = [{ address: 't1', labels: {} }];
 let foreground = { name: 'nvim', argv: ['nvim'] };
-let labels = {};
 let code = 0;
+let execCode = 0;
 const calls = [];
 const warnings = [];
 const nav = createNavigator({
@@ -23,7 +23,12 @@ const nav = createNavigator({
   terminals: () => records,
   hc: async (args) => {
     calls.push(args);
-    return { code, stdout: JSON.stringify({ foreground, labels }), stderr: 'core unavailable' };
+    return { code, stdout: JSON.stringify({ foreground }), stderr: 'core unavailable' };
+  },
+  exec: async (command, args, options) => {
+    calls.push(['exec', command, args, options]);
+    if (execCode === null) throw new Error('cannot run');
+    return { code: execCode, stdout: '', stderr: '' };
   },
   run: (name, args) => calls.push([name, args]),
   notify: (message) => warnings.push(message),
@@ -45,19 +50,33 @@ calls.length = 0;
 await nav.navigate('left');
 assert.deepEqual(calls.at(-1), ['pane.go', { direction: 'left' }]);
 
-// Neovim under a wrapper: the core reports the group leader, not Neovim.
-// Its claim on that group forwards keys; a claim on another group does not.
-foreground = { name: 'fish', argv: ['fish', '-c', 'pr'], pid: 20523 };
-labels = { 'dotfiles.navigator.editor': '20523' };
-calls.length = 0;
-await nav.navigate('left');
-assert.deepEqual(calls.at(-1), ['keys', 't1', 'ctrl+h']);
-foreground = { name: 'fish', argv: ['fish'], pid: 4242 };
-calls.length = 0;
-await nav.navigate('left');
-assert.deepEqual(calls.at(-1), ['pane.go', { direction: 'left' }], 'a suspended or exited editor claim must not capture keys');
+// Neovim in front (even under a wrapper such as `fish -c`) gets the key over
+// its own server, never `hc keys`: the core holds those after a person types.
+const nvimLabel = JSON.stringify({ nvim: '/opt/homebrew/bin/nvim', server: '/tmp/nvim.1.0' });
+records[0].labels['dotfiles.navigator.editor'] = nvimLabel;
+foreground = { name: 'fish', argv: ['fish', '-c', 'pr'] };
+for (const [direction, key] of Object.entries({ left: 'h', down: 'j', up: 'k', right: 'l' })) {
+  calls.length = 0;
+  await nav.navigate(direction);
+  assert.deepEqual(calls, [['exec', '/opt/homebrew/bin/nvim', ['--server', '/tmp/nvim.1.0', '--remote-send', `<C-${key}>`], { on: null, timeout: 2000 }]]);
+}
+// A dead server falls back to what is in front now.
+for (const failure of [2, null]) {
+  execCode = failure;
+  calls.length = 0;
+  await nav.navigate('left');
+  assert.deepEqual(calls.slice(1), [['get', 't1', '--json'], ['pane.go', { direction: 'left' }]]);
+}
+execCode = 0;
+// Only Neovim is ever run from a label.
+for (const bad of ['{"nvim":"/bin/sh","server":"/tmp/x"}', '{"nvim":"/opt/homebrew/bin/nvim"}', '20523', 'not json']) {
+  records[0].labels['dotfiles.navigator.editor'] = bad;
+  calls.length = 0;
+  await nav.navigate('left');
+  assert.deepEqual(calls, [['get', 't1', '--json'], ['pane.go', { direction: 'left' }]], bad);
+}
+delete records[0].labels['dotfiles.navigator.editor'];
 foreground = { name: 'fish', argv: ['fish'] };
-labels = {};
 
 // Consume an edge handoff once, only while its source still has focus.
 records[0].labels['dotfiles.navigator'] = '123:1:right';
@@ -87,6 +106,12 @@ focus = { terminal: 'work/t7', pane: 'work/p7', tab: 'work/tab7' };
 foreground = { name: 'nvim' };
 await nav.navigate('up');
 assert.deepEqual(calls, [['get', 'work/t7', '--json'], ['keys', 'work/t7', 'ctrl+k']]);
+// A remote Neovim's server is reached on its own machine.
+records.push({ address: 'work/t7', labels: { 'dotfiles.navigator.editor': JSON.stringify({ nvim: 'nvim', server: '/run/nvim.7.0' }) } });
+calls.length = 0;
+await nav.navigate('up');
+assert.deepEqual(calls, [['exec', 'nvim', ['--server', '/run/nvim.7.0', '--remote-send', '<C-k>'], { on: 'work', timeout: 2000 }]]);
+records.pop();
 
 // Do not route a delayed process lookup to whichever pane became focused.
 let finishLookup;
@@ -94,6 +119,7 @@ const delayed = createNavigator({
   focused: () => focus,
   terminals: () => records,
   hc: () => new Promise((resolve) => { finishLookup = resolve; }),
+  exec: async () => assert.fail('no editor label'),
   run: (name) => calls.push(name),
   notify: () => {},
 });

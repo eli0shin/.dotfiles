@@ -1,10 +1,10 @@
--- Neovim half of the Herdr app navigator. The app forwards editor keys;
--- only a move at a window edge requests a pane change via the owning core.
+-- Neovim half of the Herdr app navigator, after vim-tmux-navigator. While
+-- Neovim is in front, the app hands it Ctrl+H/J/K/L straight over its RPC
+-- server; only a move at a window edge requests a pane change via the core.
 local M = {}
 local directions = { left = 'h', down = 'j', up = 'k', right = 'l' }
--- Claims the terminal's foreground process group, so the app forwards keys
--- even when Neovim isn't the group leader it reports (a wrapper script,
--- `git commit`, an agent's external editor).
+-- Where the app sends the keys. Set only while this editor is in front:
+-- cleared on suspend and exit, restored on resume.
 local EDITOR_LABEL = 'dotfiles.navigator.editor'
 local failure_notified = false
 
@@ -25,48 +25,34 @@ local function notify_failure(message)
   end)
 end
 
-local function label(pair, on_exit)
-  return pcall(vim.system, { 'hc', 'label', vim.env.HC_TERMINAL_ID, pair }, { text = true }, on_exit)
-end
-
--- The process group the terminal has in front while this editor runs. Since
--- Neovim 0.10 the TUI is the parent of this `--embed` server, which has its
--- own group.
-local function foreground_group()
-  local ok, ffi = pcall(require, 'ffi')
-  if not ok then
-    return nil
-  end
-  pcall(ffi.cdef, 'int getpgid(int pid);')
-  local pid = vim.tbl_contains(vim.v.argv, '--embed') and vim.uv.os_getppid() or 0
-  local found, group = pcall(function()
-    return ffi.C.getpgid(pid)
-  end)
-  if found and group > 0 then
-    return group
-  end
-end
-
-local function claim_foreground()
-  local group = foreground_group()
-  if not group then
-    return
-  end
-  local ok, err = label(EDITOR_LABEL .. '=' .. group, function(result)
+local function label(pair, failure)
+  local ok, job = pcall(vim.system, { 'hc', 'label', vim.env.HC_TERMINAL_ID, pair }, { text = true }, function(result)
     if result.code ~= 0 then
-      notify_failure(result.stderr or 'could not claim the terminal for Neovim')
+      notify_failure(result.stderr or failure)
     end
   end)
   if not ok then
-    notify_failure(tostring(err))
+    notify_failure(tostring(job))
+    return nil
   end
+  return job
 end
 
-local function release_foreground()
-  -- Synchronous: Neovim is exiting, and a stale claim would keep forwarding
-  -- keys to whatever else shares the group (a wrapping agent, git).
-  local ok, job = label(EDITOR_LABEL .. '=')
-  if ok then
+local function claim()
+  -- Headless runs (tests, scripts) aren't what the terminal shows.
+  if vim.v.servername == '' or #vim.api.nvim_list_uis() == 0 then
+    return
+  end
+  -- The PATH entry survives `brew upgrade`; v:progpath is the versioned keg.
+  local nvim = vim.fn.exepath 'nvim'
+  local editor = vim.json.encode { nvim = nvim ~= '' and nvim or vim.v.progpath, server = vim.v.servername }
+  label(EDITOR_LABEL .. '=' .. editor, 'could not claim the terminal for Neovim')
+end
+
+local function release(wait)
+  local job = label(EDITOR_LABEL .. '=', 'could not release the terminal')
+  -- On exit, wait: a stale claim would send the keys to a dead server.
+  if job and wait then
     pcall(job.wait, job, 1000)
   end
 end
@@ -82,14 +68,7 @@ function M.navigate(direction)
   -- Unique on every press, including repeated attempts at the same edge.
   -- The app consumes the label only while this terminal still has focus.
   local token = string.format('%d:%.0f:%s', vim.fn.getpid(), vim.uv.hrtime(), direction)
-  local ok, err = label('dotfiles.navigator=' .. token, function(result)
-    if result.code ~= 0 then
-      notify_failure(result.stderr or 'could not request pane navigation')
-    end
-  end)
-  if not ok then
-    notify_failure(tostring(err))
-  end
+  label('dotfiles.navigator=' .. token, 'could not request pane navigation')
 end
 
 function M.setup()
@@ -105,11 +84,30 @@ function M.setup()
   if vim.env.NVIM ~= nil and vim.env.NVIM ~= '' then
     return
   end
-  claim_foreground()
+  claim()
   local group = vim.api.nvim_create_augroup('herdr-app-navigator', { clear = true })
-  -- Another Neovim started while this one was suspended may have released it.
-  vim.api.nvim_create_autocmd('VimResume', { group = group, callback = claim_foreground })
-  vim.api.nvim_create_autocmd('VimLeavePre', { group = group, callback = release_foreground })
+  vim.api.nvim_create_autocmd('VimResume', { group = group, callback = claim })
+  vim.api.nvim_create_autocmd('VimSuspend', {
+    group = group,
+    callback = function()
+      release(false)
+    end,
+  })
+  -- `:detach` keeps the server running without a screen.
+  vim.api.nvim_create_autocmd('UILeave', {
+    group = group,
+    callback = function()
+      if #vim.api.nvim_list_uis() == 0 then
+        release(false)
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd('VimLeavePre', {
+    group = group,
+    callback = function()
+      release(true)
+    end,
+  })
 end
 
 return M
