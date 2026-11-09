@@ -1,0 +1,56 @@
+[
+  {
+    "name": "complaint quoting another session's name and path",
+    "messages": [
+      { "role": "user", "text": "no, no, no\nare you kidding me?\nThis session naming thing is garbage. it was good. there was no reason at all to rename that session\n\n Name: Rebase PR Description Mistake\n File: /Users/sam/.pi/agent/sessions/--Users-sam-code-shop-app-shop-412-run-checkout-specs-on-production-build--/2026-10-02T09-12-55-678Z_0199aed8.jsonl\n ID: 0199aed8-557e-724c-a294-788d12f7c726" },
+      { "role": "assistant", "text": "Let me find what renamed it." },
+      { "role": "assistant", "text": "It was named \"Checkout Spec Build Verify\" on 10-02 and renamed today after your second message. Let me see why the checkpoint changed." },
+      { "role": "user", "text": "Even worse. Checkout spec build verify is also terrible. And now, because the name Rebase PR Description Mistake is in my message, it gave this session that name too. You keep iterating on this and making it worse." },
+      { "role": "assistant", "text": "You're right. The namer read the quoted name as your goal. I'll stop tweaking and look at how the plugin decides when to rename." },
+      { "role": "user", "text": "Figure out what is going on in this plugin. Why are basic follow-up messages making it completely rename the session wrong? They were right off the first message, then the second message comes in and it throws everything out." }
+    ],
+    "checks": [
+      { "at": 0, "includes": ["nam"], "excludes": ["rebase", "checkout"] },
+      { "at": 1, "includes": ["nam"], "excludes": ["rebase", "checkout"] },
+      { "same": [1, 2] }
+    ]
+  },
+  {
+    "name": "ticket worker with a late correction",
+    "messages": [
+      { "role": "user", "skill": "ticket-worker", "text": "Branch: shop-412-run-checkout-specs-on-production-build\nPR base: main\n\nTask:\nJira SHOP-412. The two checkout specs, tests/checkout/express-pay.spec.ts and tests/checkout/saved-cards.spec.ts, skip whenever the base URL is local because the dev server disables payment iframes. Narrow the skip: skip only when the storefront under test runs the dev server, and run the specs on a local stack started from a production build and on every deployed stage. Detect the mode from a fact the stack exposes, such as the launch mode in stack:status --json. The skip message names the command that runs the specs locally. A small PR; the title starts with SHOP-412." },
+      { "role": "assistant", "text": "I'm reading how the local stack launches the storefront and where status is published." },
+      { "role": "assistant", "text": "Now the controller edits: record the launch mode in session state and publish it in stack:status --json." },
+      { "role": "assistant", "text": "Built and unit-tested. Opening the PR." },
+      { "role": "user", "text": "<orchestrator-message>CI is green on #2210. Rebase onto main; express-pay.spec.ts was deleted there.</orchestrator-message>" },
+      { "role": "assistant", "text": "Rebased onto main and dropped the deleted spec. I added a note about the rebase to the PR description." },
+      { "role": "user", "text": "Why would you put a note about a rebase on a PR description? Describe the PR as it stands now, one spec." }
+    ],
+    "checks": [
+      { "at": 0, "includes": ["checkout"], "excludes": ["shop-"] },
+      { "same": [0, 1] }
+    ]
+  },
+  {
+    "name": "question about who broke CI",
+    "messages": [
+      { "role": "user", "text": "who opened the PR that changed the domain? the e2e preview tests are failing on every PR branch now, they all die on the promo config" }
+    ],
+    "checks": [{ "at": 0, "includes": ["e2e", "preview", "ci", "promo", "domain"], "excludes": ["shop-"] }]
+  },
+  {
+    "name": "bare /skill:action-items",
+    "messages": [{ "role": "user", "skill": "action-items", "text": "" }],
+    "checks": [{ "at": 0, "equals": "action items" }]
+  },
+  {
+    "name": "bare /skill:agent-status",
+    "messages": [{ "role": "user", "skill": "agent-status", "text": "" }],
+    "checks": [{ "at": 0, "includes": ["agent status"] }]
+  },
+  {
+    "name": "/skill:action-items with a request",
+    "messages": [{ "role": "user", "skill": "action-items", "text": "add a follow-up to ping Harry about the promo config PR" }],
+    "checks": [{ "at": 0, "includes": ["harry"] }]
+  }
+]

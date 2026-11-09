@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p claude-bridge/tsconfig.json --noEmit",
-    "test": "node --test test/*.test.ts code-review/test/*.test.ts && npm run test:unit --prefix claude-bridge"
+    "test": "node --test test/*.test.ts code-review/test/*.test.ts && npm run test:unit --prefix claude-bridge",
+    "eval:session-name": "node --import tsx eval/auto-session-name.eval.ts"
   },
   "keywords": [],
   "author": "",

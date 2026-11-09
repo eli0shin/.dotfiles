@@ -13,6 +13,8 @@
 !pi-exa.json
 !extensions/
 !extensions/**
+# Real-session eval snapshots hold private work transcripts; this repo is public.
+extensions/**/*-local.*
 !skills/
 !skills/**
 !prompts/

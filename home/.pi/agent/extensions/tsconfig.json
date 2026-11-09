@@ -8,5 +8,5 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["*.ts", "test/**/*.ts", "code-review/**/*.ts"]
+  "include": ["*.ts", "test/**/*.ts", "eval/**/*.ts", "code-review/**/*.ts"]
 }
