@@ -84,10 +84,12 @@ test("names after the first prompt, reassesses two and three with assistant cont
   h.complete(async () => response("Fix Safari Login Redirects"));
   await h.user("It's Safari specifically, not Chrome");
   assert.equal(h.pi.getSessionName(), "Fix Safari Login Redirects");
-  const second = JSON.parse(h.calls[1].context.messages[0].content[0].text);
-  assert.equal(second.currentTitle, "Fix Login Redirects");
+  const request: string = h.calls[1].context.messages[0].content[0].text;
+  assert.match(request, /WHOLE conversation[^\n]*$/, "the task must be restated after the conversation");
+  const second = JSON.parse(request.slice(0, request.lastIndexOf("\n\n")));
+  assert.equal(second.currentTitle, undefined, "the old title must not anchor the new one");
   assert.match(second.conversation, /actual issue/);
-  assert.match(h.calls[1].context.systemPrompt, /return it EXACTLY/);
+  assert.match(h.calls[1].context.systemPrompt, /WHOLE CONVERSATION/);
   await h.user("Keep the existing OAuth flow");
   await h.user("Run tests and merge");
   assert.equal(h.calls.length, 3);
@@ -225,7 +227,7 @@ test("failures stay nonfatal and can retry; background runs are not named", asyn
   }
 });
 
-test("context excludes system, tool outputs, thinking and harness notifications and is bounded", () => {
+test("context excludes system, tool outputs, thinking and harness notifications and keeps messages whole", () => {
   const h = harness();
   h.manager.appendMessage({ role: "user", content: "😀".repeat(10000), timestamp: 1 });
   h.answer("actual answer");
@@ -235,8 +237,7 @@ test("context excludes system, tool outputs, thinking and harness notifications 
   h.manager.appendCustomMessageEntry("watch", "unrelated notification", true);
   const result = namingContext(h.manager.getBranch());
   assert.equal(result.count, 1);
-  assert.ok(result.conversation.length < 4000);
-  assert.doesNotMatch(result.conversation, /[\uD800-\uDFFF]/u);
+  assert.ok(result.conversation.includes("😀".repeat(10000)), "messages must never be truncated");
   assert.match(result.conversation, /actual answer/);
   assert.doesNotMatch(result.conversation, /private|secret|notification/);
 });
