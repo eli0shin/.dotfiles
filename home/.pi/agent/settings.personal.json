@@ -1,6 +1,6 @@
 {
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6.1-sol",
+  "defaultProvider": "claude-bridge",
+  "defaultModel": "claude-opus-5-5",
   "enabledModels": [
     "claude-bridge/claude-opus-5-5",
     "openai-codex/gpt-6.1-sol",
