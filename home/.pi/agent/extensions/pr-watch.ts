@@ -234,6 +234,8 @@ type ShaSyncResult = {
 
 const CUSTOM_STATE = "pr-watch-state";
 const NOTIFICATION_TYPE = "pr-watch-harness";
+// Coordination tools shown only to the session role that can use them.
+const ROLE_TOOLS = ["orchestrate", "stop_orchestrating", "ask_orchestrator"];
 // Coordination traffic shares PR Watch's delivery path; the label tells the
 // reader which kind of message arrived. Mixed batches keep the generic label.
 const NOTIFICATION_LABELS = ["pr-watch-notification", "orchestrator-message", "worker-message"] as const;
@@ -575,6 +577,17 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (state.orchestrationSessionId) process.env.PI_ORCHESTRATION_SESSION_ID = state.orchestrationSessionId;
     else delete process.env.PI_ORCHESTRATION_SESSION_ID;
   }
+
+  // Declares to the model only the coordination tools that fit this session's
+  // role; the tools still check the role when called.
+  function syncRoleTools(): void {
+    const visible = state.orchestrationSessionId
+      ? "stop_orchestrating"
+      : state.workerOrchestrationSessionId ? "ask_orchestrator" : "orchestrate";
+    const active = pi.getActiveTools();
+    const next = [...active.filter((name) => !ROLE_TOOLS.includes(name)), visible];
+    if (ROLE_TOOLS.some((name) => active.includes(name) !== next.includes(name))) pi.setActiveTools(next);
+  }
   const coordinationRoot =
     process.env.PI_PR_WATCH_STATE_DIR ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state"), "pi", "pr-watch", "orchestrations");
@@ -682,6 +695,10 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (generation !== sessionGeneration) return 0;
       const orchestrationId = state.orchestrationSessionId ?? state.workerOrchestrationSessionId;
       if (!orchestrationId) return 0;
+      // stopOrchestrating can change the role during the file reads below.
+      const stale = () =>
+        generation !== sessionGeneration ||
+        (state.orchestrationSessionId ?? state.workerOrchestrationSessionId) !== orchestrationId;
       const fromWorkers = Boolean(state.orchestrationSessionId);
       const source = fromWorkers ? "worker" : "orchestrator";
       const directory = fromWorkers
@@ -692,13 +709,13 @@ export default function prWatch(pi: ExtensionAPI): void {
         names = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort();
       } catch (error) {
         if (isObject(error) && error.code === "ENOENT") return 0;
-        if (generation !== sessionGeneration) return 0;
+        if (stale()) return 0;
         state.lastError = `Could not read ${source} messages: ${error instanceof Error ? error.message : String(error)}`;
         save();
         setStatus(ctx);
         return 0;
       }
-      if (generation !== sessionGeneration || names.length === 0) return 0;
+      if (stale() || names.length === 0) return 0;
 
       state.pendingMessages ??= [];
       const known = new Set([
@@ -717,18 +734,18 @@ export default function prWatch(pi: ExtensionAPI): void {
           if (known.has(value.id)) continue;
           if (fromWorkers) await validateWorkerMessage(value, orchestrationId);
           else if (value.worker !== undefined) throw new Error("expected a message from the orchestrator");
-          if (generation !== sessionGeneration) return 0;
+          if (stale()) return 0;
           state.pendingMessages.push({ id: value.id, text: value.text.trim(), ...(value.worker ? { worker: value.worker } : {}) });
           known.add(value.id);
           added += 1;
         } catch (error) {
-          if (generation !== sessionGeneration) return 0;
+          if (stale()) return 0;
           errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
           await rename(path, `${path}.invalid`).catch(() => undefined);
         }
       }
 
-      if (generation !== sessionGeneration) return 0;
+      if (stale()) return 0;
       if (errors.length > 0) state.lastError = `Could not read ${source} messages: ${errors.join("; ")}`;
       if (added > 0 || errors.length > 0) {
         save();
@@ -909,6 +926,8 @@ export default function prWatch(pi: ExtensionAPI): void {
     for (const workerSessionId of Object.keys(snapshots)) {
       if (!presentWorkerIds.has(workerSessionId)) delete snapshots[workerSessionId];
     }
+    // stopOrchestrating may have run while the snapshots were read.
+    if (state.orchestrationSessionId !== orchestrationId) return errors;
     state.workerSnapshots = snapshots;
     reconcileWorkerSettlements(snapshots);
 
@@ -929,10 +948,16 @@ export default function prWatch(pi: ExtensionAPI): void {
       }
     }
     for (const pr of desired.values()) {
+      if (state.orchestrationSessionId !== orchestrationId) break;
       if (resolved.has(pr.url)) continue;
       if (state.watchedPrs.some((watched) => prIdentityKey(watched.pr) === prIdentityKey(pr))) continue;
       try {
         await discover(ctx, pr.url);
+        // A stop during discovery must not leave the worker PR enrolled.
+        if (state.orchestrationSessionId !== orchestrationId && state.prOverrides?.[prIdentityKey(pr)] !== "watch") {
+          removePr(pr);
+          save();
+        }
       } catch (error) {
         errors.push(
           `Could not enroll worker PR ${pr.repo}#${pr.number}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2573,6 +2598,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
     state.pendingWorkerSettlements ??= [];
     exportOrchestrationSessionId();
+    syncRoleTools();
     reconcileSteers(ctx, true);
     if (state.workerOrchestrationSessionId) await refreshWorkerBranch();
     await receiveMessages(ctx);
@@ -2630,6 +2656,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     stopInboxPolling();
     if (orchestrationEnvironmentAtStart === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = orchestrationEnvironmentAtStart;
+  });
+
+  // Tree navigation restores the tool loadout recorded on the target branch.
+  pi.on("session_tree", () => {
+    syncRoleTools();
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -2789,7 +2820,46 @@ export default function prWatch(pi: ExtensionAPI): void {
       setStatus(ctx);
     }
     exportOrchestrationSessionId();
+    syncRoleTools();
     return state.orchestrationSessionId;
+  }
+
+  // Reverses orchestrate: the session returns to an ordinary role. PRs it
+  // explicitly watched stay; PRs enrolled only through workers are dropped.
+  async function stopOrchestrating(ctx: ExtensionContext): Promise<string> {
+    const orchestrationId = state.orchestrationSessionId;
+    if (!orchestrationId) throw new Error("This session is not an orchestrator");
+    state.orchestrationSessionId = undefined;
+    // Keep session_shutdown from handing a stopped launch ID to the next session.
+    if (orchestrationEnvironmentAtStart?.trim() === orchestrationId) orchestrationEnvironmentAtStart = undefined;
+    for (const watched of [...state.watchedPrs]) {
+      if (state.prOverrides?.[prIdentityKey(watched.pr)] !== "watch") removePr(watched.pr);
+    }
+    // An orchestrator's SHA watch is a worker PR's merge commit.
+    state.watchedSha = undefined;
+    state.pendingShaUpdate = undefined;
+    state.workerSnapshots = undefined;
+    state.pendingWorkerSettlements = [];
+    state.resolvedOrchestrationPrUrls = undefined;
+    state.resolvedWorkerSettlementIds = undefined;
+    state.pendingMessages = (state.pendingMessages ?? []).filter((message) => !message.worker);
+    stopInboxPolling();
+    exportOrchestrationSessionId();
+    syncRoleTools();
+    save();
+    if (state.mode !== "off") {
+      if (state.watchedPrs.length > 0) {
+        await syncWatchedSha(ctx);
+      } else {
+        const current = await ensureCurrentRepo(ctx);
+        if (current) await watchCurrentBranch(ctx, current);
+      }
+      save();
+    }
+    if (!hasTargets()) stopPolling(ctx);
+    else reschedulePolling(ctx);
+    setStatus(ctx);
+    return orchestrationId;
   }
 
   const prParameters = Type.Object({
@@ -2879,10 +2949,33 @@ export default function prWatch(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool({
+    name: "stop_orchestrating",
+    label: "Stop orchestrating",
+    description: "Return this orchestrator session to an ordinary session, when the user asks to stop orchestrating. Running workers are not stopped.",
+    parameters: Type.Object({}),
+    executionMode: "sequential",
+    async execute(_id, _params, _signal, _onUpdate, ctx) {
+      const orchestrationId = await stopOrchestrating(ctx);
+      const text = `This session no longer orchestrates ${orchestrationId}. Disregard the orchestrator instructions from now on; worker updates and messages no longer reach this session.`;
+      return { content: [{ type: "text", text }], details: undefined };
+    },
+  });
+
   pi.registerCommand("orchestrate", {
-    description: "Make this session an orchestrator of worker sessions",
-    handler: async (_args, ctx) => {
+    description: "Make this session an orchestrator of worker sessions; `/orchestrate stop` returns it to an ordinary session",
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
       try {
+        if (action === "stop") {
+          const orchestrationId = await stopOrchestrating(ctx);
+          ctx.ui.notify(`This session no longer orchestrates ${orchestrationId}; orchestrator instructions stop applying from your next message.`, "info");
+          return;
+        }
+        if (action) {
+          ctx.ui.notify("Usage: /orchestrate [stop]", "warning");
+          return;
+        }
         const orchestrationId = await orchestrate(ctx);
         ctx.ui.notify(`This session is orchestration ${orchestrationId}; orchestrator instructions apply from your next message.`, "info");
       } catch (error) {

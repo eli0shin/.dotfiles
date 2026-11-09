@@ -53,6 +53,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     parameters: { required?: string[]; properties: Record<string, unknown> };
     execute: (id: string, params: { pr?: string; request?: string; context?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any>;
   }>();
+  let activeTools = ["bash", "read"];
   const execCalls: Array<{ command: string; args: string[] }> = [];
   let execGate: {
     matches: (command: string, args: string[]) => boolean;
@@ -136,6 +137,14 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     },
     registerTool(tool: any): void {
       tools.set(tool.name, tool);
+      // Pi activates direct tools on registration.
+      activeTools.push(tool.name);
+    },
+    getActiveTools(): string[] {
+      return [...activeTools];
+    },
+    setActiveTools(names: string[]): void {
+      activeTools = [...names];
     },
     registerMessageRenderer(customType: string, renderer: MessageRenderer): void {
       messageRenderers.set(customType, renderer);
@@ -450,7 +459,13 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     messageRenderers,
     stateRoot,
     tools,
-    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate" | "ask_orchestrator", value?: string, context?: string) {
+    activeTools: () => [...activeTools],
+    async runCommand(name: string, args = ""): Promise<void> {
+      const command = commands.get(name);
+      assert.ok(command, `/${name} must be registered`);
+      await withFakeTimer(() => command.handler(args, ctx));
+    },
+    async callTool(name: "watch_pr" | "unwatch_pr" | "orchestrate" | "stop_orchestrating" | "ask_orchestrator", value?: string, context?: string) {
       const tool = tools.get(name);
       assert.ok(tool, `${name} must be registered`);
       const params = name === "ask_orchestrator" ? { request: value, context } : value === undefined ? {} : { pr: value };
@@ -1326,6 +1341,22 @@ for (const running of [false, true]) {
   });
 }
 
+test("stopping orchestration while the inbox is read drops the worker message", async () => {
+  await withWorker(async (worker) => {
+    await withOrchestrator(async (parent) => {
+      await worker.callTool("ask_orchestrator", "Question sent as the orchestrator stops");
+      const inbox = parent.runInboxPoll();
+      // Real readdir cannot complete within microtask turns, so the stop lands
+      // while the inbox read waits on it.
+      for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+      await parent.callTool("stop_orchestrating");
+      await inbox;
+      assert.deepEqual(parent.sentMessages, []);
+      assert.deepEqual(parent.savedStates.at(-1)?.pendingMessages, []);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
 test("worker messages batch on startup even when the parent was offline", async () => {
   await withWorker(async (worker) => {
     await worker.callTool("ask_orchestrator", "First decision");
@@ -1931,6 +1962,110 @@ test("orchestrate refuses to promote a worker session", async () => {
     await assert.rejects(harness.callTool("orchestrate"), /worker session cannot become an orchestrator/);
     assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
   });
+});
+
+test("only the coordination tools that fit the session role are declared to the model", async () => {
+  const roleTools = (harness: ReturnType<typeof createHarness>) =>
+    harness.activeTools().filter((name) => ["orchestrate", "stop_orchestrating", "ask_orchestrator"].includes(name));
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  const ordinary = createHarness();
+  try {
+    await ordinary.startSession();
+    assert.deepEqual(roleTools(ordinary), ["orchestrate"]);
+    // Other tools keep their place in the loadout.
+    assert.deepEqual(ordinary.activeTools().slice(0, 2), ["bash", "read"]);
+    assert.ok(ordinary.activeTools().includes("watch_pr"));
+
+    await ordinary.callTool("orchestrate");
+    assert.deepEqual(roleTools(ordinary), ["stop_orchestrating"]);
+    await ordinary.callTool("stop_orchestrating");
+    assert.deepEqual(roleTools(ordinary), ["orchestrate"]);
+  } finally {
+    await ordinary.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+  await withWorker(async (worker) => {
+    assert.deepEqual(roleTools(worker), ["ask_orchestrator"]);
+  });
+  await withOrchestrator(async (parent) => {
+    assert.deepEqual(roleTools(parent), ["stop_orchestrating"]);
+    // Tree navigation restores an older loadout; the role decides again.
+    parent.handlers.get("session_tree")?.({}, undefined);
+    assert.deepEqual(roleTools(parent), ["stop_orchestrating"]);
+  });
+});
+
+test("stop_orchestrating returns the session to an ordinary role and keeps only PRs it opted into", async () => {
+  const harness = createHarness();
+  const names = ["HOME", "PI_ORCHESTRATION_SESSION_ID", "PI_PARENT_ORCHESTRATION_SESSION_ID"];
+  const saved = names.map((name) => process.env[name]);
+  const home = mkdtempSync(join(tmpdir(), "pr-watch-home-"));
+  await mkdir(join(home, ".agents/skills/orchestrator"), { recursive: true });
+  await writeFile(join(home, ".agents/skills/orchestrator/SKILL.md"), "# Orchestrator\n");
+  process.env.HOME = home;
+  delete process.env.PI_ORCHESTRATION_SESSION_ID;
+  delete process.env.PI_PARENT_ORCHESTRATION_SESSION_ID;
+
+  try {
+    await harness.startSession();
+    await assert.rejects(harness.callTool("stop_orchestrating"), /not an orchestrator/);
+    await harness.activate(104);
+    await harness.callTool("orchestrate");
+    const orchestrationId = harness.savedStates.at(-1)?.orchestrationSessionId;
+    await harness.writeWorkerSnapshot(orchestrationId, "worker-one", [105]);
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map((watched: any) => watched.pr.number), [104, 105]);
+
+    const result = await harness.callTool("stop_orchestrating");
+    assert.match(result.content[0].text, new RegExp(`no longer orchestrates ${orchestrationId}`));
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+    const stopped = harness.savedStates.at(-1);
+    assert.equal(stopped.orchestrationSessionId, undefined);
+    assert.equal(stopped.workerSnapshots, undefined);
+    assert.deepEqual(stopped.watchedPrs.map((watched: any) => watched.pr.number), [104]);
+
+    // Worker snapshots no longer enroll PRs.
+    await harness.runPoll();
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map((watched: any) => watched.pr.number), [104]);
+
+    harness.setBranchEntries([{ type: "custom", customType: "pr-watch-state", data: harness.savedStates.at(-1) }]);
+    await harness.startSession("resume");
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, undefined);
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+  } finally {
+    await harness.shutdown();
+    names.forEach((name, index) => {
+      if (saved[index] === undefined) delete process.env[name];
+      else process.env[name] = saved[index];
+    });
+  }
+});
+
+test("/orchestrate stop ends a launch orchestration without handing its ID to the next session", async () => {
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "launch-id";
+  const harness = createHarness();
+  try {
+    await harness.startSession();
+    await harness.runCommand("orchestrate", "bogus");
+    assert.match(harness.notifications.at(-1) ?? "", /Usage: \/orchestrate \[stop\]/);
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, "launch-id");
+
+    await harness.runCommand("orchestrate", "stop");
+    assert.match(harness.notifications.at(-1) ?? "", /no longer orchestrates launch-id/);
+    assert.equal(harness.savedStates.at(-1)?.orchestrationSessionId, undefined);
+    await harness.shutdown();
+    assert.equal(process.env.PI_ORCHESTRATION_SESSION_ID, undefined);
+
+    await harness.runCommand("orchestrate", "stop");
+    assert.match(harness.notifications.at(-1) ?? "", /not an orchestrator/);
+  } finally {
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
 });
 
 test("watches the session branch SHA and a PR created from another worktree", async () => {
@@ -4605,6 +4740,38 @@ test("opt-out during snapshot enrollment cannot recreate buffered CI", { timeout
     harness.setIdle(true);
     await harness.settleAgent();
     assert.equal(harness.sentMessages.length, 0);
+  } finally {
+    gate?.release();
+    await harness.shutdown();
+    if (original === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
+    else process.env.PI_ORCHESTRATION_SESSION_ID = original;
+  }
+});
+
+test("stopping orchestration during snapshot enrollment cannot keep the worker PR", { timeout: 5_000 }, async () => {
+  const original = process.env.PI_ORCHESTRATION_SESSION_ID;
+  process.env.PI_ORCHESTRATION_SESSION_ID = "stop-race";
+  const harness = createHarness();
+  let gate: ReturnType<typeof harness.pauseExec> | undefined;
+  try {
+    await harness.startSession();
+    await harness.writeWorkerSnapshot("stop-race", "worker-one", [104]);
+    // Pause before the PR is enrolled.
+    gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "view" && args.includes(pr104Url), {
+      number: 104, url: pr104Url, headRefName: "remove-collapse-command", headRefOid: "abc104", state: "OPEN",
+      author: { login: "eli0shin" }, headRepository: { nameWithOwner: "eli0shin/repos" }, mergeable: "MERGEABLE",
+      mergeCommit: null, mergedAt: null,
+    });
+    const polling = harness.runPoll();
+    await gate.started;
+    await harness.callTool("stop_orchestrating");
+    gate.release();
+    await polling;
+    const stopped = harness.savedStates.at(-1);
+    assert.equal(stopped.orchestrationSessionId, undefined);
+    assert.deepEqual(stopped.watchedPrs, []);
+    assert.deepEqual(stopped.pendingPrUpdates, []);
+    assert.equal(stopped.workerSnapshots, undefined);
   } finally {
     gate?.release();
     await harness.shutdown();
