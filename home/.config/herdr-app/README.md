@@ -125,21 +125,19 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 This follows vim-tmux-navigator. In the `eli` layout, `navigator-status` (a
 personal clone of the status bar) owns the chords. When Neovim is in front
 of the focused terminal, it hands Neovim the key directly:
-`nvim --server <its server> --remote-send <C-h>`, which Neovim treats exactly
-like a typed key. Neovim's local `herdr-app-navigator` module labels its
-terminal `dotfiles.navigator.editor={"nvim": <exepath("nvim"), else v:progpath>, "server": v:servername}`
-at startup and on resume, and clears it on suspend, `:detach` and exit;
-headless runs never set it. The label works
-even when a wrapper leads the terminal (`fish -c` in the PR diff tab,
-`git commit`, an agent's external editor), which `hc` would report instead of
-Neovim. The app only ever runs a program named `nvim` from that label.
+`nvim --server <its server> --remote-send <C-h>`, using `nvim` from PATH.
+Neovim treats that exactly like a typed key. Neovim's local
+`herdr-app-navigator` module labels its terminal
+`dotfiles.navigator.editor=<v:servername>` at startup and on resume, and
+clears it on suspend, `:detach` and exit; headless runs never set it. The
+label works even when a wrapper leads the terminal (`fish -c` in the PR diff
+tab, `git commit`, an agent's external editor). Without the label, the chords
+always move to the adjacent Herdr pane. If the labelled Neovim is gone, the
+mod clears the label and moves the pane.
 
-It never uses `hc keys` for Neovim: herdr-core holds agent keys until the
-person has stopped typing in that terminal for ~3 s (`HC_QUIET_MS`), so a
-Ctrl+L right after Alt+J in Diffview would wait 3 s. Without a label (or when
-its server is gone) the mod checks the foreground process via `hc`: Vim and
-fzf get the key with `hc keys` (subject to that wait); anything else moves
-to the adjacent Herdr pane.
+It never uses `hc keys`: herdr-core holds agent keys until the person has
+stopped typing in that terminal for ~3 s (`HC_QUIET_MS`), so a Ctrl+L right
+after Alt+J in Diffview would wait 3 s.
 
 In normal mode Neovim moves between its splits, then labels its core
 terminal with a unique `dotfiles.navigator` request only at an edge. The app

@@ -2,21 +2,11 @@
 // windows. Neovim labels an edge handoff so the same protocol works on remote
 // cores without a remote app CLI.
 const LABEL = "dotfiles.navigator";
-// Neovim in front labels its RPC server: {"nvim": exepath("nvim") or v:progpath, "server": v:servername}.
-// Keys go there directly. `hc keys` would hold them until the person has
-// stopped typing in that terminal for ~3 s.
+// Neovim in front labels its terminal with its RPC server (v:servername) and
+// gets the keys there, from `nvim` on PATH. Never `hc keys`: the core holds
+// those until the person has stopped typing in that terminal for ~3 s.
 const EDITOR = "dotfiles.navigator.editor";
 const KEYS = { left: "h", down: "j", up: "k", right: "l" };
-const PASSTHROUGH = /^(?:g?\.?)(?:view|l?n?vim?x?|fzf)(?:diff)?(?:-wrapped)?$/i;
-
-function editorOf(terminal) {
-  try {
-    const editor = JSON.parse(terminal?.labels?.[EDITOR] ?? "");
-    // Only ever run Neovim itself, whatever a label claims.
-    if (/(?:^|\/)nvim$/.test(editor?.nvim) && typeof editor.server === "string" && editor.server) return editor;
-  } catch {}
-  return null;
-}
 
 // `work/t7` runs on machine `work`; a bare `t7` runs here.
 const machineOf = (address) => (address.includes("/") ? address.slice(0, address.lastIndexOf("/")) : null);
@@ -32,37 +22,23 @@ export function createNavigator({ focused, terminals, hc, exec, run, notify }) {
     async navigate(direction) {
       if (!KEYS[direction]) return;
       const source = focused();
-      if (!source?.terminal) {
+      const server = source?.terminal && terminals().find((t) => t.address === source.terminal)?.labels?.[EDITOR];
+      if (!server) {
         run("pane.go", { direction });
         return;
       }
-      const editor = editorOf(terminals().find((t) => t.address === source.terminal));
-      if (editor) {
-        try {
-          const args = ["--server", editor.server, "--remote-send", `<C-${KEYS[direction]}>`];
-          const sent = await exec(editor.nvim, args, { on: machineOf(source.terminal), timeout: 2000 });
-          if (sent.code === 0) return;
-        } catch {}
-        // A dead server: fall back to what is in front now.
-        if (!sameFocus(source)) return;
-      }
+      let sent;
       try {
-        // Query at the keypress rather than trusting a potentially stale UI
-        // process snapshot (e.g. immediately after launching/exiting Neovim).
-        const result = await hc(["get", source.terminal, "--json"]);
-        if (result.code !== 0) throw new Error(result.stderr || "Could not inspect terminal");
-        if (!sameFocus(source)) return;
-        const foreground = JSON.parse(result.stdout).foreground;
-        const name = (foreground?.name ?? "").split(/[\\/]/).pop();
-        if (PASSTHROUGH.test(name)) {
-          const sent = await hc(["keys", source.terminal, `ctrl+${KEYS[direction]}`]);
-          if (sent.code !== 0) throw new Error(sent.stderr || "Could not send navigation key");
-        } else {
-          run("pane.go", { direction });
-        }
+        const args = ["--server", server, "--remote-send", `<C-${KEYS[direction]}>`];
+        sent = await exec("nvim", args, { on: machineOf(source.terminal), timeout: 2000 });
       } catch (error) {
-        notify({ title: "Pane navigation failed", body: String(error), level: "error" });
+        notify({ title: "Pane navigation failed", body: `Could not run nvim: ${error}`, level: "error" });
+        return;
       }
+      if (sent.code === 0) return;
+      // Its Neovim died without releasing the terminal: forget it and move.
+      hc(["label", source.terminal, `${EDITOR}=`]).catch(() => {});
+      if (sameFocus(source)) run("pane.go", { direction });
     },
 
     onTerminalsChanged() {

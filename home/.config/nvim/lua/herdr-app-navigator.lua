@@ -3,8 +3,8 @@
 -- server; only a move at a window edge requests a pane change via the core.
 local M = {}
 local directions = { left = 'h', down = 'j', up = 'k', right = 'l' }
--- Where the app sends the keys. Set only while this editor is in front:
--- cleared on suspend and exit, restored on resume.
+-- This editor's server, where the app sends the keys. Set only while it is
+-- in front: cleared on suspend, :detach and exit, restored on resume.
 local EDITOR_LABEL = 'dotfiles.navigator.editor'
 local failure_notified = false
 
@@ -43,10 +43,7 @@ local function claim()
   if vim.v.servername == '' or #vim.api.nvim_list_uis() == 0 then
     return
   end
-  -- The PATH entry survives `brew upgrade`; v:progpath is the versioned keg.
-  local nvim = vim.fn.exepath 'nvim'
-  local editor = vim.json.encode { nvim = nvim ~= '' and nvim or vim.v.progpath, server = vim.v.servername }
-  label(EDITOR_LABEL .. '=' .. editor, 'could not claim the terminal for Neovim')
+  label(EDITOR_LABEL .. '=' .. vim.v.servername, 'could not claim the terminal for Neovim')
 end
 
 local function release(wait)

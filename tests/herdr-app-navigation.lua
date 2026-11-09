@@ -32,7 +32,7 @@ navigator.setup()
 
 -- Claim the terminal with this editor's server, so the app sends it the keys
 -- directly; release it while suspended and on exit.
-local claim = 'dotfiles.navigator.editor=' .. vim.json.encode { nvim = vim.fn.exepath 'nvim', server = vim.v.servername }
+local claim = 'dotfiles.navigator.editor=' .. vim.v.servername
 assert(vim.v.servername ~= '')
 assert(#requests == 1 and vim.deep_equal(requests[1], { 'hc', 'label', 'test-navigation', claim }), vim.inspect(requests))
 vim.api.nvim_exec_autocmds('VimSuspend', {})
