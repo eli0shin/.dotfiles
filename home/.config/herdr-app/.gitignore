@@ -39,3 +39,7 @@
 !/mods/eli-agents/main.js
 !/mods/eli-agents/mod.json
 !/mods/eli-agents/names.js
+!/mods/eli-spaces/
+/mods/eli-spaces/*
+!/mods/eli-spaces/main.js
+!/mods/eli-spaces/mod.json

@@ -178,6 +178,14 @@ grouped. That fallback can differ from the list for an agent you're viewing
 that just finished, or for ties within a section; open the sidebar once
 (Ctrl+G, B) to use the exact order.
 
+`eli-spaces` is a personal clone of the shipped Spaces sidebar. Nested worktrees
+show one name without the `repos` `<repo>@` prefix or a second branch suffix.
+Automatic names use the branch; custom space names remain renamable and saved
+names are unchanged. The label uses the available sidebar width and keeps
+ahead/behind counters. Standalone rows keep their original git context.
+Check with `node tests/herdr-app-spaces.mjs` and
+`herdr-app check ~/.config/herdr-app/mods/eli-spaces`.
+
 Each `eli-agents` row takes two lines. The first holds the tab title, which
 can use the whole width up to the status and number. The second holds the
 space, then, right-aligned, the machine (remote agents only) and the idle

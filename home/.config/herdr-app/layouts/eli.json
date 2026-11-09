@@ -30,7 +30,7 @@
               "id": "spaces",
               "type": "block",
               "content": {
-                "mod": "spaces"
+                "mod": "eli-spaces"
               },
               "size": {
                 "weight": 1
