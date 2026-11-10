@@ -77,7 +77,7 @@ test("normalizes titles and rejects prose, controls, JSON and oversized answers"
   for (const value of ["", "First line\nsecond line", "\x1b]0;bad", '{"title":"Fix login"}', "Fix Safari OAuth Redirect Loop", "FCC-1973 prefetch specs"]) assert.equal(cleanTitle(value), undefined);
 });
 
-test("names after the first prompt, reassesses two and three against the current title with the whole conversation, then stops", async () => {
+test("names after the first prompt, reassesses the second against the current title with the whole conversation, then stops", async () => {
   const h = harness();
   await h.start();
   await h.user("Use the debugging skill");
@@ -98,13 +98,22 @@ test("names after the first prompt, reassesses two and three against the current
     assert.ok(request.slice(0, split).includes(text), `the whole conversation must be sent: ${text}`);
   }
   assert.match(h.calls[1].context.systemPrompt, /overarching goal/);
-  h.complete(async () => answer("GOAL: Fix Safari login redirects\nMATCH: yes\nTITLE: Safari Redirect Loop Fix"));
   await h.user("Keep the existing OAuth flow");
-  assert.equal(h.pi.getSessionName(), "Fix Safari Login Redirects", "MATCH: yes keeps the title even when TITLE rewords it");
-  await h.user("Run tests and merge");
-  assert.equal(h.calls.length, 3);
+  assert.equal(h.calls.length, 2, "prompts after the second must not trigger naming");
+  await h.emit("session_shutdown");
+});
+
+test("MATCH: yes on the second prompt keeps the current title without a redundant rename", async () => {
+  const h = harness();
+  await h.start();
+  await h.user("Fix login redirects");
+  assert.equal(h.pi.getSessionName(), "Fix Login Redirects");
+  h.complete(async () => answer("GOAL: Fix login redirects\nMATCH: yes\nTITLE: Login Redirect Loop Fix"));
+  await h.user("Keep the existing OAuth flow");
+  assert.equal(h.pi.getSessionName(), "Fix Login Redirects", "MATCH: yes keeps the title even when TITLE rewords it");
+  assert.equal(h.calls.length, 2);
   const names = h.manager.getEntries().filter(e => e.type === "session_info");
-  assert.equal(names.length, 2, "keeping a correct title must not append redundant renames");
+  assert.equal(names.length, 1, "keeping a correct title must not append redundant renames");
   await h.emit("session_shutdown");
 });
 
@@ -215,12 +224,14 @@ test("late results cannot rename a replaced session or overwrite a newer naming 
   assert.equal(signal.aborted, true);
   finish!(response("A Vague Title")); await tick();
   assert.equal(h.pi.getSessionName(), "Fix Safari Login Redirects");
-  let afterExit: (value: any) => void;
-  h.complete(() => new Promise(resolve => { afterExit = resolve; }));
-  await h.user("A third message");
   await h.emit("session_shutdown");
+  const exited = harness(); await exited.start();
+  let afterExit: (value: any) => void;
+  exited.complete(() => new Promise(resolve => { afterExit = resolve; }));
+  await exited.user("Fix redirects");
+  await exited.emit("session_shutdown");
   afterExit!(response("Wrong Session Name")); await tick();
-  assert.equal(h.pi.getSessionName(), "Fix Safari Login Redirects");
+  assert.equal(exited.pi.getSessionName(), undefined);
 });
 
 test("failures stay nonfatal and can retry; background runs are not named", async () => {

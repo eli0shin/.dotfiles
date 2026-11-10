@@ -56,7 +56,7 @@ export function namingContext(entries: readonly SessionEntry[]) {
     messages.push(`${entry.message.role.toUpperCase()}:\n${body}`);
   }
   // Every user and assistant message, whole; tool output, system prompts and thinking never leave this process.
-  return { count: users.length, checkpoint: users.slice(0, 3).join(":"), conversation: messages.join("\n\n") };
+  return { count: users.length, checkpoint: users.slice(0, 2).join(":"), conversation: messages.join("\n\n") };
 }
 
 export function namingModel(current: Model<Api>, models: Model<Api>[]): Model<Api> {
