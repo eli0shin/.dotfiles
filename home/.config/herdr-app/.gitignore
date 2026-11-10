@@ -25,6 +25,7 @@
 !/mods/navigator-status/navigation.js
 !/mods/navigator-status/agent-order.js
 !/mods/navigator-status/preferences.js
+!/mods/navigator-status/tab-close-focus.js
 !/mods/space-picker/
 /mods/space-picker/*
 !/mods/space-picker/main.js
