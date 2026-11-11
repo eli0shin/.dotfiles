@@ -9,8 +9,13 @@ Things Herdr App (0.1.14) can't do that the Herdr TUI could, or that block a key
 | Gap | Upstream |
 |---|---|
 | **Keyboard copy mode.** The TUI had prefix `[`, hjkl motions, `v`/`V` to select and `y` to yank. The app only lets you select with the mouse. | [#360](https://github.com/herdrdev/herdr-app/issues/360): a selection API (`terminal.select`, `adjust_selection`) was proposed on Nov 7, with no maintainer reply and no PR. |
-| **Keyboard pane resize.** Panes can only be resized by dragging the divider. | [#117](https://github.com/herdrdev/herdr-app/issues/117): romangolev offered to implement `pane.resize` on Nov 7. |
-| **Line height is hard-coded** to 1.15 × the font height (`cell_size()`), which is too tall, and there's no setting for it. | [#66](https://github.com/herdrdev/herdr-app/issues/66) (9 reactions, several +1s), [PR #67](https://github.com/herdrdev/herdr-app/pull/67) (adds the setting, open since Oct 29, needs review), [#595](https://github.com/herdrdev/herdr-app/issues/595) |
+| **Keyboard pane resize.** Panes can only be resized by dragging the divider. Since 0.1.14, `layout.resize --id <pane> --weight N` sets a pane's share of its split, but only to an absolute size. Mods can't see pane geometry or the parent split, so they can't step a divider. | [#117](https://github.com/herdrdev/herdr-app/issues/117): romangolev offered to implement `pane.resize` on Nov 7. |
+
+## Resolved
+
+| Gap | Fix |
+|---|---|
+| **Line height was hard-coded** to 1.15 × the font height, which was taller than Ghostty. | 0.1.15 sizes rows from the font's own metrics, matching Ghostty (`738fce4`, [#66](https://github.com/herdrdev/herdr-app/issues/66)). There's still no setting, and none is needed as long as rows match Ghostty. |
 
 ## Worked around
 
