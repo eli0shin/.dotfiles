@@ -100,6 +100,27 @@ and [startup layout selection](https://github.com/herdrdev/herdr-app/blob/v0.1.1
 There is no separate default-layout setting in this version; startup reads
 `shared.json`, which is why stow needs the small preference adapter.
 
+## Resuming Pi after a reboot
+
+Legacy herdr's `resume_agents_on_restore` has no app equivalent
+([herdr-app#429](https://github.com/herdrdev/herdr-app/issues/429)). When a kept
+terminal's program is lost (a reboot, a crash, a killed holder), herdr-core
+reopens the terminal in place with a fresh login shell and keeps its labels.
+Two pieces use that to bring Pi back:
+
+- Pi's `hc-session-label.ts` labels the terminal with `dotfiles.pi_session`
+  (the session file) and `dotfiles.pi_shell` (a token for the fish shell Pi
+  runs under), and leaves a marker named after the token in
+  `$XDG_STATE_HOME/dotfiles/hc-pi/`.
+- `~/.config/fish/conf.d/hc-pi-resume.fish` gives each terminal's first shell
+  a new token. On that shell's first prompt, a session labelled under another
+  token is one the terminal was running when it was lost, so the shell runs
+  `pi --session <file>`. When Pi returns to the shell that ran it, the shell
+  clears the labels, so a Pi you quit stays quit.
+
+It only looks at the labels once, when a terminal starts, and checks for a
+marker file at each prompt. Check with `bash tests/hc-pi-resume.sh`.
+
 ## Keys
 
 Native macOS shortcuts are retained. Prefix shortcuts are native GPUI
@@ -165,6 +186,7 @@ swift tests/herdr-app-font.swift
 node tests/herdr-app-navigation.mjs
 node tests/herdr-app-tab-icons.mjs
 node tests/herdr-app-session-names.mjs
+bash tests/hc-pi-resume.sh
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status
 herdr-app check ~/.config/herdr-app/mods/eli-tabs
