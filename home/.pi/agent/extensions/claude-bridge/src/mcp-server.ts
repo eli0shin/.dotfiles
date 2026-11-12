@@ -21,8 +21,14 @@
 // and nothing else, so none of McpServer's higher-level machinery is required.
 // The `McpServer` wrapper is kept only because the SDK's `mcpServers` option is
 // typed against that class. If this breaks after an SDK update, check whether
-// the SDK began inspecting the instance — reading registered tools, or expecting
-// tools/list_changed notifications we never send.
+// the SDK began inspecting the instance or reading registered tools.
+//
+// The tool list can change on a live process: `setTools` swaps it and sends
+// `notifications/tools/list_changed`, which the SDK forwards to Claude Code as
+// a control request. The swap counts only once Claude Code has asked for
+// tools/list again; one that never asks is reported, and the caller restarts.
+// Claude Code only ever adds to what it sends the API (see onlyAddsTools in
+// index.ts), so callers use this for added tools alone.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -136,21 +142,30 @@ function flattenRootCombinators(schema: Record<string, unknown>): { schema: Reco
 	return { schema: flat, note: combinatorNote(combinators, branchesOf) };
 }
 
-export function createToolServer(name: string, tools: McpToolDef[]) {
-	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: {} } });
-	const byName = new Map(tools.map((tool) => [tool.name, tool]));
-	for (const tool of tools) assertObjectSchema(tool);
+/** How long Claude Code has to ask for tools/list after a list_changed notification. */
+export const TOOL_RELIST_TIMEOUT_MS = 3000;
 
-	server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-		tools: tools.map((tool) => {
-			const { schema, note } = flattenRootCombinators(tool.inputSchema as Record<string, unknown>);
-			return {
-				name: tool.name,
-				description: [note, tool.description].filter(Boolean).join("\n\n"),
-				inputSchema: schema,
-			};
-		}),
-	}));
+export function createToolServer(name: string, initialTools: McpToolDef[]) {
+	const server = new McpServer({ name, version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+	let tools = initialTools;
+	let byName = new Map(tools.map((tool) => [tool.name, tool]));
+	for (const tool of tools) assertObjectSchema(tool);
+	let onListed: (() => void) | null = null;
+
+	server.server.setRequestHandler(ListToolsRequestSchema, () => {
+		const listed = {
+			tools: tools.map((tool) => {
+				const { schema, note } = flattenRootCombinators(tool.inputSchema as Record<string, unknown>);
+				return {
+					name: tool.name,
+					description: [note, tool.description].filter(Boolean).join("\n\n"),
+					inputSchema: schema,
+				};
+			}),
+		};
+		onListed?.();
+		return listed;
+	});
 
 	server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		const tool = byName.get(request.params.name);
@@ -165,5 +180,24 @@ export function createToolServer(name: string, tools: McpToolDef[]) {
 		return { content, isError };
 	});
 
-	return { type: "sdk" as const, name, instance: server };
+	/** Serve `next` instead, and resolve once Claude Code has listed it. */
+	async function setTools(next: McpToolDef[], timeoutMs = TOOL_RELIST_TIMEOUT_MS): Promise<void> {
+		for (const tool of next) assertObjectSchema(tool);
+		tools = next;
+		byName = new Map(next.map((tool) => [tool.name, tool]));
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const listed = new Promise<void>((resolve, reject) => {
+			onListed = resolve;
+			timer = setTimeout(() => reject(new Error(`Claude Code did not re-list tools within ${timeoutMs}ms of tools/list_changed`)), timeoutMs);
+		});
+		try {
+			await server.server.sendToolListChanged();
+			await listed;
+		} finally {
+			clearTimeout(timer);
+			onListed = null;
+		}
+	}
+
+	return { type: "sdk" as const, name, instance: server, setTools };
 }

@@ -25,7 +25,7 @@ for (const file of ["settings.json", "settings.local.json"]) {
 		hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `touch '${repoHookRan}'` }] }] },
 	}));
 }
-const requests = [], launches = [], env = {};
+const requests = [], requestTools = [], launches = [], env = {};
 const children = [];
 let streamingWait;
 let resolveStreamingWait;
@@ -38,6 +38,7 @@ const server = createServer(async (request, response) => {
 	}
 	const body = JSON.parse(Buffer.concat(chunks).toString());
 	requests.push(JSON.stringify(body.messages));
+	requestTools.push((body.tools ?? []).map((tool) => tool.name));
 	const event = (type, fields) => `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
 	response.writeHead(200, { "content-type": "text/event-stream" });
 	const waiting = JSON.stringify(body.messages.findLast(message => message.role === "user")).includes("WAIT_NATIVE");
@@ -175,9 +176,34 @@ it("native idle expiry resumes saved history in a new process", { timeout: 30_00
 	const answer = await turn([ask]);
 	const child = children.at(-1), before = children.length;
 	while (child.exitCode === null && child.signalCode === null) await new Promise(resolve => setTimeout(resolve, 10));
-	__test.setIdleTimeout(300_000);
+	__test.setIdleTimeout(3_600_000);
 	await turn([ask, answer, user("after idle expiry")]);
 	assert.equal(children.length, before + 1);
 	assert.match(requests.at(-1), /remember this native session/);
 	assert.match(requests.at(-1), /after idle expiry/);
+});
+
+// The real CLI honours tools/list_changed for added tools; a removal restarts,
+// because Claude Code would keep the removed tool in its requests (onlyAddsTools).
+it("native Claude Code takes added tools on the same PID, and a removal restarts it", { timeout: 30_000 }, async () => {
+	await shutdown("pi-native");
+	__test.resetSharedSession();
+	for (const fn of handlers.session_start) fn({}, { cwd, sessionManager: { getSessionId: () => "pi-native" } });
+	const tool = (name) => ({ name, description: `${name} tool`, parameters: { type: "object", properties: { path: { type: "string" } } } });
+	const send = async (messages, tools) => {
+		const output = await provider.streamSimple(model, { messages, tools }, { sessionId: "pi-native" }).result();
+		assert.equal(output.stopReason, "stop", output.errorMessage);
+		return output;
+	};
+	const ask = user("tools one");
+	const answer = await send([ask], [tool("read")]);
+	assert.deepEqual(requestTools.at(-1), ["mcp__custom-tools__read"]);
+	const child = children.at(-1), before = children.length;
+	const second = await send([ask, answer, user("tools two")], [tool("read"), tool("write")]);
+	assert.equal(children.length, before, "an added tool must not spawn a replacement process");
+	assert.equal(child.exitCode, null);
+	assert.deepEqual(requestTools.at(-1), ["mcp__custom-tools__read", "mcp__custom-tools__write"], "the added tool reaches the API");
+	await send([ask, answer, user("tools two"), second, user("tools three")], [tool("write")]);
+	assert.equal(children.length, before + 1, "a removed tool restarts Claude");
+	assert.deepEqual(requestTools.at(-1), ["mcp__custom-tools__write"], "the restarted process no longer offers it");
 });

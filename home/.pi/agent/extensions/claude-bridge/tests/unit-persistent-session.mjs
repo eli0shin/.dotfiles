@@ -52,8 +52,24 @@ function queue() {
 }
 function sdk({ prompt, options }) {
 	const output = queue();
-	const launch = { options, closed: false, interrupted: 0, inputs: [], output, models: [], efforts: [] };
+	const launch = { options, closed: false, interrupted: 0, inputs: [], output, models: [], efforts: [], toolLists: [] };
 	launches.push(launch);
+	// Like Claude Code: list the served tools at startup and again on list_changed,
+	// unless the test scripts a CLI that ignores the notification.
+	const toolServer = options.mcpServers?.["custom-tools"];
+	if (toolServer) {
+		let requestId = 0;
+		const transport = {
+			start: async () => {},
+			close: async () => {},
+			send: async (message) => {
+				if (message.method === "notifications/tools/list_changed" && !launch.ignoreListChanged) listTools();
+				else if (message.result?.tools) launch.toolLists.push(message.result.tools.map((tool) => tool.name));
+			},
+		};
+		const listTools = () => transport.onmessage({ jsonrpc: "2.0", id: ++requestId, method: "tools/list" });
+		void toolServer.instance.connect(transport).then(listTools);
+	}
 	const id = options.sessionId ?? options.resume;
 	const path = getSessionPath(id, options.cwd, process.env.CLAUDE_CONFIG_DIR);
 	if (options.forkSession) {
@@ -147,7 +163,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
 	for (const c of [...__test.activeQueryContexts]) await shutdown(c.piSessionId);
-	__test.setIdleTimeout?.(300_000);
+	__test.setIdleTimeout?.(3_600_000);
+	__test.setToolRelistTimeout?.(3000);
 	__test.setQuery(null);
 });
 it("starts TUI provider turns without welcome notices or notice-related config writes", { timeout: 3000 }, async () => {
@@ -324,20 +341,59 @@ it("expires idle processes, but never times out a tool or permission wait", { ti
 	await new Promise((resolve) => setTimeout(resolve, 60));
 	assert.equal(launches[1].closed, false, "a parked tool is active, not idle");
 });
-it("restarts for changed connection or tool declarations", { timeout: 3000 }, async () => {
+it("restarts for changed connection settings", { timeout: 3000 }, async () => {
 	const ask = user("one"),
 		answer = await call([ask]).result();
 	const next = await call([ask, answer, user("two")], { env: { TEST_CONNECTION: "changed" } }).result();
 	assert.equal(launches.length, 2);
 	assert.equal(launches[0].closed, true);
 	assert.equal(next.stopReason, "stop", next.errorMessage);
-	const third = await call(
-		[ask, answer, user("two"), next, user("three")],
-		{ env: { TEST_CONNECTION: "changed" } },
-		{ tools: [] },
-	).result();
+});
+it("swaps added tools onto the live process", { timeout: 3000 }, async () => {
+	const ask = user("one"),
+		answer = await call([ask]).result();
+	const write = { name: "write", description: "write", parameters: { type: "object", properties: {} } };
+	const next = await call([ask, answer, user("two")], {}, { tools: [...tools, write] }).result();
+	assert.equal(next.stopReason, "stop", next.errorMessage);
+	assert.equal(launches.length, 1, "an added tool must not restart Claude");
+	assert.equal(launches[0].closed, false);
+	assert.deepEqual(launches[0].toolLists.at(-1), ["read", "write"], "Claude re-lists before the turn is sent");
+	assert.equal(launches[0].inputs.length, 2);
+});
+it("restarts for removed or redefined tools, which Claude would keep offering", { timeout: 3000 }, async () => {
+	const ask = user("one"),
+		answer = await call([ask]).result();
+	const next = await call([ask, answer, user("two")], {}, { tools: [] }).result();
+	assert.equal(next.stopReason, "stop", next.errorMessage);
+	assert.equal(launches.length, 2, "a removed tool restarts");
+	assert.equal(launches[0].closed, true);
+	assert.equal(launches[0].toolLists.length, 1, "no swap was attempted");
+	const redefined = [{ ...tools[0], description: "read, redefined" }];
+	const third = await call([ask, answer, user("two"), next, user("three")], {}, { tools: redefined }).result();
 	assert.equal(third.stopReason, "stop", third.errorMessage);
-	assert.equal(launches.length, 3);
+	assert.equal(launches.length, 3, "a redefined tool restarts");
+});
+it("relaunches when Claude never re-lists a changed tool declaration", { timeout: 3000 }, async () => {
+	__test.setToolRelistTimeout(30);
+	const ask = user("one"),
+		answer = await call([ask]).result();
+	launches[0].ignoreListChanged = true;
+	const write = { name: "write", description: "write", parameters: { type: "object", properties: {} } };
+	const next = await call([ask, answer, user("two")], {}, { tools: [...tools, write] }).result();
+	assert.equal(next.stopReason, "stop", next.errorMessage);
+	assert.equal(next.content[0].text, "answer:two");
+	assert.equal(launches.length, 2);
+	assert.equal(launches[0].closed, true);
+	assert.equal(launches[0].inputs.length, 1, "the abandoned process never receives the turn");
+	assert.deepEqual(launches[1].toolLists[0], ["read", "write"]);
+});
+it("restarts for a tool change on a process launched without tools", { timeout: 3000 }, async () => {
+	const ask = user("one"),
+		answer = await call([ask], {}, { tools: [] }).result();
+	const next = await call([ask, answer, user("two")]).result();
+	assert.equal(next.stopReason, "stop", next.errorMessage);
+	assert.equal(launches.length, 2);
+	assert.equal(launches[0].closed, true);
 });
 it("session shutdown from a separately loaded extension closes the owning process only", { timeout: 3000 }, async () => {
 	await call([user("mine")]).result();

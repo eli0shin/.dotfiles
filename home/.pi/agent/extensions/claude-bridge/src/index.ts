@@ -29,7 +29,7 @@ import {
 	type PromptCapture,
 } from "./prompt-capture.js";
 import { collectCarriedAttachments } from "./attachments.js";
-import { createToolServer } from "./mcp-server.js";
+import { createToolServer, TOOL_RELIST_TIMEOUT_MS, type McpToolDef } from "./mcp-server.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode, type AskClaudeMode } from "./askclaude-schema.js";
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
@@ -844,11 +844,16 @@ function syncSharedSession(
 
 // The SDK's query(), or a test double (see setQuery).
 let queryImpl: typeof query = query;
-let idleTimeoutMs = 5 * 60 * 1000;
+// An idle process is kept about as long as Claude Code's prompt cache lasts (an
+// hour), so a reply after a long pause still lands on a warm process instead of
+// paying a launch and a resume.
+let idleTimeoutMs = 60 * 60 * 1000;
+let toolRelistTimeoutMs = TOOL_RELIST_TIMEOUT_MS;
 
 // @internal
 export const __test = {
 	setIdleTimeout(ms: number) { idleTimeoutMs = ms; },
+	setToolRelistTimeout(ms: number) { toolRelistTimeoutMs = ms; },
 	setQuery(fn: typeof query | null) {
 		queryImpl = fn ?? query;
 	},
@@ -1075,7 +1080,13 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 // correct query's state while multiple queries run concurrently.
 function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ReturnType<typeof createToolServer>> | undefined {
 	if (!tools.length) return undefined;
-	const mcpTools = tools.map((tool) => ({
+	const server = createToolServer(MCP_SERVER_NAME, mcpToolDefs(tools, queryCtx));
+	queryCtx.setTools = (next) => server.setTools(mcpToolDefs(next, queryCtx), toolRelistTimeoutMs);
+	return { [MCP_SERVER_NAME]: server };
+}
+
+function mcpToolDefs(tools: Tool[], queryCtx: QueryContext): McpToolDef[] {
+	return tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
 		inputSchema: tool.parameters,
@@ -1092,7 +1103,6 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			});
 		},
 	}));
-	return { [MCP_SERVER_NAME]: createToolServer(MCP_SERVER_NAME, mcpTools) };
 }
 
 // --- Usage helpers ---
@@ -1815,6 +1825,21 @@ function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
 	c.releasePendingToolCalls("Operation aborted");
 }
 
+/** A live process could not take a changed tool loadout; the turn relaunches. */
+class ToolSwapError extends Error {}
+
+/** Whether `next` keeps every served tool unchanged and only adds new ones.
+ *
+ *  Claude Code (2.1.322, tool search off) re-lists on tools/list_changed but
+ *  sends the API only the union of every definition it has served: an added
+ *  tool reaches the model, while a removed tool stays offered and a changed one
+ *  keeps its old description and schema, with nothing telling the model. Those
+ *  restart instead, so the model never sees a tool pi has taken away. */
+function onlyAddsTools(served: Map<string, string>, next: Map<string, string>): boolean {
+	for (const [name, digest] of served) if (next.get(name) !== digest) return false;
+	return next.size > served.size;
+}
+
 /** Queries pi's history moved out from under. Their completion must not touch
  *  `sharedSession` or the pi stream: the query that took over the turn has
  *  already rebuilt both from the new history, and this one's session id names the
@@ -1932,15 +1957,22 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	let promptCapture: PromptCapture | undefined;
 	let systemPromptAppend: string | undefined;
 	let configuration: string;
+	let toolsKey: string;
+	let toolDigests: Map<string, string>;
 	try {
 		promptCapture = promptCaptures.resolveOrDerive(context.systemPrompt);
 		systemPromptAppend = promptCapture ? projectPromptCapture(promptCapture, {
 			skillReadTool: mcpTools.some((tool) => tool.name === "read") ? "mcp" : "none",
 		}) : undefined;
+		// Tools are hashed apart from the rest: a live process can take added
+		// tools between turns (QueryContext.setTools) rather than restarting.
+		toolDigests = new Map(mcpTools.map(({ name, description, parameters }) => [
+			name, createHash("sha256").update(JSON.stringify({ description, parameters })).digest("hex"),
+		]));
+		toolsKey = createHash("sha256").update(JSON.stringify([...toolDigests])).digest("hex");
 		// Hash connection data; never log credentials in restart decisions.
 		configuration = createHash("sha256").update(JSON.stringify({
 			cwd: sessionCwdFor(options?.sessionId), prompt: systemPromptAppend,
-			tools: mcpTools.map(({ name, description, parameters }) => ({ name, description, parameters })),
 			env: Object.fromEntries(Object.entries(providerChildEnv(options?.env)).filter(([key]) => !PARENT_SESSION_VARS.includes(key)).sort(([a], [b]) => a.localeCompare(b))),
 			provider: providerSettings, maxTokens: options?.maxTokens,
 		})).digest("hex");
@@ -1968,6 +2000,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	try {
 		rewrittenUnderQuery = Boolean(resultCtx && (resultCtx.historyStale
 			|| (resultCtx.configuration && resultCtx.configuration !== configuration)
+			|| (resultCtx.toolsKey && resultCtx.toolsKey !== toolsKey)
 			|| !resultCtx.recording.continues(nonSystemMessages(context.messages))));
 	} catch (error) { return failBeforeQuery(error); }
 	if (resultCtx && rewrittenUnderQuery) {
@@ -2046,18 +2079,28 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// A completed user turn leaves Claude alive, owned by this Pi session.
 	const live = options?.sessionId ? [...activeQueryContexts].find((c) =>
 		c.piSessionId === options.sessionId && c.resumeUser && (c.idle || c.interrupted)) : undefined;
-	if (live && !live.historyStale && live.configuration === configuration) {
+	if (live && !live.historyStale && live.configuration === configuration
+		&& (live.toolsKey === toolsKey || (live.setTools && onlyAddsTools(live.toolDigests, toolDigests)))) {
 		const history = nonSystemMessages(context.messages);
 		const digests = digestMessages(history.slice(0, turnStart(history)));
 		const expected = live.interruptedHistory ?? live.recording.recorded.digests;
 		if (digests.length === expected.length && digests.every((d, i) => d === expected[i])) {
 			live.cancelIdle();
-			void live.resumeUser!(model, context, options, stream).catch((error) => {
+			void live.resumeUser!(model, context, options, stream, { tools: mcpTools, toolsKey, toolDigests, toPi: customToolNameToPi }).catch(async (error) => {
 				if (completedStreams.has(stream as object)) return;
 				// Setup may have cleared the idle timer or changed SDK settings.
 				// Retire it on failure rather than leaking an unowned process.
 				if (live.currentPiStream === stream) live.currentPiStream = null;
 				discardRewrittenQuery(live);
+				// Nothing reached Claude yet: relaunch with the new tools instead.
+				if (error instanceof ToolSwapError && !options?.signal?.aborted) {
+					debug(`provider: live tool swap failed (${error.message}); relaunching`);
+					traceEvent("route", { callId: traceCallId, route: "tool-swap-relaunch", error: error.message });
+					for await (const event of streamClaudeAgentSdk(model, sourceContext, options)) stream.push(event);
+					markStreamComplete(stream);
+					stream.end();
+					return;
+				}
 				const output = newAssistantOutput(model, "", options?.signal?.aborted ? "aborted" : "error", errorMessage(error));
 				stream.push({ type: "error", reason: output.stopReason as "error" | "aborted", error: output });
 				markStreamComplete(stream);
@@ -2089,6 +2132,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.piSessionId = options?.sessionId ?? null;
 	queryCtx.persistent = Boolean(options?.sessionId);
 	queryCtx.configuration = configuration;
+	queryCtx.toolsKey = toolsKey;
+	queryCtx.toolDigests = toolDigests;
 	queryCtx.lastMessages = nonSystemMessages(context.messages);
 	queryCtx.resetTurnState(model);
 	claimCurrentPiStream(stream, "fresh-query", queryCtx, options);
@@ -2380,11 +2425,24 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				queryCtx.idleTimer.unref();
 			});
 		};
-		queryCtx.resumeUser = async (nextModel, nextContext, nextOptions, nextStream) => {
+		queryCtx.resumeUser = async (nextModel, nextContext, nextOptions, nextStream, nextTools) => {
 			await waitWithSignal(drained, nextOptions?.signal);
 			if (queryCtx.discarded || !queryCtx.activeQuery) throw new Error("Claude session stopped before the next turn");
 			if (nextOptions?.signal?.aborted) throw new Error("Operation aborted");
 			queryCtx.cancelIdle();
+			if (nextTools.toolsKey !== queryCtx.toolsKey) {
+				if (!queryCtx.setTools) throw new ToolSwapError("launched without an MCP server");
+				if (!onlyAddsTools(queryCtx.toolDigests, nextTools.toolDigests)) throw new ToolSwapError("the change removes or redefines a served tool");
+				try { await queryCtx.setTools(nextTools.tools); }
+				catch (error) { throw new ToolSwapError(errorMessage(error)); }
+				nextOptions?.signal?.throwIfAborted();
+				// consumeQuery maps streamed tool names through this launch's map.
+				customToolNameToPi.clear();
+				for (const [sdkName, piName] of nextTools.toPi) customToolNameToPi.set(sdkName, piName);
+				queryCtx.toolsKey = nextTools.toolsKey;
+				queryCtx.toolDigests = nextTools.toolDigests;
+				debug(`provider: swapped live tools to [${nextTools.tools.map((t) => t.name).join(", ")}]`);
+			}
 			const nextCliModel = claudeCodeModelId(nextModel, longContextSettings);
 			const nextEffort = effortForReasoning(nextModel, nextOptions?.reasoning);
 			if (nextCliModel !== cliModel) {

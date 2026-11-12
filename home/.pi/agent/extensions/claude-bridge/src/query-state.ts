@@ -6,7 +6,7 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
 import { LiveRecording } from "./session-sync.js";
@@ -34,6 +34,14 @@ export class QueryContext {
 	currentPromptUuid: string | undefined;
 	promptAcknowledged = false;
 	configuration = "";
+	/** Digest of the tool loadout the MCP server serves. Not part of `configuration`:
+	 *  between turns, added tools are swapped onto the live process (setTools). */
+	toolsKey = "";
+	/** Each served tool's definition digest, by name. */
+	toolDigests = new Map<string, string>();
+	/** Swap the served tools on the live process; null when it was launched without
+	 *  an MCP server, so a changed loadout needs a restart. */
+	setTools: ((tools: Tool[]) => Promise<void>) | null = null;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
 	cancelIdle(): void {
 		clearTimeout(this.idleTimer);
@@ -42,7 +50,8 @@ export class QueryContext {
 	}
 	/** Called only after the SDK reports the whole user turn complete. */
 	completeTurn: (() => void) | null = null;
-	resumeUser: ((model: Model<any>, context: Context, options: SimpleStreamOptions | undefined, stream: AssistantMessageEventStream) => Promise<void>) | null = null;
+	resumeUser: ((model: Model<any>, context: Context, options: SimpleStreamOptions | undefined, stream: AssistantMessageEventStream,
+		tools: { tools: Tool[]; toolsKey: string; toolDigests: Map<string, string>; toPi: Map<string, string> }) => Promise<void>) | null = null;
 	model: Model<any> | undefined;
 	interruptedHistory: string[] | null = null;
 	lastMessages: Context["messages"] = [];
