@@ -222,8 +222,8 @@ elif [[ $workspace_manager == herdr-app ]]; then
   # space.new and tab.new always focus what they open (herdr-app#447). A core
   # terminal labeled with a space and tab id shows up there without focus; an
   # id the app doesn't know becomes a new space or tab. Like the app, run the
-  # agent in a login shell that stays open after it exits. Tabs stay unnamed:
-  # the eli-tabs mod titles only unnamed tabs after the Pi session.
+  # agent in a login shell that stays open after it exits. Tabs start unnamed:
+  # Pi's auto-session-name extension names them after the session.
   new_id() { python3 -c 'import uuid; print(uuid.uuid4().hex)'; }
   new_space=
   if [[ -z $space_id ]]; then

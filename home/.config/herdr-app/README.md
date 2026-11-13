@@ -46,15 +46,20 @@ monochrome Neovim glyph with its blue/green logo in `program-icons/neovim.svg`
 Full-color pictures keep their original colors. These personal files survive
 app restarts and upgrades; the shipped tab bar and icons remain untouched.
 
-Unnamed tabs and the `eli-agents` sidebar display the Pi session name from its
-live terminal title, without the `π -` prefix or working directory. Pi's
-`auto-session-name.ts` extension generates that name and reassesses it after the
-second and third user prompts. Explicit Herdr tab names always win; clear a tab's
-name to resume following Pi. Duplicate automatic names within a space gain a
-`· <tab position>` suffix. Split tabs use their first Pi pane, not whichever pane
-has focus. Remote panes work through the same terminal-title stream; there is no
-local session-file read or app-to-model request. These are display names, not
-permanent `tab.rename` writes (CLI layout names remain unchanged).
+Pi's `auto-session-name.ts` extension generates the session name and
+reassesses it after the second and third user prompts. Whenever Pi's name
+changes (automatic or `/name`), and when a named session starts or resumes, the
+extension writes it as the real tab name with `herdr-app do tab.rename`,
+replacing whatever name the tab has. It writes only from interactive Pi and only
+from a tab's first Pi pane, and does nothing when Pi's machine has no reachable
+app.
+
+Where Pi can't write (such as remote panes), unnamed tabs and the `eli-agents`
+sidebar display the Pi session name from its live terminal title, without the
+`π -` prefix or working directory. Duplicate display names within a space gain
+a `· <tab position>` suffix, and split tabs use their first Pi pane, not
+whichever pane has focus. There is no local session-file read or app-to-model
+request.
 
 Herdr sandboxes each mod's imports to its own directory, so `names.js` is present
 in both personal mods; `tests/herdr-app-session-names.mjs` enforces identical copies.

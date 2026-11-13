@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -76,15 +78,39 @@ export function cleanTitle(value: string): string | undefined {
   return title;
 }
 
+const run = promisify(execFile);
+type HerdrTab = { id: string; name: string; terminals: { terminal: string; app: string | null }[] };
+
+// The Herdr app shows Pi's terminal title only on unnamed tabs, so Pi writes the
+// tab's real name itself, replacing whatever name the tab has.
+export async function nameHerdrTab(terminal: string, name: string): Promise<void> {
+  const { stdout } = await run("herdr-app", ["ls"], { timeout: 5000 });
+  const tabs: HerdrTab[] = JSON.parse(stdout).spaces.flatMap((space: { tabs: HerdrTab[] }) => space.tabs);
+  const tab = tabs.find(t => t.terminals.some(x => x.terminal === terminal));
+  // A split tab follows its first Pi pane, so other Pis in it don't fight over the name.
+  const lead = tab?.terminals.find(x => x.app === "pi")?.terminal ?? terminal;
+  if (!tab || lead !== terminal || tab.name === name) return;
+  await run("herdr-app", ["do", "tab.rename", JSON.stringify({ id: tab.id, name })], { timeout: 5000 });
+}
+
 export default function autoSessionName(pi: ExtensionAPI): void {
+  const terminal = process.env.HC_TERMINAL_ID;
   let state: NameState = {};
   let stopped = false;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let active: AbortController | undefined;
   let lastError: string | undefined;
+  let tabWrites = Promise.resolve();
 
   function save(): void { pi.appendEntry(STATE, { ...state }); }
+  function nameTab(ctx: ExtensionContext, name: string | undefined): void {
+    // Headless modes share the terminal of the Pi that started them.
+    if (!terminal || !name || ctx.mode !== "tui") return;
+    // Serialized so a stale write never lands after a newer one. Without a reachable
+    // app, Pi's terminal title still names unnamed tabs.
+    tabWrites = tabWrites.then(() => nameHerdrTab(terminal, name)).catch(() => {});
+  }
   function cancel(): void {
     generation++;
     clearTimeout(timer);
@@ -156,12 +182,16 @@ export default function autoSessionName(pi: ExtensionAPI): void {
     if (pi.getSessionName() && pi.getSessionName() !== state.title) state.manual = true;
     // Reassess older automatic titles that exceed today's compact tab budget.
     if (!state.manual && state.title && !cleanTitle(state.title)) state.checkpoint = undefined;
+    // A resumed session may open in a new tab.
+    nameTab(ctx, pi.getSessionName());
     schedule(ctx);
   });
   pi.on("message_end", (event, ctx) => {
     if (event.message.role === "user") schedule(ctx);
   });
-  pi.on("session_info_changed", (event) => {
+  pi.on("session_info_changed", (event, ctx) => {
+    // Every name change reaches the tab, automatic or manual.
+    nameTab(ctx, event.name);
     if (event.name === state.title) return;
     cancel();
     state.manual = true;

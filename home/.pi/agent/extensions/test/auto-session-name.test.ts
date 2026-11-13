@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -8,6 +11,9 @@ const model = (id: string, input = 0, output = 0, provider = "test"): Model<Api>
   id, provider, name: id, api: "openai-completions", baseUrl: "https://unused.invalid", reasoning: false,
   input: ["text"], cost: { input, output, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
 });
+// Tests run inside Herdr: without this, they would rename the real tab.
+delete process.env.HC_TERMINAL_ID;
+
 const main = model("large", 5, 20), small = model("small", 0.2, 1);
 const tick = () => new Promise(resolve => setTimeout(resolve, 20));
 const answer = (text: string) => ({ content: [{ type: "text", text }], stopReason: "stop" });
@@ -275,4 +281,89 @@ test("the request lists a third MATCH line only when there is a current title, a
   assert.deepEqual(parseAnswer("GOAL: x\nTITLE: One Two Three Four Five", undefined), { keep: false });
   assert.deepEqual(parseAnswer("GOAL: x\nTITLE: One Two Three Four Five\nSHORT: One Two Three", undefined), { keep: false, title: "One Two Three" });
   assert.deepEqual(parseAnswer("GOAL: x\nTITLE: Fix Login\nSHORT: Login", undefined), { keep: false, title: "Fix Login" }, "a valid TITLE wins over SHORT");
+});
+
+// A fake app that applies renames, so later `ls` calls see them.
+const FAKE_HERDR_APP = `#!/usr/bin/env node
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const [, script, command, rename, args] = process.argv;
+const ls = script + ".json";
+if (command === "ls") process.stdout.write(readFileSync(ls, "utf8"));
+else {
+  appendFileSync(script + ".calls", [command, rename, args].join(" ") + "\\n");
+  const { id, name } = JSON.parse(args), state = JSON.parse(readFileSync(ls, "utf8"));
+  for (const tab of state.spaces[0].tabs) if (tab.id === id) tab.name = name;
+  writeFileSync(ls, JSON.stringify(state));
+}
+`;
+
+type Calls = (count?: number) => Promise<string[]>;
+async function withFakeHerdrApp(tabs: unknown[], run: (calls: Calls) => Promise<void>) {
+  const root = await mkdtemp(join(tmpdir(), "auto-session-name-"));
+  const app = join(root, "herdr-app");
+  await writeFile(`${app}.json`, JSON.stringify({ spaces: [{ id: "sp1", tabs }] }));
+  await writeFile(app, FAKE_HERDR_APP);
+  await chmod(app, 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${root}:${path}`;
+  process.env.HC_TERMINAL_ID = "t7";
+  try {
+    const read = async () => (await readFile(`${app}.calls`, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    // Each fake call starts node, so wait for the expected count rather than a fixed time.
+    await run(async (count = 0) => {
+      for (let i = 0; i < 100 && (await read()).length < count; i++) await new Promise(resolve => setTimeout(resolve, 50));
+      return read();
+    });
+  } finally {
+    process.env.PATH = path;
+    delete process.env.HC_TERMINAL_ID;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+// Long enough for a write that must not happen to have landed.
+const settle = () => new Promise(resolve => setTimeout(resolve, 600));
+const tab = (id: string, name: string, ...terminals: [string, string | null][]) =>
+  ({ id, name, terminals: terminals.map(([terminal, app]) => ({ terminal, app })) });
+const rename = (id: string, name: string) => `do tab.rename ${JSON.stringify({ id, name })}`;
+
+test("Pi writes the Herdr app tab name on every name change, replacing the tab's own", async () => {
+  await withFakeHerdrApp([tab("tb1", "1", ["t2", null]), tab("tb2", "tab 2", ["t7", "pi"])], async (calls) => {
+    const h = harness(); await h.start();
+    await h.user("Fix login redirects");
+    assert.deepEqual(await calls(1), [rename("tb2", "Fix Login Redirects")]);
+    h.pi.setSessionName("Deploy Hotfix");
+    assert.deepEqual((await calls(2)).slice(1), [rename("tb2", "Deploy Hotfix")], "manual names reach the tab too");
+    await h.emit("session_shutdown");
+  });
+});
+
+test("a resumed session names its new tab", async () => {
+  const first = harness(); await first.start(); await first.user("Fix login redirects");
+  await first.emit("session_shutdown");
+  await withFakeHerdrApp([tab("tb1", "1", ["t7", "pi"])], async (calls) => {
+    const resumed = harness(first.manager); await resumed.start();
+    assert.deepEqual(await calls(1), [rename("tb1", "Fix Login Redirects")]);
+    assert.equal(resumed.calls.length, 0);
+    await resumed.emit("session_shutdown");
+  });
+});
+
+test("leaves the tab alone when it already matches, for other Pis in a split and for headless runs", async () => {
+  await withFakeHerdrApp([tab("tb1", "Fix Login Redirects", ["t7", "pi"])], async (calls) => {
+    const h = harness(); await h.start(); await h.user("Fix login redirects"); await settle();
+    await h.emit("session_shutdown");
+    assert.deepEqual(await calls(), []);
+  });
+  await withFakeHerdrApp([tab("tb1", "1", ["t3", "pi"], ["t7", "pi"])], async (calls) => {
+    const h = harness(); await h.start(); await h.user("Fix login redirects"); await settle();
+    assert.equal(h.pi.getSessionName(), "Fix Login Redirects");
+    await h.emit("session_shutdown");
+    assert.deepEqual(await calls(), [], "a split tab follows its first Pi pane");
+  });
+  await withFakeHerdrApp([tab("tb1", "1", ["t7", "pi"])], async (calls) => {
+    const rpc = harness(undefined, "rpc"); await rpc.start(); await rpc.user("Fix login redirects"); await settle();
+    assert.equal(rpc.pi.getSessionName(), "Fix Login Redirects");
+    await rpc.emit("session_shutdown");
+    assert.deepEqual(await calls(), [], "headless runs share their parent's terminal");
+  });
 });

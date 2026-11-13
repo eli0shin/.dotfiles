@@ -1,5 +1,5 @@
-// Pi already publishes its session name as OSC terminal title. Read it, don't
-// rename the tab: a person's explicit tab name must always win.
+// Pi publishes its session name as OSC terminal title. Pi's auto-session-name.ts
+// also writes it as the real tab name; this covers unnamed tabs it can't reach.
 export function piSessionName(pane) {
   if (pane?.program?.key !== "pi" && pane?.app !== "pi") return null;
   const title = pane.title ?? "";
