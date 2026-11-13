@@ -1,0 +1,6 @@
+# herdr-core settings (hc --skill). Cores before 0.1.21 ignore keys they don't know.
+
+# A kept terminal reopened after its program was lost (reboot, crash) shows the
+# lost program's last screen above the new shell. Pi tabs resume over it
+# (conf.d/hc-pi-resume.fish).
+restore_screen = true

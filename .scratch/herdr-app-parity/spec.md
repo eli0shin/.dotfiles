@@ -8,7 +8,7 @@ Things Herdr App (0.1.14) can't do that the Herdr TUI could, or that block a key
 
 | Gap | Upstream |
 |---|---|
-| **Keyboard copy mode.** The TUI had prefix `[`, hjkl motions, `v`/`V` to select and `y` to yank. The app only lets you select with the mouse. | [#360](https://github.com/herdrdev/herdr-app/issues/360): a selection API (`terminal.select`, `adjust_selection`) was proposed on Nov 7, with no maintainer reply and no PR. |
+| **Keyboard copy mode.** The TUI had prefix `[`, hjkl motions, `v`/`V` to select and `y` to yank. The app only lets you select with the mouse. | [#360](https://github.com/herdrdev/herdr-app/issues/360): the mod API landed on master in `3d9446f` on Nov 12 and is due in the next app release after 0.1.15. It adds `terminal.select`, `terminal.adjust_selection` and `terminal.clear_selection`, plus `selection` on `focused()`/`terminals()`. It has no built-in copy mode or keys, so we build the mode as a mod. |
 | **Keyboard pane resize.** Panes can only be resized by dragging the divider. Since 0.1.14, `layout.resize --id <pane> --weight N` sets a pane's share of its split, but only to an absolute size. Mods can't see pane geometry or the parent split, so they can't step a divider. | [#117](https://github.com/herdrdev/herdr-app/issues/117): romangolev offered to implement `pane.resize` on Nov 7. |
 
 ## Resolved
