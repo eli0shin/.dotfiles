@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run with python3 tests/herdr-work-bridge.py (no SSH server required)."""
 
+import base64
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -24,6 +25,15 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 bridge = importlib.util.module_from_spec(spec)
 loader.exec_module(bridge)
 EXE = str(SCRIPT.resolve())
+MARKER = "9E8D5BA0-982A-4208-B654-97BC2B7AEB42"
+# Heeler 1.x core locator, captured from a real connection attempt.
+HEELER_LOCATOR = '{\n(\n    sleep 8 3>&-\n    printf \'\\n%s\\n\' \'__HEELER_CORE_LOCATOR_TIMEOUT_{timeout}__\' >&3\n    kill -KILL 0\n) </dev/null >/dev/null 3>&2 2>/dev/null &\n__heeler_git_watchdog=$!\n(\n__session=\'default\'\n__nl=\'\n\'\nprintf \'\\n%s begin\\n\' \'{marker}\'\nprintf \'kernel %s\\n\' "$(uname -s 2>/dev/null)"\n__probe() {\n    case "$1" in /*) ;; *) return 1 ;; esac\n    [ -x "$1" ] || return 1\n    __version=$("$1" --version 2>/dev/null </dev/null) || return 1\n    __version=${__version%%"$__nl"*}\n    case "$__version" in \'hc \'[0-9]*|\'herdr-core \'[0-9]*) ;; *) return 1 ;; esac\n    printf \'executable %s\\n\' "$1"\n    printf \'version %s\\n\' "${__version#* }"\n}\n__candidate=$(command -v herdr-core 2>/dev/null) || __candidate=\n__probe "$__candidate" || __probe "${HOME:-}/.local/bin/herdr-core" || :\n__state=${XDG_STATE_HOME:-${HOME:-}/.local/state}/herdr-core/$__session\nif [ -n "${XDG_RUNTIME_DIR:-}" ]; then\n    __run=$XDG_RUNTIME_DIR/herdr-core\nelif [ -d "/run/user/$(id -u)" ]; then\n    __run=/run/user/$(id -u)/herdr-core\nelse\n    __run=$__state\nfi\n__socket=$__run/$__session.sock\nprintf \'default %s\\n\' "$__socket"\n__lock=\n[ -r "$__state/core.lock" ] && __lock=$(cat "$__state/core.lock" 2>/dev/null)\ncase "$__lock" in *"$__nl"*) printf \'lock-unreadable\\n\'; __lock= ;; esac\nif [ -n "$__lock" ]; then\n    printf \'lock %s\\n\' "$__lock"\n    __socket=$__lock\nfi\nif [ -S "$__socket" ]; then printf \'socket-file 1\\n\'; else printf \'socket-file 0\\n\'; fi\n__user=$(id -un 2>/dev/null)\n__shell=$(getent passwd "$__user" 2>/dev/null | cut -d: -f7)\nif [ -z "$__shell" ] && [ -x /usr/bin/dscl ]; then\n    __shell=$(/usr/bin/dscl . -read "/Users/$__user" UserShell 2>/dev/null | sed -n \'s/^UserShell: //p\')\nfi\n[ -z "$__shell" ] || printf \'shell %s\\n\' "$__shell"\nprintf \'%s end\\n\' \'{marker}\'\nexit 0\n) </dev/null\n__heeler_git_status=$?\n{\n    kill -KILL "$__heeler_git_watchdog"\n    wait "$__heeler_git_watchdog"\n} >/dev/null 2>&1\nexit "$__heeler_git_status"\n} </dev/null\n'
+
+
+def heeler_locator(session="default"):
+    return HEELER_LOCATOR.replace("{timeout}", "BF56FF28-8E4F-4D5C-BDBE-1A51BAE4C3C0").replace(
+        "{marker}", MARKER
+    ).replace("__session='default'", f"__session='{session}'")
 
 
 class DispatchTests(unittest.TestCase):
@@ -83,6 +93,38 @@ class DispatchTests(unittest.TestCase):
                 self.output(f"{executable} connect")
                 endpoint.assert_called_once_with("hc.sock")
                 relay.assert_called_once_with(Path("/work/hc.sock"))
+
+    def test_heeler_home_probe_reports_work_mac_home(self):
+        command = 'LC_ALL=C /bin/sh -c \'printf "__HEELER_HOME__=%s\\n" "$HOME"\''
+        with patch.object(bridge, "work_mac", return_value={"home": "/Users/me"}), patch.object(
+            bridge.subprocess, "run", side_effect=AssertionError("shell executed")
+        ):
+            self.assertEqual(self.output(command), "__HEELER_HOME__=/Users/me\n")
+
+    def test_heeler_core_locator_is_answered_not_executed(self):
+        mac = {"version": "0.1.21", "home": "/Users/me", "kernel": "Darwin"}
+        with patch.object(bridge, "work_mac", return_value=mac), patch.object(
+            bridge, "endpoint", return_value=Path("/work/tunnel.x/hc.sock")
+        ) as endpoint, patch.object(bridge.subprocess, "run", side_effect=AssertionError("shell executed")), patch(
+            "sys.stdin", io.StringIO(heeler_locator())
+        ):
+            output = self.output("/bin/sh -s")
+        endpoint.assert_called_once_with("hc.sock")
+        self.assertEqual(output, (
+            f"\n{MARKER} begin\nkernel Darwin\nexecutable {EXE}\nversion 0.1.21\n"
+            f"default {Path.home() / '.cache/herdr-work/current/hc.sock'}\nsocket-file 1\n{MARKER} end\n"
+        ))
+
+    def test_heeler_core_locator_for_another_session_is_rejected(self):
+        with patch.object(bridge, "work_mac", side_effect=AssertionError("core asked")), self.assertRaises(RuntimeError):
+            self.output(heeler_locator(session="other"))
+
+    def test_advertised_executable_serves_core_connect_and_version(self):
+        with patch.object(bridge, "endpoint", return_value=Path("/work/hc.sock")), patch.object(bridge, "relay") as relay:
+            self.output(f"{EXE} connect")
+        relay.assert_called_once_with(Path("/work/hc.sock"))
+        with patch.object(bridge, "core_version", return_value="0.1.21"):
+            self.assertEqual(self.output(f"{shlex.quote(EXE)} --version"), "hc 0.1.21\n")
 
     def test_authentication_probe_has_no_side_effects(self):
         self.assertEqual(self.output("exit"), "")
@@ -286,6 +328,45 @@ class RelayTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.home / ".local/state/herdr-core").exists())
+
+    def test_work_mac_facts_come_from_a_fixed_program_on_the_work_core(self):
+        path = self.tunnel / "hc.sock"
+        requests = []
+        replies = [
+            {"jsonrpc": "2.0", "id": 0, "result": {"version": "0.1.21"}},
+            {"jsonrpc": "2.0", "id": 1, "result": {"code": 0, "stdout": base64.b64encode(b"/Users/me\nDarwin\n").decode()}},
+        ]
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+            listener.listen()
+
+            def peer():
+                stream, _ = listener.accept()
+                stream.settimeout(5)
+                with stream, stream.makefile("rb") as reader:
+                    for reply in replies:
+                        requests.append(json.loads(reader.readline()))
+                        stream.sendall(json.dumps(reply).encode() + b"\n")
+
+            thread = threading.Thread(target=peer, daemon=True)
+            thread.start()
+            result = subprocess.run(
+                [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "/bin/sh -s"},
+                input=heeler_locator().encode(), capture_output=True, timeout=5,
+            )
+            thread.join(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"\nkernel Darwin\nexecutable ", result.stdout)
+        self.assertIn(b"\nversion 0.1.21\n", result.stdout)
+        self.assertEqual([request["method"] for request in requests], ["hello", "machine.exec"])
+        self.assertEqual(requests[1]["params"]["argv"][:2], ["/bin/sh", "-c"])
+        self.assertFalse((self.home / ".local/state/herdr-core").exists())
+
+        result = subprocess.run(
+            [str(SCRIPT)], env=self.env | {"SSH_ORIGINAL_COMMAND": "/bin/sh -s"},
+            input=heeler_locator().encode(), capture_output=True, timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)  # No live core: fail rather than describe Devbox.
 
     def test_stale_socket_is_not_unlinked_or_replaced(self):
         path = self.tunnel / "herdr-client.sock"

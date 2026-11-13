@@ -3,12 +3,15 @@
 
 Install as an SSH forced command on Devbox (port-specific or authorized_keys). This is deliberately
 not a shell: unknown bootstrap commands fail rather than discovering or starting
-Devbox's own servers. Supports Herdr TUI 0.9.5 and herdr-core 0.1.18.
+Devbox's own servers. Supports Herdr TUI 0.9.5, herdr-core 0.1.21, the official
+iOS app and Heeler.
 """
 
+import base64
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import shlex
 import socket
@@ -25,6 +28,12 @@ CORE_CONNECT = (
     'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; '
     '[ -x "$p" ] || { echo "herdr-core is not installed here" >&2; exit 127; }; '
     'exec "$p" connect'
+)
+HEELER_HOME = ['LC_ALL=C', '/bin/sh', '-c', 'printf "__HEELER_HOME__=%s\\n" "$HOME"']
+HEELER_LOCATOR = re.compile(
+    r"\{\n\(\n    sleep \d+ 3>&-\n    printf '\\n%s\\n' '__HEELER_CORE_LOCATOR_TIMEOUT_[0-9A-F-]+__' >&3\n"
+    r".*\n__session='(?P<session>[^'\n]*)'\n.*\nprintf '\\n%s begin\\n' '(?P<marker>[0-9A-F-]{36})'\n",
+    re.DOTALL,
 )
 
 
@@ -126,23 +135,60 @@ def api_check():
         stream.connect(str(endpoint("herdr.sock")))
 
 
-def core_version():
-    """Report the forwarded WorkMac core's version, never Devbox's binary."""
+def core_results(*requests):
+    """Ask the forwarded WorkMac core, after the hello every core client sends."""
+    results = []
     with socket.socket(socket.AF_UNIX) as stream:
         stream.settimeout(10)
         stream.connect(str(endpoint("hc.sock")))
-        request = {"jsonrpc": "2.0", "id": 0, "method": "hello", "params": {"generation": 1}}
-        stream.sendall(json.dumps(request).encode() + b"\n")
         with stream.makefile("rb") as reader:
-            reply = reader.readline(BUFFER_LIMIT + 1)
-    if len(reply) > BUFFER_LIMIT:
-        raise RuntimeError("work core hello is too large")
-    data = json.loads(reply)
-    result = data.get("result") if isinstance(data, dict) else None
-    version = result.get("version") if isinstance(result, dict) else None
+            for index, (method, params) in enumerate((("hello", {"generation": 1}),) + requests):
+                request = {"jsonrpc": "2.0", "id": index, "method": method, "params": params}
+                stream.sendall(json.dumps(request).encode() + b"\n")
+                reply = reader.readline(BUFFER_LIMIT + 1)
+                if len(reply) > BUFFER_LIMIT:
+                    raise RuntimeError(f"work core {method} reply is too large")
+                data = json.loads(reply)
+                result = data.get("result") if isinstance(data, dict) else None
+                if not isinstance(result, dict):
+                    raise RuntimeError(f"work core refused {method}")
+                results.append(result)
+    return results
+
+
+def core_version():
+    """Report the forwarded WorkMac core's version, never Devbox's binary."""
+    version = core_results()[0].get("version")
     if not isinstance(version, str) or version.split() != [version]:
         raise RuntimeError("work core did not report its version")
     return version
+
+
+def work_mac():
+    """WorkMac's version, home and kernel, from a fixed program its core runs."""
+    probe = {"argv": ["/bin/sh", "-c", 'printf "%s\\n" "$HOME"; uname -s'], "timeout": 5}
+    hello, result = core_results(("machine.exec", probe))
+    lines = base64.b64decode(result.get("stdout") or "").decode().splitlines()
+    version = hello.get("version")
+    if result.get("code") != 0 or len(lines) != 2 or not lines[0].startswith("/") or not lines[1]:
+        raise RuntimeError("work Mac did not report its home and kernel")
+    if not isinstance(version, str) or version.split() != [version]:
+        raise RuntimeError("work core did not report its version")
+    return {"version": version, "home": lines[0], "kernel": lines[1]}
+
+
+def heeler_locator(marker):
+    """Answer Heeler's core locator with WorkMac and this adapter as its core."""
+    mac = work_mac()
+    endpoint("hc.sock")  # Fail closed, before any output, without a live tunnel.
+    print(f"\n{marker} begin")
+    print(f"kernel {mac['kernel']}")
+    print(f"executable {Path(__file__).resolve()}")
+    print(f"version {mac['version']}")
+    # Heeler forwards to this path itself; sshd permits only current/hc.sock.
+    print(f"default {Path.home() / '.cache/herdr-work/current/hc.sock'}")
+    print("socket-file 1")
+    print(f"{marker} end")
 
 
 def herdr(args):
@@ -170,14 +216,22 @@ def dispatch(command):
     """Recognize Herdr's POSIX SSH bootstrap, never evaluate shell input."""
     executable = str(Path(__file__).resolve())
     quoted = shlex.quote(executable)
+    locator = HEELER_LOCATOR.match(command)
+    if locator:
+        if locator["session"] != "default":
+            raise RuntimeError("only the default core session is shared")
+        return heeler_locator(locator["marker"])
     tokens = shlex.split(command)
-    if tokens in (["sh", "-c", CORE_CONNECT], ["hc", "connect"], ["herdr-core", "connect"]):
+    if tokens in (["sh", "-c", CORE_CONNECT], ["hc", "connect"], ["herdr-core", "connect"], [executable, "connect"]):
         # Core's native protocol handshake provides the actual Mac identity,
         # terminal/file APIs and version. Never run hc connect on Devbox: its
         # autodetect could start a local core after the work tunnel disappears.
         return relay(endpoint("hc.sock"))
-    if len(tokens) == 2 and tokens[0] in ("hc", "herdr-core") and tokens[1] in ("--version", "-V"):
+    if len(tokens) == 2 and tokens[0] in ("hc", "herdr-core", executable) and tokens[1] in ("--version", "-V"):
         print("hc " + core_version())
+        return
+    if tokens == HEELER_HOME:
+        print("__HEELER_HOME__=" + work_mac()["home"])
         return
     if tokens == ["exit"]:
         return  # hc machine login only needs a successful authentication check.
