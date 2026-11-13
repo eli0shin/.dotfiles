@@ -2,5 +2,8 @@
   {
     "name": "tailscale",
     "script": "scripts/services/tailscale.sh"
+  },
+  {
+    "name": "moshi-hook"
   }
 ]
