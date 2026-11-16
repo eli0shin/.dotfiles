@@ -44,3 +44,8 @@
 /mods/eli-spaces/*
 !/mods/eli-spaces/main.js
 !/mods/eli-spaces/mod.json
+!/mods/copy-mode/
+/mods/copy-mode/*
+!/mods/copy-mode/main.js
+!/mods/copy-mode/mod.json
+!/mods/copy-mode/copy.js

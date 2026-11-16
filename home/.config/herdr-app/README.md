@@ -195,6 +195,8 @@ bash tests/hc-pi-resume.sh
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status
 herdr-app check ~/.config/herdr-app/mods/eli-tabs
+node tests/herdr-app-copy-mode.mjs
+herdr-app check ~/.config/herdr-app/mods/copy-mode
 ```
 
 The old Lumen Alt+J/K shell aliases also depend on the legacy pane API and
@@ -233,10 +235,28 @@ space, then, right-aligned, the machine (remote agents only) and the idle
 time. Under a space header (grouped view) the second line leaves out the
 space.
 
+### Copy mode
+
+`copy-mode` brings back the TUI's Ctrl+G, [ on the selection commands added in
+Herdr 0.1.16. A small bar at the top holds the keyboard while the cursor and
+selection show in the focused terminal:
+
+- h/j/k/l or arrows, 0/^ and $, g and G (top and bottom of history), H/M/L,
+  Ctrl+U/D (half page), Ctrl+B/F or PageUp/PageDown move the cursor. The view
+  follows it through the history.
+- v or Space selects characters and V selects lines. Press it again, or Esc,
+  to drop the selection.
+- y, Enter or Cmd+C copies the selection and leaves. q, Ctrl+C, a click
+  outside the bar, or Esc with nothing selected leaves without copying.
+
+Leaving clears the selection and scrolls back to the bottom. Word motions
+(w/b/e) and search (/ ? n N) aren't there: the mod API doesn't expose
+terminal text. Esc reaches the mod through the `mod:copy-mode` section of
+`keys.json`; without it Esc would close the bar before the mod saw it.
+
 ### Not migrated: no built-in equivalent
 
-- Ctrl+G, E: edit scrollback; Ctrl+G, [: copy mode. Cmd+F searches scrollback;
-  select text and Cmd+C to copy.
+- Ctrl+G, E: edit scrollback. Cmd+F searches scrollback.
 - Alt+Shift+H/J/K/L: resize panes (drag split dividers instead).
 - Annotation/document-review plugin keys: Ctrl+G followed by A, Shift+A,
   Ctrl+A, M, O or Shift+O. They need a separate mod/CLI integration.

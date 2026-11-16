@@ -59,6 +59,7 @@
     "ctrl-9": "space.select:9",
     "ctrl-g c": "app.settings",
     "ctrl-g s": "mod.open:space-picker",
+    "ctrl-g [": "mod.open:copy-mode",
     "ctrl-g k": "agent.prev",
     "ctrl-g j": "agent.next",
     "ctrl-g ctrl-s": "space.new",
@@ -110,6 +111,9 @@
     "ctrl-g *": "navigator-status.agent-8",
     "ctrl-g shift-9": "navigator-status.agent-9",
     "ctrl-g (": "navigator-status.agent-9"
+  },
+  "mod:copy-mode": {
+    "escape": "copy-mode.escape"
   },
   "terminal": {
     "cmd-f": "terminal.search",
