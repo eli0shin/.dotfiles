@@ -19,7 +19,7 @@ A good PR feels native to its repo and gives a familiar reviewer the missing con
 
 5. **Draft the body from the template.** Follow the repo PR template, pruning irrelevant sections instead of padding them. Done when every retained section has useful content and no removed section would help the reviewer.
 
-6. **State verification as change-specific evidence.** Verification is the evidence that this PR's behavior is covered, not a log of commands run. Prefer evidence that exercises the system boundary a reviewer cares about: Playwright, API, integration, contract, or other end-to-end-ish coverage. Unit tests are the lowest form of PR verification; cite them only when this change genuinely cannot be covered at a higher boundary, and say what behavior they prove. If no meaningful coverage was added, explain the honest confidence boundary: why coverage was not possible or not relevant, and what remains unproven. Only include manual validation steps when a reviewer truly needs them. Done when the section answers “what evidence proves this change works?” without mentioning routine local commands.
+6. **State verification as change-specific evidence.** Verification is the coverage that proves this PR's behavior, not a log of where or when anything ran. Prefer evidence that exercises the system boundary a reviewer cares about: Playwright, API, integration, contract, or other end-to-end-ish coverage. A spec that runs against this PR's preview or in CI is evidence like any other: name the behavior it covers. Unit tests are the lowest form of PR verification; cite them only when this change genuinely cannot be covered at a higher boundary, and say what behavior they prove. When a change has no behavior a test can reach (docs, config, infra plumbing), say what the reviewer should check instead. Only include manual validation steps when a reviewer truly needs them. Done when the section answers “what evidence proves this change works?” and every sentence names coverage that exists.
 
 ## PR description rules
 
@@ -28,4 +28,5 @@ A good PR feels native to its repo and gives a familiar reviewer the missing con
 - Do not mention routine local commands such as typecheck, lint, `npm test`, or unit-test command names in the PR body. They are not verification evidence for reviewers.
 - Do not cite unit test coverage when higher-boundary coverage was added or could reasonably have been added.
 - If recent PRs link Jira tickets and you have a ticket key, create the matching link in the repo's established format.
-- Be honest about partial verification, infra-only changes, feature-flagged work, or changes that require a later PR before they can be observed.
+- Name what gates the behavior: a feature flag, an infra-only change, or a later PR it waits on before it can be observed.
+- The testing section never narrates the agent's own run: no "couldn't run locally", "hasn't run yet", "CI is the first run", or "only ran against the preview". Reviewers read it as an untested PR, and later PRs copy it. State the coverage, and leave out where it ran.
