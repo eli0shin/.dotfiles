@@ -5,7 +5,14 @@ readonly dotfiles_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/nvim-diff-review-comments.XXXXXX")
 readonly test_root
 readonly review_root="/tmp/review/current/diff-review-comments-test/$(basename "$test_root")"
-trap 'rm -rf "$test_root" "$review_root"' EXIT
+local_review_root="/tmp/review/local$(cd "$test_root" && pwd -P)"
+readonly local_review_root
+cleanup() {
+  rm -rf "$test_root" "$review_root" "$local_review_root" "$local_review_root.txt"
+  # The local review files mirror the temp path, so prune the parents it left empty.
+  rmdir -p "$(dirname "$local_review_root")" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 mkdir -p "$test_root/repo"
 git -C "$test_root/repo" init -qb main
@@ -152,6 +159,31 @@ local function run()
   plugin.cut_comments()
   assert(vim.fn.filereadable(branch_path) == 0)
 
+  -- A repository without an origin remote still gets a review file, keyed by its path.
+  local local_repo = test_root .. '/local-repo'
+  assert(vim.system({ 'git', 'init', '-qb', 'main', local_repo }):wait().code == 0)
+  vim.fn.writefile({ 'local note' }, local_repo .. '/notes.md')
+  vim.cmd('edit! ' .. vim.fn.fnameescape(local_repo .. '/notes.md'))
+  select_lines(1, 1)
+  plugin.add_from_visual()
+  local local_path = '/tmp/review/local' .. local_repo .. '.txt'
+  assert(review_file.path(local_repo) == local_path)
+  assert(table.concat(vim.fn.readfile(local_path), '\n'):find('File: @./notes.md', 1, true))
+  plugin.cut_comments()
+  assert(vim.fn.filereadable(local_path) == 0)
+
+  -- So does a directory outside git, keyed by Neovim's working directory.
+  vim.fn.mkdir(test_root .. '/plain', 'p')
+  vim.fn.writefile({ 'plain note' }, test_root .. '/plain/notes.md')
+  vim.cmd('edit! ' .. vim.fn.fnameescape(test_root .. '/plain/notes.md'))
+  select_lines(1, 1)
+  plugin.add_from_visual()
+  local plain_path = '/tmp/review/local' .. test_root .. '.txt'
+  assert(review_file.path(test_root) == plain_path)
+  assert(table.concat(vim.fn.readfile(plain_path), '\n'):find('File: @./plain/notes.md', 1, true))
+  plugin.cut_comments()
+  assert(vim.fn.filereadable(plain_path) == 0)
+
   -- Reject unnamed and special buffers instead of annotating plugin UI text.
   vim.cmd 'enew!'
   select_lines(1, 1)
@@ -212,7 +244,7 @@ if not ok then
   io.stderr:write('FAIL: ' .. err .. '\n')
   vim.cmd 'cquit 1'
 end
-print('PASS: file buffer comments, branch review files, and diff extractor precedence')
+print('PASS: file buffer comments, branch and local review files, and diff extractor precedence')
 vim.cmd 'qa!'
 LUA
 

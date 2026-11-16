@@ -14,7 +14,8 @@ Works with ordinary file buffers, [diffview.nvim](https://github.com/sindrets/di
 Open comments are also kept in a Review comments file that agents can read. It is rewritten on every add, edit, or delete, and removed when no comments remain:
 
 - PR review (`pr` / `PR_DIFF_URL` set): `/tmp/review/<org>/<repo>/<pr-number>.txt`
-- Otherwise: `/tmp/review/current/<org>/<repo>/<branch>.txt` (skipped without an `origin` remote or on a detached HEAD)
+- An `origin` remote and a branch: `/tmp/review/current/<org>/<repo>/<branch>.txt`
+- Otherwise (no `origin` remote, a detached HEAD, or outside git): `/tmp/review/local/<root>.txt`, where `<root>` is the git top level, or Neovim's working directory outside git, without its leading `/`. Comments on `~/code/workbench`, which has no remote, are in `/tmp/review/local/Users/<user>/code/workbench.txt`
 
 Ordinary file comments use the same storage, list, edit, yank, and review commands as diff comments. They capture the selected buffer text (including unsaved edits) without side labels or `+`/`-` change markers. For example, commenting on `main` writes `/tmp/review/current/<org>/<repo>/main.txt`.
 

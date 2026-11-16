@@ -1,7 +1,11 @@
 -- Keeps a plain-text Review comments file in sync with the open comments so
 -- agents can read them:
---   PR review (pr_diff):  /tmp/review/<org>/<repo>/<pr-number>.txt
---   anything else:        /tmp/review/current/<org>/<repo>/<branch>.txt
+--   PR review (pr_diff):     /tmp/review/<org>/<repo>/<pr-number>.txt
+--   origin and a branch:     /tmp/review/current/<org>/<repo>/<branch>.txt
+--   anything else:           /tmp/review/local/<root>.txt
+-- <root> is the comments' directory (the git top level, or Neovim's working
+-- directory outside git) without its leading slash, so a repository with no
+-- origin remote, a detached HEAD, or a plain directory still gets a file.
 local M = {}
 
 local prompt = require 'diff_review_comments.prompt'
@@ -35,14 +39,19 @@ function M.path(repo_root)
 
   local slug = github_slug(git(repo_root, { 'remote', 'get-url', 'origin' }))
   local branch = git(repo_root, { 'branch', '--show-current' })
-  if not slug or not branch then
+  if slug and branch then
+    return string.format('%s/current/%s/%s.txt', root_dir, slug, branch)
+  end
+
+  local root = vim.fs.normalize(repo_root):gsub('/+$', ''):gsub('^/+', '')
+  if root == '' then
     return nil
   end
-  return string.format('%s/current/%s/%s.txt', root_dir, slug, branch)
+  return string.format('%s/local/%s.txt', root_dir, root)
 end
 
 -- Rewrites the file from `comments`; removes it when there are none.
--- Returns nil when no path can be resolved (no origin remote or detached HEAD).
+-- Returns nil when no path can be resolved (the filesystem root).
 function M.sync(repo_root, comments)
   local path = M.path(repo_root)
   if not path then
