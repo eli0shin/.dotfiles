@@ -241,9 +241,11 @@ space.
 Herdr 0.1.16. A small bar at the top holds the keyboard while the cursor and
 selection show in the focused terminal:
 
-- h/j/k/l or arrows, 0/^ and $, g and G (top and bottom of history), H/M/L,
-  Ctrl+U/D (half page), Ctrl+B/F or PageUp/PageDown move the cursor. The view
-  follows it through the history.
+- h/j/k/l or arrows, 0 (first column), ^ and $ or End (first and last text on
+  the row), g and G (top and bottom of history), H/M/L, Ctrl+U/D (half page),
+  Ctrl+B/F or PageUp/PageDown move the cursor. The view follows it through the
+  history. Mods can't read terminal text, so ^ and $ select the row as a line
+  for a moment (Herdr trims its blanks) to find where the text starts and ends.
 - v or Space selects characters and V selects lines. Press it again, or Esc,
   to drop the selection.
 - y, Enter or Cmd+C copies the selection and leaves. q, Ctrl+C, a click

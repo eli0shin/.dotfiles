@@ -6,6 +6,9 @@
 // 0.1.16): moves stop silently at the edges, up/down keep the column,
 // line_start/line_end go to the first and last column, home/end to the first
 // and last cell, and adjust_selection scrolls the view to follow the moving end.
+// ^ and $ need the row's text, which mods can't read: a line selection there
+// (Ghostty's select-line trims leading and trailing blanks; a blank row selects
+// nothing) gives where it starts and ends, so those keys ask main.js to measure.
 
 const NAMED = new Set(["escape", "enter", "up", "down", "left", "right", "pageup", "pagedown", "home", "end", "space"]);
 
@@ -28,7 +31,7 @@ const MODES = { normal: "COPY", char: "VISUAL", line: "VISUAL LINE" };
 export function createCopyMode({ terminal, run, geometry }) {
   let mode = "normal";
   let pos = null; // the cursor: the selection's moving end
-  let want = 0; // the column j/k aim for ($ aims for the last)
+  let want = 0; // the column j/k aim for
   let end = null; // where the selection's moving end is now
   let anchor = null; // where a visual selection started
 
@@ -102,8 +105,7 @@ export function createCopyMode({ terminal, run, geometry }) {
       case "l": case "right": return (want = col(pos.col + 1)), at(pos.row);
       case "j": case "down": return at(pos.row + 1);
       case "k": case "up": return at(pos.row - 1);
-      case "0": case "^": case "home": return (want = 0), at(pos.row);
-      case "$": case "end": return (want = Infinity), at(pos.row);
+      case "0": case "home": return (want = 0), at(pos.row);
       case "g": return (want = 0), at(0);
       case "G": return (want = 0), at(g.total - 1);
       case "H": return at(g.offset);
@@ -115,6 +117,15 @@ export function createCopyMode({ terminal, run, geometry }) {
       case "ctrl-f": case "pagedown": return at(pos.row + g.len);
       default: return null;
     }
+  }
+
+  // Moves the cursor to `to` and redraws the selection for the mode.
+  function moveTo(to, g) {
+    const crossed = mode === "line" && (to.row >= anchor.row) !== (pos.row >= anchor.row);
+    pos = to;
+    if (mode === "normal" || crossed) rebuild(g);
+    else if (mode === "char") moveEnd(pos, g);
+    else moveEnd({ row: pos.row, col: pos.row >= anchor.row ? g.cols - 1 : 0 }, g);
   }
 
   function setMode(next, g) {
@@ -148,14 +159,34 @@ export function createCopyMode({ terminal, run, geometry }) {
         setMode(key === "V" ? "line" : "char", g);
         return {};
       }
+      if (key === "^" || key === "$" || key === "end") {
+        const edge = key === "^" ? "start" : "end";
+        // A V selection covers whole rows, so the column changes nothing there.
+        if (mode !== "line") return { measure: { row: pos.row, edge } };
+        want = edge === "start" ? 0 : g.cols - 1;
+        pos = { row: pos.row, col: want };
+        return {};
+      }
       const to = target(key, g);
       if (!to) return null;
-      const crossed = mode === "line" && (to.row >= anchor.row) !== (pos.row >= anchor.row);
-      pos = to;
-      if (mode === "normal" || crossed) rebuild(g);
-      else if (mode === "char") moveEnd(pos, g);
-      else moveEnd({ row: pos.row, col: pos.row >= anchor.row ? g.cols - 1 : 0 }, g);
+      moveTo(to, g);
       return {};
+    },
+    /**
+     * Finishes ^ or $ once main.js has run terminal.select {at: {row, col: 0}, mode: "line"}
+     * and read the selection that left (null: a blank row). That replaced the
+     * mode's selection, so it is drawn again from scratch.
+     */
+    measured({ row, edge }, line) {
+      const g = geometry();
+      let col = 0;
+      if (line && edge === "start") col = line.start.row === row ? line.start.col : 0;
+      // A line wrapped onto the next row ends past this one. One that ends on an
+      // earlier row left only wrapped blanks here.
+      else if (line) col = line.end.row > row ? g.cols - 1 : line.end.row === row ? line.end.col : 0;
+      want = col;
+      pos = { row, col };
+      rebuild(g);
     },
   };
 }

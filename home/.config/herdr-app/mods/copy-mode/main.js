@@ -18,6 +18,9 @@ export default class CopyMode extends View {
     // The overlay can take focus back while it opens (as space-picker works around).
     cx.timer.after(600, () => this.handle.focus());
     this.done = false;
+    // Keys that arrive while ^ or $ measures a row wait their turn.
+    this.measuring = false;
+    this.waiting = [];
     this.terminal = focused()?.terminal ?? null;
     if (checking()) return;
     if (!this.terminal) {
@@ -91,11 +94,32 @@ export default class CopyMode extends View {
 
   // Returns whether the key was copy mode's.
   press(name, cx) {
+    if (this.measuring) {
+      this.waiting.push(name);
+      return true;
+    }
     const result = this.copy?.key(name) ?? (name === "escape" ? { exit: true, copy: false } : null);
     if (!result) return false;
     if (result.exit) this.leave(result.copy);
+    else if (result.measure) this.measure(result.measure, cx);
     else cx.notify();
     return true;
+  }
+
+  // Selects the row as a line, reads where its text starts and ends, and hands
+  // that back to copy mode, which draws its own selection again.
+  measure(request, cx) {
+    this.measuring = true;
+    const before = JSON.stringify(this.selection());
+    run("terminal.select", { terminal: this.terminal, at: { row: request.row, col: 0 }, mode: "line" });
+    cx.spawn(async (cx) => {
+      for (let i = 0; i < 15 && JSON.stringify(this.selection()) === before; i++) await cx.sleep(10);
+      if (this.done) return;
+      this.copy.measured(request, this.selection());
+      this.measuring = false;
+      cx.notify();
+      while (!this.measuring && this.waiting.length && !this.done) this.press(this.waiting.shift(), cx);
+    });
   }
 
   // A click beside the popup closes it without a key.

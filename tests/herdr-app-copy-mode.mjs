@@ -12,7 +12,7 @@ assert.equal(keys['mod:copy-mode']?.escape, 'copy-mode.escape', 'Esc reaches cop
 const { createCopyMode, keyName } = await import(new URL('mods/copy-mode/copy.js', root));
 
 // A terminal's grid: total rows (history and screen), cols, a view of len rows from offset.
-function fakeTerminal({ total, cols, len, offset = total - len, scrolls = true }) {
+function fakeTerminal({ total, cols, len, offset = total - len, scrolls = true, text = () => '' }) {
   const t = { total, cols, len, offset, scrolls, sel: null, calls: [] };
   const clamp = (row) => Math.max(0, Math.min(row, total - 1));
   const follow = () => {
@@ -25,7 +25,14 @@ function fakeTerminal({ total, cols, len, offset = total - len, scrolls = true }
     if (name === 'terminal.select') {
       const { row, col } = args.at;
       assert.ok(row >= 0 && row < total && col >= 0 && col < cols, `select outside the grid: ${row},${col}`);
-      t.sel = { start: { row, col }, end: { row, col } };
+      if (args.mode === 'line') {
+        // Ghostty's select-line: the row's text without its leading and trailing blanks.
+        const line = text(row);
+        const first = line.search(/\S/);
+        t.sel = first < 0 ? null : { start: { row, col: first }, end: { row, col: line.trimEnd().length - 1 } };
+      } else {
+        t.sel = { start: { row, col }, end: { row, col } };
+      }
     } else if (name === 'terminal.adjust_selection') {
       assert.ok(t.sel, 'adjust_selection needs a selection');
       const e = { ...t.sel.end };
@@ -55,7 +62,15 @@ function start(opts, cursor) {
   term.sel = { start: { ...cursor }, end: { ...cursor } };
   const copy = createCopyMode({ terminal: 't7', run: term.run, geometry: term.geometry });
   copy.start(cursor);
-  const press = (...names) => names.map((name) => copy.key(name));
+  // Like main.js: ^ and $ select the row as a line, then hand back what that selected.
+  const press = (...names) => names.map((name) => {
+    const result = copy.key(name);
+    if (!result?.measure) return result;
+    const { row } = result.measure;
+    term.run('terminal.select', { terminal: 't7', at: { row, col: 0 }, mode: 'line' });
+    copy.measured(result.measure, term.sel);
+    return result;
+  });
   return { term, copy, press };
 }
 const cell = (row, col) => ({ row, col });
@@ -73,15 +88,47 @@ assert.equal(keyName({ key: 'j', modifiers: { alt: true } }), null);
 
 // Normal mode: the cursor is a one-cell selection, and j/k keep the column.
 {
-  const { term, press } = start({ total: 200, cols: 80, len: 20 }, cell(190, 10));
+  const { term, press } = start({ total: 200, cols: 80, len: 20, text: () => 'x'.repeat(80) }, cell(190, 10));
   press('k', 'k', 'k');
   assert.deepEqual(term.sel, only(187, 10));
   press('0', 'j');
   assert.deepEqual(term.sel, only(188, 0));
   press('$', 'k');
-  assert.deepEqual(term.sel, only(187, 79), '$ aims j/k at the last column');
+  assert.deepEqual(term.sel, only(187, 79), 'on a blank-free row $ is the last column');
   press('h', 'j');
   assert.deepEqual(term.sel, only(188, 78));
+}
+
+// ^ and $ go to the row's first and last text, not the edges of the terminal.
+{
+  const rows = { 10: '    indented text   ', 11: '', 12: 'x', 13: 'hello world' };
+  const { term, copy, press } = start({ total: 40, cols: 30, len: 40, offset: 0, text: (r) => rows[r] ?? '' }, cell(10, 0));
+  press('$');
+  assert.deepEqual(term.sel, only(10, 16));
+  press('^');
+  assert.deepEqual(term.sel, only(10, 4));
+  press('0');
+  assert.deepEqual(term.sel, only(10, 0));
+  press('j', '$');
+  assert.deepEqual(term.sel, only(11, 0), 'a blank row has no text: $ stays in column 0');
+  press('k', 'l', 'l', 'v', 'j', 'j', 'j', '$');
+  assert.deepEqual(term.sel, { start: cell(10, 2), end: cell(13, 10) }, 'in visual mode $ extends to the text end');
+  press('end', 'k', 'k', '^');
+  assert.deepEqual(term.sel, { start: cell(10, 2), end: cell(11, 0) });
+  assert.equal(copy.state().mode, 'char');
+  press('V', '$');
+  assert.deepEqual(term.sel, { start: cell(10, 0), end: cell(11, 29) }, 'V keeps whole rows on $');
+}
+
+// A line wrapped from the row above starts in column 0; one wrapping onto the next row ends in the last.
+{
+  const { term, copy } = start({ total: 40, cols: 30, len: 40, offset: 0 }, cell(5, 3));
+  copy.measured({ row: 5, edge: 'start' }, { start: cell(4, 7), end: cell(6, 2) });
+  assert.deepEqual(term.sel, only(5, 0));
+  copy.measured({ row: 5, edge: 'end' }, { start: cell(4, 7), end: cell(6, 2) });
+  assert.deepEqual(term.sel, only(5, 29));
+  copy.measured({ row: 5, edge: 'end' }, { start: cell(4, 0), end: cell(4, 2) });
+  assert.deepEqual(term.sel, only(5, 0), 'a row holding only wrapped blanks has no text end');
 }
 
 // The view follows the cursor through history, and back down.
@@ -106,7 +153,7 @@ assert.equal(keyName({ key: 'j', modifiers: { alt: true } }), null);
 
 // Edges stop the cursor; h never wraps to the row above.
 {
-  const { term, press } = start({ total: 50, cols: 40, len: 50, offset: 0 }, cell(0, 0));
+  const { term, press } = start({ total: 50, cols: 40, len: 50, offset: 0, text: () => 'x'.repeat(40) }, cell(0, 0));
   press('k', 'h', 'ctrl-b');
   assert.deepEqual(term.sel, only(0, 0));
   press('G', '$', 'j', 'l', 'ctrl-f');
@@ -182,9 +229,10 @@ assert.equal(keyName({ key: 'j', modifiers: { alt: true } }), null);
 {
   let seed = 7;
   const random = (n) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) % n);
-  const motions = ['h', 'j', 'k', 'l', '0', '$', 'g', 'G', 'H', 'M', 'L', 'ctrl-u', 'ctrl-d', 'ctrl-b', 'ctrl-f', 'left', 'right', 'up', 'down'];
+  const motions = ['h', 'j', 'k', 'l', '0', '^', '$', 'end', 'g', 'G', 'H', 'M', 'L', 'ctrl-u', 'ctrl-d', 'ctrl-b', 'ctrl-f', 'left', 'right', 'up', 'down'];
   const all = [...motions, ...motions, 'v', 'V', 'escape', 'space'];
-  const { term, copy, press } = start({ total: 300, cols: 30, len: 25 }, cell(280, 4));
+  const texts = Array.from({ length: 300 }, (_, r) => (r % 7 === 0 ? '' : ' '.repeat(r % 5) + 'w'.repeat(r % 23)));
+  const { term, copy, press } = start({ total: 300, cols: 30, len: 25, text: (r) => texts[r] }, cell(280, 4));
   let anchor = null;
   for (let i = 0; i < 5000; i++) {
     const { mode: before, pos: was } = copy.state();
