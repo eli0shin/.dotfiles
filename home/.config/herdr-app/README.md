@@ -184,7 +184,6 @@ Other app layouts retain native pane navigation; use `eli` for the bridge.
 Regression checks:
 
 ```sh
-python3 tests/herdr-app-config.py
 uv run tests/herdr-font-preparation.py
 # macOS after preparing fonts: verify native normal/bold/italic face selection.
 swift tests/herdr-app-font.swift
