@@ -791,6 +791,11 @@ export default function prWatch(pi: ExtensionAPI): void {
   // during a manual compaction, when steering would start a run instead.
   let agentRunning = false;
   let sessionGeneration = 0;
+  // Set from session_shutdown until the next session_start. On reload Pi then
+  // invalidates this instance's pi and ctx, so work still in flight, such as a
+  // poll waiting on gh, must not write state, status, or messages: any call
+  // throws, and a throw out of a timer callback exits Pi.
+  let disposed = false;
   let lastPublishedMembership: string | undefined;
   let currentRepo: string | undefined;
   let currentDefaultBranch: string | undefined;
@@ -847,6 +852,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function save(): void {
+    if (disposed) return;
     pi.appendEntry(CUSTOM_STATE, state);
   }
 
@@ -1260,6 +1266,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function setStatus(ctx: ExtensionContext): void {
+    if (disposed) return;
     const text = statusText();
     const highlighted = text && (state.mode === "paused" || pendingCount() > 0)
       ? ctx.ui.theme?.fg?.("warning", text) ?? text
@@ -1269,7 +1276,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function startPolling(ctx: ExtensionContext): void {
     if (interval) return reschedulePolling(ctx);
-    if (state.mode === "off" || !hasTargets()) return;
+    if (disposed || state.mode === "off" || !hasTargets()) return;
     intervalMs = pollIntervalMs(state.watchedPrs.length);
     interval = setInterval(() => poll(ctx), intervalMs);
     setStatus(ctx);
@@ -1282,15 +1289,19 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function startInboxPolling(ctx: ExtensionContext): void {
-    if (inboxInterval || !(state.workerOrchestrationSessionId || state.orchestrationSessionId)) return;
+    if (disposed || inboxInterval || !(state.workerOrchestrationSessionId || state.orchestrationSessionId)) return;
     const generation = sessionGeneration;
     inboxInterval = setInterval(async () => {
-      if (generation !== sessionGeneration) return;
-      await receiveMessages(ctx);
-      if (generation !== sessionGeneration) return;
-      reconcileSteers(ctx);
-      flushPending(ctx);
-      await pruneDeliveredMessages(ctx);
+      if (disposed || generation !== sessionGeneration) return;
+      try {
+        await receiveMessages(ctx);
+        if (disposed || generation !== sessionGeneration) return;
+        reconcileSteers(ctx);
+        flushPending(ctx);
+        await pruneDeliveredMessages(ctx);
+      } catch (error) {
+        if (!disposed) throw error;
+      }
     }, INBOX_POLL_INTERVAL_MS);
     inboxInterval.unref?.();
   }
@@ -2400,7 +2411,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function flushPending(ctx: ExtensionContext): void {
-    if (state.mode !== "active") return;
+    if (disposed || state.mode !== "active") return;
     if (!ctx.isIdle()) {
       steerMessages(ctx);
       return;
@@ -2624,7 +2635,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function poll(ctx: ExtensionContext): Promise<void> {
-    if (polling || state.mode === "off" || !hasTargets()) return;
+    if (disposed || polling || state.mode === "off" || !hasTargets()) return;
     polling = true;
 
     try {
@@ -2674,6 +2685,8 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       flushPending(ctx);
     } catch (error) {
+      // After a reload the old runtime throws on every call; that is not news.
+      if (disposed) return;
       state.lastError = error instanceof Error ? error.message : String(error);
       save();
     } finally {
@@ -2783,6 +2796,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (event, ctx) => {
+    disposed = false;
     stopInboxPolling();
     sessionGeneration += 1;
     state = initialState();
@@ -2887,6 +2901,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
+    disposed = true;
     sessionGeneration += 1;
     stopPolling();
     stopInboxPolling();

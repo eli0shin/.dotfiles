@@ -123,6 +123,11 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
   let branchTipAvailable = true;
   let runsAvailable = true;
   let gitDirectory: string | undefined;
+  // Pi invalidates a reloaded extension's runtime: every pi and ctx call throws.
+  let stale = false;
+  const assertActive = () => {
+    if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+  };
 
   function prNumberFromArgs(args: string[]): number | undefined {
     for (const arg of args) {
@@ -155,10 +160,12 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
       messageRenderers.set(customType, renderer);
     },
     appendEntry(_customType: string, data: unknown): void {
+      assertActive();
       savedStates.push(structuredClone(data));
       options.sessionManager?.appendCustomEntry(_customType, structuredClone(data));
     },
     sendMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, deliveryOptions?: unknown): void {
+      assertActive();
       sentMessages.push(message.content);
       sentMessageOptions.push(deliveryOptions);
       sentMessageDetails.push(message.details);
@@ -176,6 +183,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
       void handlers.get("turn_start")?.({}, ctx);
     },
     async exec(command: string, args: string[], execOptions?: { cwd?: string }) {
+      assertActive();
       execCalls.push({ command, args, ...(execOptions?.cwd && { cwd: execOptions.cwd }) });
       if (execGate?.matches(command, args)) {
         const gate = execGate;
@@ -281,9 +289,11 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     ui: {
       theme: { fg: (_color: string, text: string) => text },
       notify(message: string): void {
+        assertActive();
         notifications.push(message);
       },
       setStatus(_key: string, text: string | undefined): void {
+        assertActive();
         statuses.push(text);
       },
     },
@@ -542,6 +552,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     },
     setCurrentBranch(branch: string) {
       currentBranch = branch;
+    },
+    invalidate() {
+      stale = true;
     },
     setDirectoryBranch(directory: string, branch: string) {
       directoryBranches.set(directory, branch);
@@ -5107,4 +5120,32 @@ test("a push after a subshell cd watches the session checkout's PR", async () =>
 
   assert.ok(!harness.savedStates.at(-1)?.watchedPrs.some(({ pr }: any) => pr.number === 105));
   assert.ok(!harness.execCalls.some(({ cwd }) => cwd === "/work/repos-wt"));
+});
+
+test("a poll in flight when Pi reloads finishes without touching the stale runtime", { timeout: 5_000 }, async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.activate(104);
+  const savedBeforeReload = harness.savedStates.length;
+  const gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "checks", []);
+
+  const polling = harness.runPoll();
+  await gate.started;
+  // Pi emits session_shutdown, then invalidates the old runtime.
+  await harness.shutdown();
+  harness.invalidate();
+  gate.release();
+
+  await polling;
+  assert.equal(harness.savedStates.length, savedBeforeReload);
+});
+
+test("a poll tick after shutdown does nothing", { timeout: 5_000 }, async () => {
+  const harness = createHarness();
+  await harness.startSession();
+  await harness.activate(104);
+  await harness.shutdown();
+  harness.invalidate();
+
+  await harness.runPoll();
 });
