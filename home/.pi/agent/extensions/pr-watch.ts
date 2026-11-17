@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -354,6 +355,39 @@ export function prStatusIdentity(
   if (currentRepo?.toLowerCase() === pr.repo.toLowerCase()) return `#${pr.number}`;
   const repoName = pr.repo.split("/").filter(Boolean).at(-1) ?? pr.repo;
   return `${repoName}#${pr.number}`;
+}
+
+// The Herdr app's Agents list reads this herdr-core terminal label to nest
+// workers under their orchestrator and list each session's watched PRs.
+export const TERMINAL_LABEL = "dotfiles.pi_pr_watch";
+
+// JSON for TERMINAL_LABEL, or "" (which removes the label) when there is
+// nothing to show. PRs use the status line's names.
+export function terminalLabelValue(state: WatchState, currentRepo: string | undefined): string {
+  const orchestration = state.orchestrationSessionId ?? state.workerOrchestrationSessionId;
+  const watching = state.mode !== "off";
+  const prs = watching ? state.watchedPrs.map(({ pr }) => prStatusIdentity(pr, currentRepo)) : [];
+  // As in the status line, a SHA watch shows only without a watched PR.
+  const sha = watching && prs.length === 0 && state.watchedSha
+    ? state.watchedSha.mergedPr ? `merge of #${state.watchedSha.mergedPr.number}` : `SHA ${state.watchedSha.sha.slice(0, 7)}`
+    : undefined;
+  if (!orchestration && prs.length === 0 && !sha) return "";
+  // An orchestration's ticket is the Jira key its keyed worker branches share.
+  let ticket: string | undefined;
+  if (state.orchestrationSessionId) {
+    const keySets = Object.values(state.workerSnapshots ?? {})
+      .map((snapshot) => new Set(snapshot.branch.toUpperCase().match(/[A-Z]+-\d+/g) ?? []))
+      .filter((keys) => keys.size > 0);
+    const shared = keySets.length > 0 ? [...keySets[0]].filter((key) => keySets.every((keys) => keys.has(key))) : [];
+    ticket = shared.sort().join(", ") || undefined;
+  }
+  return JSON.stringify({
+    ...(orchestration && { role: state.orchestrationSessionId ? "orchestrator" : "worker", orchestration }),
+    ...(ticket && { ticket }),
+    ...(prs.length > 0 && { prs }),
+    ...(sha && { sha }),
+    ...(state.mode === "paused" && { paused: true }),
+  });
 }
 
 function isWorkerSettlement(value: unknown): value is WorkerSettlement {
@@ -797,6 +831,10 @@ export default function prWatch(pi: ExtensionAPI): void {
   // throws, and a throw out of a timer callback exits Pi.
   let disposed = false;
   let lastPublishedMembership: string | undefined;
+  // Set at session_start for an interactive Pi in a herdr-core terminal.
+  let labelTerminal: string | undefined;
+  let publishedLabel: string | undefined;
+  let labelQueue = Promise.resolve();
   let currentRepo: string | undefined;
   let currentDefaultBranch: string | undefined;
   let currentRepoLookup: Promise<string | undefined> | undefined;
@@ -854,6 +892,22 @@ export default function prWatch(pi: ExtensionAPI): void {
   function save(): void {
     if (disposed) return;
     pi.appendEntry(CUSTOM_STATE, state);
+    publishLabel();
+  }
+
+  // Queued so labels land in order; a failed write is retried on the next change.
+  function publishLabel(): void {
+    if (disposed || !labelTerminal) return;
+    const value = terminalLabelValue(state, currentRepo);
+    if (value === publishedLabel) return;
+    publishedLabel = value;
+    const terminal = labelTerminal;
+    labelQueue = labelQueue.then(() => new Promise<void>((done) => {
+      execFile("hc", ["label", terminal, `${TERMINAL_LABEL}=${value}`], { timeout: 5000 }, (error) => {
+        if (error && publishedLabel === value) publishedLabel = undefined;
+        done();
+      });
+    }));
   }
 
   function orchestrationDirectory(orchestrationId: string): string {
@@ -1267,6 +1321,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   function setStatus(ctx: ExtensionContext): void {
     if (disposed) return;
+    publishLabel();
     const text = statusText();
     const highlighted = text && (state.mode === "paused" || pendingCount() > 0)
       ? ctx.ui.theme?.fg?.("warning", text) ?? text
@@ -2797,6 +2852,9 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     disposed = false;
+    // Headless modes share the terminal of the Pi that started them.
+    labelTerminal = ctx.mode === "tui" ? process.env.HC_TERMINAL_ID || undefined : undefined;
+    publishedLabel = undefined;
     stopInboxPolling();
     sessionGeneration += 1;
     state = initialState();

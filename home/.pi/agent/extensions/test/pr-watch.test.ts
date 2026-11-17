@@ -22,6 +22,8 @@ import prWatch, {
   pullRequestUrlFromText,
   pullRequestUrlsFromText,
   shouldTrackActivity,
+  TERMINAL_LABEL,
+  terminalLabelValue,
 } from "../pr-watch.ts";
 
 const humanActivity = { id: 1, user: { login: "reviewer", type: "User" } };
@@ -937,6 +939,67 @@ test("status line prefixes only PRs from other repositories", async () => {
 
   assert.equal(harness.statuses.at(-1), "PR watch: #104, repository#105");
   await harness.shutdown();
+});
+
+test("the terminal label carries the role, orchestration, ticket, PRs, and paused watch", () => {
+  const base = { version: 4, mode: "active", watchedPrs: [], pendingPrUpdates: [], pendingWorkerSettlements: [], recentGhOutputs: [] };
+  const watched = (repo: string, number: number) => ({ pr: { repo, number, url: `https://github.com/${repo}/pull/${number}`, branch: "b", headSha: "s" }, seenActivityIds: [] });
+  const label = (state: object, repo?: string) => terminalLabelValue({ ...base, ...state } as any, repo);
+  assert.equal(label({}), "");
+  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104), watched("another/tool", 7)] }, "eli0shin/repos"), '{"prs":["#104","tool#7"]}');
+  assert.equal(label({ mode: "paused", watchedPrs: [watched("eli0shin/repos", 104)] }, "eli0shin/repos"), '{"prs":["#104"],"paused":true}');
+  assert.equal(label({ mode: "off", watchedPrs: [watched("eli0shin/repos", 104)] }), "");
+  assert.equal(label({ watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "", mergedPr: { number: 9, url: "" } } }), '{"sha":"merge of #9"}');
+  assert.equal(label({ watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "" } }), '{"sha":"SHA abcdef1"}');
+  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104)], watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "" } }, "eli0shin/repos"), '{"prs":["#104"]}');
+  assert.equal(label({ workerOrchestrationSessionId: "o1", mode: "off" }), '{"role":"worker","orchestration":"o1"}');
+  const snapshot = (branch: string) => ({ version: 2, orchestrationId: "o1", workerSessionId: branch, revision: 1, branch, watchedPrs: [] });
+  assert.equal(
+    label({ orchestrationSessionId: "o1", workerSnapshots: { a: snapshot("fcc-212-schema"), b: snapshot("FCC-212-api"), c: snapshot("cleanup") } }),
+    '{"role":"orchestrator","orchestration":"o1","ticket":"FCC-212"}',
+  );
+});
+
+test("an interactive Pi in a herdr-core terminal labels it whenever the label changes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-watch-hc-"));
+  const calls = join(root, "calls");
+  writeFileSync(join(root, "hc"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, HC_TERMINAL_ID: process.env.HC_TERMINAL_ID };
+  process.env.PATH = `${root}:${process.env.PATH}`;
+  process.env.HC_TERMINAL_ID = "t7";
+  const lines = async (count: number) => {
+    for (let i = 0; i < 100; i++) {
+      const text = await readFile(calls, "utf8").catch(() => "");
+      const found = text.split("\n").filter(Boolean);
+      if (found.length >= count) return found;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail(`expected ${count} hc calls`);
+  };
+  try {
+    const headless = createHarness();
+    await headless.startSession();
+    await headless.activate(104);
+    await headless.shutdown();
+
+    const harness = createHarness();
+    (harness.ctx as any).mode = "tui";
+    await harness.startSession();
+    await harness.activate(104);
+    await harness.activate(105);
+    assert.deepEqual(await lines(3), [
+      // Clears whatever an earlier Pi in this terminal left.
+      `label t7 ${TERMINAL_LABEL}=`,
+      `label t7 ${TERMINAL_LABEL}={"prs":["#104"]}`,
+      `label t7 ${TERMINAL_LABEL}={"prs":["#104","#105"]}`,
+    ]);
+    await harness.shutdown();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("associated workers publish ordinary PR watch membership regardless of local mode", async () => {

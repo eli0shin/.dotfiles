@@ -62,7 +62,7 @@ run_shell "{\"dotfiles.pi_session\":\"$session\",\"dotfiles.pi_shell\":\"t7-1-1\
 token=$(sed -n 's/^token //p' "$calls")
 grep -Fxq "pi --session $session shell=$token" "$calls" || fail 'a reopened terminal did not resume its session'
 [[ -e $markers/t7-1-1 ]] && fail 'the old marker was left behind'
-grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell=' "$calls" || fail 'the label outlived the resumed pi'
+grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_watch=' "$calls" || fail 'the label outlived the resumed pi'
 [[ -e $markers/$token ]] && fail 'the new marker outlived the resumed pi'
 
 # pi started directly by hc run has no shell token, and is resumed too.
@@ -72,7 +72,7 @@ grep -q "^pi --session $session " "$calls" || fail 'a pi without a shell token w
 # A session file that is gone: forget it instead of starting pi.
 run_shell "{\"dotfiles.pi_session\":\"$test_root/gone.jsonl\",\"dotfiles.pi_shell\":\"t7-1-1\"}" 1
 grep -q '^pi ' "$calls" && fail 'pi started for a missing session file'
-grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell=' "$calls" || fail 'the label of a missing session was kept'
+grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_watch=' "$calls" || fail 'the label of a missing session was kept'
 
 # A shell that replaced the first one with exec (same pid, same token): pi
 # returned to it, so it clears the label without looking for a resume.
@@ -85,7 +85,7 @@ run_exec_shell() {
 }
 run_exec_shell
 grep -q '^hc get' "$calls" && fail 'an exec-replaced shell looked for a resume'
-grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell=' "$calls" || fail 'an exec-replaced shell kept the label of the pi it ran'
+grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_watch=' "$calls" || fail 'an exec-replaced shell kept the label of the pi it ran'
 compgen -G "$markers/t7-*-9" >/dev/null && fail 'an exec-replaced shell kept its marker'
 
 # A nested shell inherits the token of the shell it runs in and does nothing,

@@ -23,7 +23,8 @@ else if test "$token[2]" != "$fish_pid"
 end
 
 function __dotfiles_hc_pi_forget --argument-names shell
-    command hc label $HC_TERMINAL_ID dotfiles.pi_session= dotfiles.pi_shell= >/dev/null 2>&1
+    # pr-watch.ts's dotfiles.pi_pr_watch goes too: the Agents list must not show a gone pi's role.
+    command hc label $HC_TERMINAL_ID dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_watch= >/dev/null 2>&1
     and command rm -f $__dotfiles_hc_pi_markers/$shell
 end
 
