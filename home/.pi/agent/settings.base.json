@@ -44,7 +44,8 @@
   ],
   "extensions": [
     "-extensions/permission-gate.ts",
-    "-extensions/protected-paths.ts"
+    "-extensions/protected-paths.ts",
+    "-extensions/provider-reliability/index.ts"
   ],
   "provider": {
     "openai": {
