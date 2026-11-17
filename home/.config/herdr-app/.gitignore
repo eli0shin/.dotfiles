@@ -49,3 +49,8 @@
 !/mods/copy-mode/main.js
 !/mods/copy-mode/mod.json
 !/mods/copy-mode/copy.js
+!/mods/new-space/
+/mods/new-space/*
+!/mods/new-space/main.js
+!/mods/new-space/mod.json
+!/mods/new-space/folders.js

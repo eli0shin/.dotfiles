@@ -135,7 +135,7 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | --- | --- |
 | C / S | Settings / spaces picker (`space-picker`) |
 | K / J | Previous / next agent |
-| Ctrl+S / X | New / close space (legacy workspace) |
+| Ctrl+S / X | New space in a picked folder (`new-space`) / close space |
 | D | Close the window; core terminals keep running (legacy detach) |
 | T / R | New / rename tab |
 | P / N / 1–9 | Previous / next / numbered tab |
@@ -201,6 +201,23 @@ herdr-app check ~/.config/herdr-app/mods/copy-mode
 
 The old Lumen Alt+J/K shell aliases also depend on the legacy pane API and
 are not installed here; use Lumen's own controls instead.
+
+### New space in a picked folder
+
+A space keeps the folder it was made in: plain `space.new` takes the focused
+terminal's folder at that moment, and nothing changes it afterwards (no
+command sets an existing space's folder). `repos` and the default mods match
+spaces by that folder, so `new-space` replaces `space.new` on Cmd+N and
+Ctrl+G, Ctrl+S with a fuzzy folder picker. The focused terminal's folder is
+first, so Enter right away behaves like plain `space.new`. Then come zoxide's
+folders in frecency order and repos-tracked repos (`repos/config.json`) zoxide
+hasn't seen; nothing is walked, so it opens instantly. Typing filters
+fzf-style (every term must match, the folder's own name first); a typed `/…` or `~/…`
+path is offered as is. ↑/↓ or Ctrl+P/Ctrl+N move, Enter makes the space, Esc
+closes. In a space on another machine, it lists that machine's folders and
+makes the space there. The tab picker's "new space" rows still run plain
+`space.new`. Check with `node tests/herdr-app-new-space.mjs` and
+`herdr-app check ~/.config/herdr-app/mods/new-space`.
 
 ### Spaces picker and numbered agents
 
