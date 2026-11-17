@@ -107,6 +107,10 @@ one, and no fable id serves that condition at all. `sonnet-5` and `opus-4-8`
 bare rose 200K → 1M. `fable-5-1` was not re-probed and is assumed to share
 fable-5's gate.
 
+Measured 2026-11-17 on a Claude Enterprise account with overage allowed
+(rate-limit event `overageStatus: "allowed"`): `fable-5-2` serves 1M from both
+the bare id and `[1m]`. It is not yet probed on Pro or Max.
+
 ## Error shapes
 
 Rejected `[1m]` turns surface in the SDK message stream, not `result.errors[]`

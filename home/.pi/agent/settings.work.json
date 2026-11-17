@@ -1,11 +1,10 @@
 {
-  "defaultProvider": "anthropic",
+  "defaultProvider": "claude-bridge",
   "defaultModel": "claude-opus-5-5",
   "enabledModels": [
-    "anthropic/claude-opus-5-5",
-    "anthropic/claude-opus-4-8",
-    "anthropic/claude-sonnet-5",
-    "anthropic/claude-fable-5-1",
+    "claude-bridge/claude-opus-5-5",
+    "claude-bridge/claude-sonnet-5-5",
+    "claude-bridge/claude-fable-5-2",
     "openai-codex/gpt-6-astra",
     "openai-codex/gpt-6.1-sol"
   ],
