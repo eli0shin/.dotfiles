@@ -1,0 +1,388 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Not loaded by Herdr.
+  Question: how should the eli-agents sidebar (home/.config/herdr-app/mods/eli-agents/main.js)
+  mark orchestrators and workers, and show the PRs a Pi session watches (pi pr-watch) as a third line?
+  Three variants, switchable via ?variant=A|B|C, ←/→, or the floating bar. Open this file directly.
+  Mock data is shaped like pr-watch-state (orchestrationSessionId, workerOrchestrationSessionId,
+  watchedPrs, watchedSha, mode). Herdr mods are native GPUI; this HTML mimics its metrics and Arctic theme.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE · Herdr agents: roles + PR watch</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --fg: #D4D4D4; --raised: #2A2D2E; --hover: #2D2D2D; --selected: #04395E;
+    --border: #858585; --input: #A9A9A9; --muted: #8F8F8F; --dim: #8F8F8F;
+    --working: #3794FF; --blocked: #CCA700; --done: #89D185; --red: #f44747; --purple: #c586c0;
+    --cyan: #4dc9b0; --pi: #a78bfa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+  body { font-family: "Operator Mono", "Operator Mono Book", "JetBrains Mono", ui-monospace, monospace; font-weight: 400; display: flex; }
+  .sidebar { width: 400px; zoom: 0.9; height: calc(100vh / 0.9); border-right: 1px solid #3a3a3a; display: flex; flex-direction: column; flex: none; }
+  .spaces { padding: 10px 8px 8px; font-size: 13px; }
+  .spaces .title { padding: 14px 8px 8px; font-size: 11.5px; color: var(--dim); }
+  .space { height: 28px; display: flex; align-items: center; gap: 9px; padding: 0 8px; border-radius: 6px; }
+  .space .sq { width: 16px; height: 16px; border-radius: 4px; font-size: 10px; display: grid; place-items: center; color: #fff; font-weight: 700; }
+  .space.on { background: var(--selected); }
+  .agents { border-top: 1px solid #3a3a3a; flex: 1; min-height: 0; display: flex; flex-direction: column; font-size: 13px; }
+  .agents-head { padding: 14px 16px 5px; height: 41px; display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--dim); flex: none; }
+  .list { padding: 0 8px 80px; overflow-y: auto; flex: 1; }
+  .sec { padding: 8px 8px 0; height: 30px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; color: var(--dim); }
+  .row { padding: 4px 8px; border-radius: 8px; cursor: pointer; position: relative; }
+  .row:hover { background: var(--hover); }
+  .row.focused { background: var(--selected); }
+  .l1 { height: 20px; display: flex; align-items: center; gap: 9px; }
+  .l2, .l3 { height: 17px; display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--dim); }
+  .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .name.idle { color: var(--muted); }
+  .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .num { width: 10px; text-align: right; font-size: 11px; color: var(--dim); flex: none; }
+  .ico { width: 16px; height: 16px; flex: none; position: relative; }
+  .ico svg { width: 16px; height: 16px; display: block; }
+  .ring { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; border: 1.5px solid var(--dim); flex: none; }
+  .dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; background: var(--done); flex: none; }
+  .spin { width: 12px; height: 12px; margin: 0 1px; flex: none; color: var(--working); animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .needs { padding: 0 6px; height: 18px; border-radius: 5px; background: #CCA70026; color: var(--blocked); font-size: 10.5px; font-weight: 600; display: flex; align-items: center; flex: none; }
+  .bang { width: 14px; height: 14px; border-radius: 4px; background: #CCA70026; color: var(--blocked); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; flex: none; }
+  .gh { width: 11px; height: 11px; flex: none; }
+  .pr { white-space: nowrap; }
+  .paused { font-style: italic; }
+
+  /* Variant A: words */
+  .A-role { color: var(--fg); opacity: .75; }
+  .A-role.orch { color: var(--pi); opacity: 1; }
+
+  /* Variant B: badges + chips */
+  .B-badge { position: absolute; right: -4px; bottom: -4px; width: 9px; height: 9px; border-radius: 5px; border: 2px solid var(--bg); }
+  .row.focused .B-badge { border-color: var(--selected); }
+  .B-badge.orch { width: 11px; height: 11px; right: -5px; bottom: -5px; border-radius: 3px; }
+  .B-chip { height: 15px; padding: 0 5px; border-radius: 4px; background: #ffffff12; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10.5px; }
+  .B-chip i { width: 6px; height: 6px; border-radius: 3px; display: inline-block; }
+  .B-chip.paused { background: none; outline: 1px dashed #ffffff30; }
+  .B-orchtag { height: 15px; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: .3px; display: inline-flex; align-items: center; flex: none; }
+
+  /* Variant C: tree */
+  .C-kids { position: relative; }
+  .C-row { display: flex; }
+  .C-lines { display: flex; flex: none; padding-left: 7px; }
+  .C-line { width: 9px; margin-right: 4px; flex: none; position: relative; }
+  .C-line.pipe::before { content: ""; position: absolute; left: 0; top: -4px; bottom: -4px; border-left: 1.5px solid var(--input); opacity: .55; }
+  .C-line.tee::before, .C-line.end::before { content: ""; position: absolute; left: 0; top: -4px; height: 16px; width: 8px; border-left: 1.5px solid var(--input); border-bottom: 1.5px solid var(--input); border-bottom-left-radius: 6px; opacity: .55; }
+  .C-line.tee::after { content: ""; position: absolute; left: 0; top: 12px; bottom: -4px; border-left: 1.5px solid var(--input); opacity: .55; }
+  .C-body { flex: 1; min-width: 0; }
+  .fold { height: 18px; padding: 0 3px; display: flex; align-items: center; gap: 3px; border-radius: 4px; font-size: 11px; color: var(--dim); }
+  .fold:hover { background: var(--hover); color: var(--fg); }
+  .C-orch-ico { color: var(--pi); }
+
+  /* Right pane: context + state */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tabs { height: 38px; border-bottom: 1px solid #3a3a3a; display: flex; align-items: center; padding: 0 14px; gap: 18px; font-size: 12px; color: #6a9955; flex: none; }
+  .panel { padding: 22px 26px; font-size: 13px; line-height: 1.55; max-width: 760px; overflow-y: auto; }
+  .panel h2 { font-size: 15px; margin: 0 0 4px; color: #fff; font-weight: 500; }
+  .panel .sub { color: var(--dim); margin-bottom: 14px; }
+  .panel ul { margin: 6px 0 14px; padding-left: 18px; }
+  .panel code, .panel pre { color: #d7ba7d; }
+  .panel pre { background: #252526; padding: 10px 12px; border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
+  .tag { display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: #CCA70026; color: var(--blocked); margin-left: 6px; }
+
+  /* Prototype switcher (not part of the design) */
+  .switcher { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 99; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 999px; background: #fff; color: #111; font: 500 13px -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px #0008; }
+  .switcher button { border: 0; background: #eee; color: #111; height: 30px; min-width: 30px; padding: 0 12px; border-radius: 999px; cursor: pointer; font: inherit; }
+  .switcher button:hover { background: #ddd; }
+  .switcher button.on { background: #111; color: #fff; }
+  .switcher .label { padding: 0 10px; min-width: 230px; text-align: center; }
+  .switcher .sep { width: 1px; height: 20px; background: #ddd; margin: 0 4px; }
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="spaces">
+    <div class="title">Spaces</div>
+    <div class="space"><span class="sq" style="background:#2bb39a">W</span>workbench</div>
+    <div class="space on"><span class="sq" style="background:#e07b39">.</span>.dotfiles</div>
+    <div class="space"><span class="sq" style="background:#4f7df0">F</span>ffs-mono-repo</div>
+  </div>
+  <div class="agents">
+    <div class="agents-head"><span>Agents</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+    <div class="list" id="list"></div>
+  </div>
+</div>
+<div class="main">
+  <div class="tabs"><span>&gt;_ 3</span><span>&gt;_ 6</span></div>
+  <div class="panel" id="panel"></div>
+</div>
+<div class="switcher" id="switcher"></div>
+
+<script>
+// ---------- Mock data, shaped like pr-watch-state + agents() ----------
+const MIN = 60000, now = Date.now();
+const ORCH = {
+  o1: { name: "Imprint onboarding", ticket: "FCC-212", hue: "var(--cyan)" },
+  o2: { name: "Herdr app parity gaps", ticket: null, hue: "var(--purple)" },
+};
+// role: "orchestrator" (orchestrationSessionId) | "worker" (workerOrchestrationSessionId) | null
+// prs: watchedPrs; ci is NOT in pr-watch-state today (see panel).
+let AGENTS = [
+  { id: "t1", name: "Herdr agents view design", space: ".dotfiles", status: "working", since: 0.5, focused: true },
+  { id: "t2", name: "Imprint onboarding", space: "ffs-mono-repo", status: "working", since: 2, role: "orchestrator", orch: "o1",
+    prs: [{ repo: "ffs-mono-repo", n: 1901, ci: "pass" }, { repo: "ffs-mono-repo", n: 1903, ci: "fail" }] },
+  { id: "t3", name: "FCC-212 schema migration", space: "ffs-mono-repo", status: "done", since: 4, role: "worker", orch: "o1",
+    prs: [{ repo: "ffs-mono-repo", n: 1901, ci: "pass" }] },
+  { id: "t4", name: "FCC-212 partner API client", space: "ffs-mono-repo", status: "blocked", since: 1, role: "worker", orch: "o1",
+    prs: [{ repo: "ffs-mono-repo", n: 1903, ci: "fail" }] },
+  { id: "t5", name: "FCC-212 e2e fixtures", space: "ffs-mono-repo", status: "working", since: 9, role: "worker", orch: "o1", prs: [] },
+  { id: "t6", name: "Herdr app parity gaps", space: ".dotfiles", status: "idle", since: 22, role: "orchestrator", orch: "o2",
+    prs: [{ repo: "dotfiles", n: 88, ci: "pending" }] },
+  { id: "t7", name: "Tab index skips agent tabs", space: ".dotfiles", status: "working", since: 3, role: "worker", orch: "o2",
+    prs: [{ repo: "dotfiles", n: 88, ci: "pending" }] },
+  { id: "t8", name: "Copy-mode word motions", space: ".dotfiles", status: "idle", since: 40, role: "worker", orch: "o2", prs: [] },
+  { id: "t9", name: "Open Accounts from APPLICATION", space: "ffs-mono-repo", status: "idle", since: 61,
+    prs: [{ repo: "ffs-mono-repo", n: 1780, ci: "pass" }, { repo: "ffs-mono-repo", n: 1782, ci: "pending" }] },
+  { id: "t10", name: "Domain Model Imprint Migration", space: "ffs-mono-repo", status: "idle", since: 180, mode: "paused",
+    prs: [{ repo: "ffs-mono-repo", n: 1867, ci: "pass" }] },
+  { id: "t11", name: "Account cache design", space: "ffs-mono-repo@cache-playwright-fixture-accounts", status: "idle", since: 1080,
+    sha: "merge of #1850" },
+  { id: "t12", name: "Daily update", space: "workbench", status: "idle", since: 360 },
+  { id: "t13", name: "Remote dev boxes", space: "ffs-mono-repo", status: "idle", since: 1100, machine: "vps" },
+];
+const SPACE_ORDER = ["workbench", ".dotfiles", "ffs-mono-repo", "ffs-mono-repo@cache-playwright-fixture-accounts"];
+const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+const SECTION = { 4: ["Needs you", "blocked"], 3: ["Done", "done"], 2: ["Working", "working"], 1: ["Idle", null] };
+const CI = { pass: "var(--done)", fail: "var(--red)", pending: "var(--blocked)", merged: "var(--purple)" };
+
+// ---------- Prototype controls ----------
+const params = new URLSearchParams(location.search);
+const VARIANTS = {
+  A: "Words on line 2, PR list on line 3",
+  B: "Icon badges + PR chips",
+  C: "Orchestration tree",
+};
+const KEYS = Object.keys(VARIANTS);
+let variant = KEYS.includes(params.get("variant")) ? params.get("variant") : "A";
+let sort = params.get("sort") === "grouped" ? "grouped" : "priority";
+let ci = params.get("ci") !== "off";
+function setParam() {
+  const p = new URLSearchParams({ variant, sort, ci: ci ? "on" : "off" });
+  history.replaceState(null, "", "?" + p);
+  render();
+}
+addEventListener("keydown", (e) => {
+  if (e.target.closest?.("input,textarea,[contenteditable]")) return;
+  const i = KEYS.indexOf(variant);
+  if (e.key === "ArrowRight") { variant = KEYS[(i + 1) % KEYS.length]; setParam(); }
+  if (e.key === "ArrowLeft") { variant = KEYS[(i - 1 + KEYS.length) % KEYS.length]; setParam(); }
+});
+
+// ---------- Shared bits that mirror main.js ----------
+const PI = `<svg viewBox="0 0 800 800"><path fill="currentColor" fill-rule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/><path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z"/></svg>`;
+const SPIN = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><circle cx="12" cy="12" r="9.4" stroke-opacity=".24"/><path d="M12 2.6a9.4 9.4 0 0 1 9.4 9.4"/></svg>`;
+const PRICON = `<svg class="gh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4m0 0 2.5-2.5M11 6l2.5 2.5"/></svg>`;
+const CHEV = (open) => `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${open ? "m6 9 6 6 6-6" : "m9 18 6-6-6-6"}"/></svg>`;
+const dur = (m) => (m < 1 ? "<1m" : m < 60 ? `${Math.floor(m)}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`);
+const status = (a, compact) =>
+  a.status === "working" ? SPIN :
+  a.status === "blocked" ? (compact ? `<span class="bang">!</span>` : `<span class="needs">Needs you</span>`) :
+  a.status === "idle" ? `<span class="ring"></span>` : `<span class="dot"></span>`;
+const workersOf = (o) => AGENTS.filter((a) => a.role === "worker" && a.orch === o);
+const orchestratorOf = (a) => AGENTS.find((x) => x.role === "orchestrator" && x.orch === a.orch);
+const prLabel = (p, short) => (short ? `#${p.n}` : `${p.repo}#${p.n}`);
+const folded = new Set();
+// The real build should compare against the space's git repo, not its name.
+const sameRepo = (p, a) => p.repo === a.space.split("@")[0].replace(/^\./, "");
+
+function orderAndGroups(list, rankOf) {
+  if (sort === "priority") list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || x.since - y.since);
+  else list = [...list].sort((x, y) => SPACE_ORDER.indexOf(x.space) - SPACE_ORDER.indexOf(y.space));
+  const groups = [];
+  for (const a of list) {
+    const id = sort === "priority" ? `sec-${rankOf(a)}` : `sp-${a.space}`;
+    if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
+    else groups.push({ id, label: sort === "priority" ? SECTION[rankOf(a)][0] : a.space, color: sort === "priority" ? SECTION[rankOf(a)][1] : null, members: [a] });
+  }
+  return groups;
+}
+const header = (g) => `<div class="sec"><span style="color:${g.color ? `var(--${g.color})` : "var(--dim)"}">${g.label}</span>${sort === "priority" ? `<span>${g.members.length}</span>` : ""}</div>`;
+
+function rowShell(a, inner) {
+  return `<div class="row ${a.focused ? "focused" : ""}" data-id="${a.id}">${inner}</div>`;
+}
+function line1(a, n, { icon = PI, extra = "", iconStyle = "" } = {}) {
+  const idle = a.status === "idle" && !a.focused;
+  return `<div class="l1"><span class="ico" style="${iconStyle}">${icon}${extra}</span><span class="name ${idle ? "idle" : ""}">${a.name}</span>${status(a, sort === "priority")}<span class="num">${n <= 9 ? n : ""}</span></div>`;
+}
+const spaceText = (a) => (sort === "priority" ? a.space : "");
+
+// ---------- Variant A: words ----------
+// Line 2 gains the role in words; line 3 lists watched PRs, short when the repo is the space's.
+function A_row(a, n) {
+  let role = "";
+  if (a.role === "orchestrator") role = `<span class="A-role orch">orchestrating ${workersOf(a.orch).length}${ORCH[a.orch].ticket ? ` · ${ORCH[a.orch].ticket}` : ""}</span>`;
+  if (a.role === "worker") role = `<span class="A-role">↳ ${ORCH[a.orch].name}</span>`;
+  const l2bits = [spaceText(a) && `<span>${spaceText(a)}</span>`, role].filter(Boolean).join(`<span> · </span>`);
+  const l2 = `<div class="l2"><span class="grow">${l2bits}</span>${a.machine ? `<span style="font-size:10px">${a.machine}</span>` : ""}<span>${dur(a.since)}</span></div>`;
+  let l3 = "";
+  const watching = (a.prs ?? []).map((p) => `<span class="pr" ${ci ? `style="color:${CI[p.ci]}"` : ""}>${prLabel(p, sameRepo(p, a))}</span>`);
+  if (a.sha) watching.push(`<span class="pr">${a.sha}</span>`);
+  if (watching.length) l3 = `<div class="l3">${PRICON}<span class="grow ${a.mode === "paused" ? "paused" : ""}">${watching.join(`<span style="color:var(--dim)">, </span>`)}${a.mode === "paused" ? " · paused" : ""}</span></div>`;
+  // Grouped, line 2 is empty but for the time: the PRs take it instead of a third line.
+  if (!l2bits && l3) return rowShell(a, line1(a, n) + l3.replace('class="l3">', 'class="l2">').replace(/<\/div>$/, `${a.machine ? `<span style="font-size:10px">${a.machine}</span>` : ""}<span>${dur(a.since)}</span></div>`));
+  return rowShell(a, line1(a, n) + l2 + l3);
+}
+
+// ---------- Variant B: badges + chips ----------
+// Icon gets a badge in the orchestration's hue (square = orchestrator, dot = worker),
+// so pairs match even when priority sort scatters them. Line 3 is PR chips.
+function B_row(a, n) {
+  const hue = a.orch ? ORCH[a.orch].hue : null;
+  const badge = a.role ? `<span class="B-badge ${a.role === "orchestrator" ? "orch" : ""}" style="background:${hue}"></span>` : "";
+  const tag = a.role === "orchestrator" ? `<span class="B-orchtag" style="color:${hue};background:color-mix(in srgb, ${hue} 16%, transparent)">ORCH ${workersOf(a.orch).length}</span>` : "";
+  const right = a.role === "worker" ? `<span style="color:${hue}">${ORCH[a.orch].name}</span>` : "";
+  const l2 = `<div class="l2"><span class="grow">${spaceText(a)}</span>${tag}${right}${a.machine ? `<span style="font-size:10px">${a.machine}</span>` : ""}<span>${dur(a.since)}</span></div>`;
+  const chips = (a.prs ?? []).map((p) => `<span class="B-chip ${a.mode === "paused" ? "paused" : ""}">${ci ? `<i style="background:${CI[p.ci]}"></i>` : ""}#${p.n}</span>`);
+  if (a.sha) chips.push(`<span class="B-chip">${a.sha}</span>`);
+  const l3 = chips.length ? `<div class="l3" style="gap:5px">${chips.join("")}${a.mode === "paused" ? `<span class="paused">paused</span>` : ""}</div>` : "";
+  if (!spaceText(a) && !a.role && l3) return rowShell(a, line1(a, n, { extra: badge }) + `<div class="l2" style="gap:5px">${chips.join("")}${a.mode === "paused" ? `<span class="paused">paused</span>` : ""}<span class="grow"></span>${a.machine ? `<span style="font-size:10px">${a.machine}</span>` : ""}<span>${dur(a.since)}</span></div>`);
+  return rowShell(a, line1(a, n, { extra: badge }) + l2 + l3);
+}
+
+// ---------- Variant C: tree ----------
+// Workers nest under their orchestrator like sub-agents; the orchestrator takes its
+// most urgent worker's place. Every row lists the PRs it watches the way A does.
+function aWatching(a) {
+  const watching = (a.prs ?? []).map((p) => `<span class="pr" ${ci ? `style="color:${CI[p.ci]}"` : ""}>${prLabel(p, sameRepo(p, a))}</span>`);
+  if (a.sha) watching.push(`<span class="pr">${a.sha}</span>`);
+  if (!watching.length) return "";
+  return `${PRICON}<span class="grow ${a.mode === "paused" ? "paused" : ""}">${watching.join(`<span style="color:var(--dim)">, </span>`)}${a.mode === "paused" ? " · paused" : ""}</span>`;
+}
+function C_rowInner(a, n, isKid) {
+  const kids = a.role === "orchestrator" ? workersOf(a.orch) : [];
+  const open = !folded.has(a.id);
+  const foldEl = kids.length ? `<span class="fold" data-fold="${a.id}">${CHEV(open)}${open ? "" : kids.length}</span>` : "";
+  const idle = a.status === "idle" && !a.focused;
+  const l1 = `<div class="l1"><span class="ico ${a.role === "orchestrator" ? "C-orch-ico" : ""}">${PI}</span><span class="name ${idle ? "idle" : ""}">${a.name}</span>${foldEl}${status(a, sort === "priority")}<span class="num">${n <= 9 ? n : ""}</span></div>`;
+  const sub = a.role === "orchestrator"
+    ? [spaceText(a), `${kids.length} workers${ORCH[a.orch].ticket ? ` · ${ORCH[a.orch].ticket}` : ""}`].filter(Boolean).join(" · ")
+    : isKid ? "" : spaceText(a);
+  const tail = `${a.machine ? `<span style="font-size:10px">${a.machine}</span>` : ""}<span>${dur(a.since)}</span>`;
+  const prs = aWatching(a);
+  // Nothing else for line 2 (a worker's space is its parent's; grouped puts the
+  // space in the header): the PRs take line 2 instead of leaving it empty.
+  if (!sub) return l1 + `<div class="l2">${prs || `<span class="grow"></span>`}${tail}</div>`;
+  return l1 + `<div class="l2"><span class="grow">${sub}</span>${tail}</div>` + (prs ? `<div class="l3">${prs}</div>` : "");
+}
+function C_tree(o, n) {
+  const kids = workersOf(o.orch);
+  let html = rowShell(o, C_rowInner(o, n, false));
+  if (folded.has(o.id)) return html;
+  kids.forEach((k, i) => {
+    const last = i === kids.length - 1;
+    html += `<div class="row C-row ${k.focused ? "focused" : ""}" data-id="${k.id}" style="padding-left:12px"><div class="C-lines"><span class="C-line ${last ? "end" : "tee"}"></span></div><div class="C-body">${C_rowInner(k, "", true)}</div></div>`;
+  });
+  return html;
+}
+
+// ---------- Render ----------
+function render() {
+  const list = document.getElementById("list");
+  let html = "";
+  if (variant === "C") {
+    const top = AGENTS.filter((a) => a.role !== "worker");
+    const rankOf = (a) => Math.max(RANK[a.status], ...(a.role === "orchestrator" ? workersOf(a.orch).map((k) => RANK[k.status]) : [0]));
+    let n = 0;
+    for (const g of orderAndGroups(top, rankOf)) {
+      html += header(g);
+      for (const a of g.members) html += a.role === "orchestrator" ? C_tree(a, ++n) : rowShell(a, C_rowInner(a, ++n, false));
+    }
+  } else {
+    const rankOf = (a) => RANK[a.status];
+    const fn = variant === "A" ? A_row : B_row;
+    let n = 0;
+    for (const g of orderAndGroups(AGENTS, rankOf)) {
+      html += header(g);
+      for (const a of g.members) html += fn(a, ++n);
+    }
+  }
+  list.innerHTML = html;
+  list.querySelectorAll("[data-fold]").forEach((el) => el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const id = el.dataset.fold;
+    folded.has(id) ? folded.delete(id) : folded.add(id);
+    render();
+  }));
+  list.querySelectorAll(".row").forEach((el) => el.addEventListener("click", (e) => {
+    if (el.querySelector(".row") && !e.target.closest(".row").isSameNode(el)) return;
+    e.stopPropagation();
+    AGENTS = AGENTS.map((a) => ({ ...a, focused: a.id === el.dataset.id }));
+    render();
+  }));
+  renderPanel();
+  renderSwitcher();
+}
+
+const NOTES = {
+  A: [
+    "Role is words on line 2: <b>orchestrating N · TICKET</b> in Pi purple, workers get <b>↳ orchestrator name</b>.",
+    "Line 3: PR icon + watched PRs; the repo prefix drops when it matches the space. SHA watches read <i>merge of #N</i>.",
+    "Paused watch: italic + “· paused”. No layout change; workers stay wherever sort puts them.",
+  ],
+  B: [
+    "Role is a badge on the Pi icon in a per-orchestration hue: square = orchestrator, dot = worker. Hue pairs workers with their orchestrator even when priority sort scatters them.",
+    "Orchestrator gets an <b>ORCH N</b> tag on line 2; workers name their orchestrator in its hue.",
+    "Line 3: one chip per PR, with a CI dot. Paused watches use dashed chips.",
+  ],
+  C: [
+    "Workers nest under their orchestrator with the same tree lines as Herdr sub-agents, in both sorts. The orchestrator takes its most urgent worker's section (here FCC-212 lifts its orchestrator into <i>Needs you</i>).",
+    "Orchestrator: purple Pi icon, fold chevron, “N workers · TICKET” on line 2, and its watched PRs on line 3 in A's format.",
+    "Workers list their own watched PRs in the same format. Their space is the parent's, so the PRs sit on line 2 beside the time instead of under an empty line.",
+    "Trade-off: Ctrl+G 1–9 numbers only top-level rows here; workers would need another way in.",
+  ],
+};
+function renderPanel() {
+  const sel = AGENTS.find((a) => a.focused);
+  const state = {
+    terminal: sel.id, tab: sel.name, space: sel.space, status: sel.status,
+    "pr-watch-state": {
+      mode: sel.mode ?? "active",
+      ...(sel.role === "orchestrator" && { orchestrationSessionId: sel.orch }),
+      ...(sel.role === "worker" && { workerOrchestrationSessionId: sel.orch, orchestrator: orchestratorOf(sel)?.name }),
+      watchedPrs: (sel.prs ?? []).map((p) => ({ repo: p.repo, number: p.n })),
+      ...(sel.sha && { watchedSha: sel.sha }),
+    },
+    "ci (not in state today)": (sel.prs ?? []).map((p) => `#${p.n}: ${p.ci}`),
+  };
+  document.getElementById("panel").innerHTML = `
+    <h2>${variant} — ${VARIANTS[variant]}</h2>
+    <div class="sub">PROTOTYPE · eli-agents sidebar · sort: ${sort} · CI colors: ${ci ? "on" : "off"}<span class="tag">CI colors need new data</span></div>
+    <ul>${NOTES[variant].map((n) => `<li>${n}</li>`).join("")}</ul>
+    <div class="sub">Click a row to focus it. Selected row's data:</div>
+    <pre>${JSON.stringify(state, null, 2)}</pre>`;
+}
+function renderSwitcher() {
+  const s = document.getElementById("switcher");
+  s.innerHTML = `
+    <button data-act="prev">←</button>
+    <span class="label"><b>${variant}</b> (${VARIANTS[variant]})</span>
+    <button data-act="next">→</button>
+    <span class="sep"></span>
+    <button data-act="priority" class="${sort === "priority" ? "on" : ""}">Priority</button>
+    <button data-act="grouped" class="${sort === "grouped" ? "on" : ""}">Grouped</button>
+    <span class="sep"></span>
+    <button data-act="ci" class="${ci ? "on" : ""}">CI colors</button>`;
+  s.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    const i = KEYS.indexOf(variant);
+    const act = b.dataset.act;
+    if (act === "prev") variant = KEYS[(i - 1 + KEYS.length) % KEYS.length];
+    if (act === "next") variant = KEYS[(i + 1) % KEYS.length];
+    if (act === "priority" || act === "grouped") sort = act;
+    if (act === "ci") ci = !ci;
+    setParam();
+  }));
+}
+render();
+</script>
+</body>
+</html>
