@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
@@ -329,8 +329,10 @@ function isDefinitiveMergeable(value: string | undefined): value is "MERGEABLE" 
   return value === "MERGEABLE" || value === "CONFLICTING";
 }
 
+// Deliberately loose: it only decides whether to remember a command's output,
+// and a script run from a heredoc can call gh too.
 function commandUsesGh(command: string): boolean {
-  return command.startsWith("gh ") || command.includes(" gh ");
+  return /(^|\s)gh\s/.test(command);
 }
 
 function textContent(content: unknown[] | undefined): string {
@@ -400,35 +402,184 @@ export function pullRequestUrlFromText(text: string): string | undefined {
   return Array.from(text.matchAll(/https?:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/g)).at(-1)?.[0];
 }
 
-// Splits a shell command into one token list per pipeline segment. Quoted text
+// Splits a shell command into one token list per simple command. Quoted text
 // stays inside its token, so a multi-word `--title "Fix #12"` is one value.
-function commandSegments(command: string): string[][] {
-  const segments: string[][] = [[]];
+// Heredoc bodies and comments are prose, not shell: an apostrophe in a PR body
+// must not open a quote that swallows the `gh pr create` after it. Command
+// substitutions and subshells get segments of their own, so
+// `url=$(gh pr create ...)` still reads as gh pr create.
+export function commandSegments(command: string): string[][] {
+  return nestedSegments(command).map(({ tokens }) => tokens);
+}
+
+// A segment's depth counts the subshells and command substitutions around it;
+// `entered` marks the first segment of each one, whose `cd` cannot leak out.
+type NestedSegment = { tokens: string[]; depth: number; entered: boolean };
+
+function nestedSegments(command: string): NestedSegment[] {
+  const segments: NestedSegment[] = [{ tokens: [], depth: 0, entered: false }];
+  let current = segments[0]!;
   let token = "";
   let inToken = false;
   let quote: string | undefined;
+  // Bare subshell parentheses open inside the innermost substitution.
+  let parens = 0;
+  // Each open command substitution saves the word and segment it interrupted.
+  const substitutions: Array<{
+    quote: string | undefined;
+    token: string;
+    inToken: boolean;
+    closer: string;
+    parens: number;
+    segment: NestedSegment;
+  }> = [];
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
+  const depth = () => substitutions.length + substitutions.reduce((sum, frame) => sum + frame.parens, 0) + parens;
   const endToken = () => {
-    if (inToken) segments.at(-1)?.push(token);
+    if (inToken) current.tokens.push(token);
     token = "";
     inToken = false;
   };
+  const startSegment = (entered = false) => {
+    current = { tokens: [], depth: depth(), entered };
+    segments.push(current);
+  };
+  const endSegment = () => {
+    endToken();
+    startSegment();
+  };
+  const openSubstitution = (closer: string) => {
+    substitutions.push({ quote, token, inToken, closer, parens, segment: current });
+    quote = undefined;
+    token = "";
+    inToken = false;
+    parens = 0;
+    startSegment(true);
+  };
+  const closeSubstitution = () => {
+    endToken();
+    const outer = substitutions.pop();
+    if (!outer) return;
+    // The substitution's output is part of the outer word, which continues in
+    // the outer command. The marker keeps that word from reading as literal.
+    quote = outer.quote;
+    token = `${outer.token}$()`;
+    inToken = true;
+    parens = outer.parens;
+    current = outer.segment;
+  };
+  // Returns the index just past the last line of every pending heredoc body.
+  const skipHeredocBodies = (start: number): number => {
+    let position = start;
+    for (const { delimiter, stripTabs } of heredocs.splice(0)) {
+      while (position < command.length) {
+        const newline = command.indexOf("\n", position);
+        const lineEnd = newline < 0 ? command.length : newline;
+        const line = command.slice(position, lineEnd);
+        position = lineEnd + 1;
+        if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+      }
+    }
+    return position;
+  };
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index] ?? "";
-    if (quote) {
+    const next = command[index + 1];
+    const closer = substitutions.at(-1)?.closer;
+    if (quote === "'") {
       if (char === quote) quote = undefined;
-      else if (char === "\\" && quote === '"' && index + 1 < command.length) token += command[(index += 1)];
       else token += char;
       continue;
     }
-    if (char === '"' || char === "'") {
+    if (char === "$" && next === "(" && command[index + 2] === "(") {
+      // Arithmetic, whose `<<` is a shift rather than a heredoc.
+      const end = command.indexOf("))", index + 3);
+      const stop = end < 0 ? command.length : end + 2;
+      token += command.slice(index, stop);
+      inToken = true;
+      index = stop - 1;
+      continue;
+    }
+    if (char === "$" && next === "(") {
+      openSubstitution(")");
+      index += 1;
+      continue;
+    }
+    if (char === "`") {
+      if (closer === "`") closeSubstitution();
+      else openSubstitution("`");
+      continue;
+    }
+    if (quote === '"') {
+      if (char === quote) quote = undefined;
+      else if (char === "\\" && index + 1 < command.length) token += command[(index += 1)];
+      else token += char;
+      continue;
+    }
+    if (char === "\\") {
+      // A backslash-newline continues the line; any other escape is literal.
+      if (next !== "\n" && next !== undefined) {
+        token += next;
+        inToken = true;
+      }
+      index += 1;
+    } else if (char === '"' || char === "'") {
       quote = char;
       inToken = true;
-    } else if (/\s/.test(char) && char !== "\n") {
+    } else if (char === "#" && !inToken) {
+      const newline = command.indexOf("\n", index);
+      index = (newline < 0 ? command.length : newline) - 1;
+    } else if (char === "<" && next === "<" && command[index + 2] === "<") {
+      // A here-string's word stays an ordinary argument.
       endToken();
-    } else if (char === ";" || char === "\n" || char === "|" || (char === "&" && command[index + 1] === "&")) {
+      index += 2;
+    } else if (char === "<" && next === "<") {
       endToken();
-      segments.push([]);
-      if (char === "&" || (char === "|" && command[index + 1] === "|")) index += 1;
+      let position = index + 2;
+      const stripTabs = command[position] === "-";
+      if (stripTabs) position += 1;
+      while (command[position] === " " || command[position] === "\t") position += 1;
+      let delimiter = "";
+      let delimiterQuote: string | undefined;
+      for (; position < command.length; position += 1) {
+        const delimiterChar = command[position] ?? "";
+        if (delimiterQuote) {
+          if (delimiterChar === delimiterQuote) delimiterQuote = undefined;
+          else delimiter += delimiterChar;
+        } else if (delimiterChar === "'" || delimiterChar === '"') {
+          delimiterQuote = delimiterChar;
+        } else if (delimiterChar === "\\") {
+          delimiter += command[(position += 1)] ?? "";
+        } else if (/[\s;&|<>()]/.test(delimiterChar)) {
+          break;
+        } else {
+          delimiter += delimiterChar;
+        }
+      }
+      if (delimiter) heredocs.push({ delimiter, stripTabs });
+      index = position - 1;
+    } else if (char === "\n") {
+      endSegment();
+      if (heredocs.length > 0) index = skipHeredocBodies(index + 1) - 1;
+    } else if (/\s/.test(char)) {
+      endToken();
+    } else if (char === ")" && closer === ")" && parens === 0) {
+      closeSubstitution();
+    } else if (char === "&" && (command[index - 1] === ">" || command[index - 1] === "<" || next === ">")) {
+      // A redirection such as 2>&1 or &>file, not a command separator.
+      token += char;
+      inToken = true;
+    } else if (char === "(") {
+      endToken();
+      parens += 1;
+      startSegment(true);
+    } else if (char === ")") {
+      endToken();
+      if (parens > 0) parens -= 1;
+      startSegment();
+    } else if (char === ";" || char === "|" || char === "&") {
+      endSegment();
+      if ((char === "&" || char === "|") && next === char) index += 1;
     } else {
       token += char;
       inToken = true;
@@ -436,6 +587,86 @@ function commandSegments(command: string): string[][] {
   }
   endToken();
   return segments;
+}
+
+// The index of a segment's command word, past `NAME=value` assignments and env.
+function commandWordIndex(tokens: string[]): number {
+  let index = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] ?? "") || (tokens[index] === "env" && index === 0)) index += 1;
+  return index;
+}
+
+function isGhSegment(tokens: string[], group: string, subcommands: string[]): boolean {
+  let index = commandWordIndex(tokens);
+  // timeout is an execution wrapper, not the command being observed.
+  if (tokens[index] === "timeout") {
+    index += 1;
+    while (tokens[index]?.startsWith("-")) {
+      const flag = tokens[index++];
+      if (flag === "--") break;
+      if (["-k", "--kill-after", "-s", "--signal"].includes(flag ?? "")) index += 1;
+    }
+    index += 1; // duration
+  }
+  return tokens[index] === "gh" && tokens[index + 1] === group && subcommands.includes(tokens[index + 2] ?? "");
+}
+
+// Returns the subcommand of a git segment, past global options such as -C.
+function gitSubcommand(tokens: string[]): { subcommand: string | undefined; directory: string | undefined } {
+  let directory: string | undefined;
+  const start = commandWordIndex(tokens);
+  if (tokens[start] !== "git") return { subcommand: undefined, directory };
+  for (let index = start + 1; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? "";
+    if (token === "-C") directory = tokens[(index += 1)];
+    else if (token === "-c" || token === "--git-dir" || token === "--work-tree" || token === "--namespace") index += 1;
+    else if (!token.startsWith("-")) return { subcommand: token, directory };
+  }
+  return { subcommand: undefined, directory };
+}
+
+export function isGitPushSegment(tokens: string[]): boolean {
+  return gitSubcommand(tokens).subcommand === "push";
+}
+
+// Returns each segment with the directory it runs in: the session directory as
+// moved by every earlier `cd`, or undefined once a `cd` target is unknowable.
+export function segmentDirectories(
+  command: string,
+  cwd: string,
+): Array<{ tokens: string[]; directory: string | undefined }> {
+  let directory: string | undefined = cwd;
+  const expand = (path: string, from: string | undefined) => {
+    if (path === "~" || path.startsWith("~/")) return join(homedir(), path.slice(1));
+    if (path.startsWith("/")) return path;
+    return from && resolve(from, path);
+  };
+  // saved[level] is the directory in effect when nesting level `level` was entered.
+  const saved: Array<string | undefined> = [];
+  return nestedSegments(command).map(({ tokens, depth, entered }) => {
+    // A subshell or substitution starts from its parent's directory, and a `cd`
+    // inside one is undone once it ends.
+    if (entered) while (saved.length >= depth) directory = saved.pop();
+    while (saved.length > depth) directory = saved.pop();
+    while (saved.length < depth) saved.push(directory);
+    if (tokens[0] === "cd") {
+      const target = tokens.slice(1).find((token) => !token.startsWith("-") || token === "-");
+      directory =
+        target === undefined ? homedir() : target === "-" || target.includes("$") ? undefined : expand(target, directory);
+    }
+    const gitDirectory = gitSubcommand(tokens).directory;
+    if (gitDirectory === undefined) return { tokens, directory };
+    return { tokens, directory: gitDirectory.includes("$") ? undefined : expand(gitDirectory, directory) };
+  });
+}
+
+// The directory the last segment `matches` accepts ran in, when that is known.
+export function commandDirectory(
+  command: string,
+  cwd: string,
+  matches: (tokens: string[]) => boolean,
+): string | undefined {
+  return segmentDirectories(command, cwd).filter(({ tokens }) => matches(tokens)).at(-1)?.directory;
 }
 
 // Returns the positional arguments of each `gh <group> <subcommand>` in a shell
@@ -1076,8 +1307,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     if (ctx) setStatus(ctx);
   }
 
-  async function execJson<T>(command: string, args: string[], ctx: ExtensionContext): Promise<T | undefined> {
-    const result = await pi.exec(command, args, { timeout: 30_000 });
+  async function execJson<T>(
+    command: string,
+    args: string[],
+    ctx: ExtensionContext,
+    cwd?: string,
+  ): Promise<T | undefined> {
+    const result = await pi.exec(command, args, { timeout: 30_000, ...(cwd && { cwd }) });
     if (!result.stdout.trim()) return undefined;
     try {
       return JSON.parse(result.stdout) as T;
@@ -1291,7 +1527,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     output: string,
   ): Promise<boolean> {
     if (state.orchestrationSessionId) return false;
-    const pushes = commandSegments(command).filter((tokens) => tokens[0] === "git" && tokens[1] === "push");
+    const pushes = commandSegments(command).filter(isGitPushSegment);
     // A dry run prints the same ref updates as a real push.
     if (pushes.some((tokens) => tokens.some((token) => token === "--dry-run" || /^-[^-]*n/.test(token)))) return false;
 
@@ -2497,20 +2733,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function isGhCommand(command: string, group: string, subcommands: string[]): boolean {
-    return commandSegments(command).some((tokens) => {
-      let index = 0;
-      // timeout is an execution wrapper, not the command being observed.
-      if (tokens[index] === "timeout") {
-        index += 1;
-        while (tokens[index]?.startsWith("-")) {
-          const flag = tokens[index++];
-          if (flag === "--") break;
-          if (["-k", "--kill-after", "-s", "--signal"].includes(flag ?? "")) index += 1;
-        }
-        index += 1; // duration
-      }
-      return tokens[index] === "gh" && tokens[index + 1] === group && subcommands.includes(tokens[index + 2] ?? "");
-    });
+    return commandSegments(command).some((tokens) => isGhSegment(tokens, group, subcommands));
   }
 
   function isActivationCommand(command: string): boolean {
@@ -2530,7 +2753,20 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function isGitPush(command: string): boolean {
-    return /(^|[;&|\n]\s*)git\s+push\b/.test(command);
+    return commandSegments(command).some(isGitPushSegment);
+  }
+
+  // A command that cds into another checkout, such as a worktree, ran its git
+  // and gh there, so the session directory's branch says nothing about its PR.
+  async function discoverInOtherDirectory(
+    ctx: ExtensionContext,
+    directory: string | undefined,
+    options: DiscoverOptions = {},
+  ): Promise<boolean> {
+    if (!directory || resolve(directory) === resolve(ctx.cwd)) return false;
+    const pr = await execJson<{ url?: string; state?: string }>("gh", ["pr", "view", "--json", "url,state"], ctx, directory);
+    if (pr?.state !== "OPEN" || !pr.url) return false;
+    return discover(ctx, pr.url, options);
   }
 
   function isPrMerge(command: string): boolean {
@@ -2714,11 +2950,14 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     if (isActivationCommand(command)) {
       const namedTarget = commandTargets(command, "pr", PR_TARGET_SUBCOMMANDS)[0];
+      const target = namedTarget ?? pullRequestUrlFromText(output);
       // Only gh pr create shows this session owns a PR named elsewhere; view,
       // edit, ready, and checkout also run on PRs other sessions own.
-      await discover(ctx, namedTarget ?? pullRequestUrlFromText(output), {
-        owned: !namedTarget && isPrCreate(command),
-      });
+      const options = { owned: !namedTarget && isPrCreate(command) };
+      const activation = (tokens: string[]) => isGhSegment(tokens, "pr", ["create", ...PR_TARGET_SUBCOMMANDS]);
+      const directory = commandDirectory(command, ctx.cwd, activation);
+      if (!target && (await discoverInOtherDirectory(ctx, directory, options))) return;
+      await discover(ctx, target, options);
       return;
     }
 
@@ -2739,7 +2978,9 @@ export default function prWatch(pi: ExtensionAPI): void {
     }
 
     if (isGitPush(command)) {
-      if (!(await watchPushedDefaultBranch(ctx, command, output))) await discover(ctx);
+      if (await watchPushedDefaultBranch(ctx, command, output)) return;
+      if (await discoverInOtherDirectory(ctx, commandDirectory(command, ctx.cwd, isGitPushSegment))) return;
+      await discover(ctx);
       return;
     }
 

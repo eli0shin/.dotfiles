@@ -11,7 +11,10 @@ import { Container, Text, TuiAltScreen, stripTerminalSequences, visibleWidth, ty
 import { installActivityView } from "../compact-activity/index.ts";
 
 import prWatch, {
+  commandDirectory,
+  commandSegments,
   commandTargets,
+  isGitPushSegment,
   parseGhApiResponse,
   pollIntervalMs,
   prIdentityKey,
@@ -54,7 +57,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     execute: (id: string, params: { pr?: string; request?: string; context?: string }, signal: undefined, onUpdate: undefined, ctx: any) => Promise<any>;
   }>();
   let activeTools = ["bash", "read"];
-  const execCalls: Array<{ command: string; args: string[] }> = [];
+  const execCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  // Branches checked out in other directories, such as worktrees a command cds into.
+  const directoryBranches = new Map<string, string>();
   let execGate: {
     matches: (command: string, args: string[]) => boolean;
     started: () => void;
@@ -170,8 +175,8 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
       });
       void handlers.get("turn_start")?.({}, ctx);
     },
-    async exec(command: string, args: string[]) {
-      execCalls.push({ command, args });
+    async exec(command: string, args: string[], execOptions?: { cwd?: string }) {
+      execCalls.push({ command, args, ...(execOptions?.cwd && { cwd: execOptions.cwd }) });
       if (execGate?.matches(command, args)) {
         const gate = execGate;
         execGate = undefined;
@@ -193,7 +198,8 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {
-        const number = prNumberFromArgs(args) ?? [...prs.values()].find((pr) => pr.branch === args[2])?.number ?? -1;
+        const branch = execOptions?.cwd ? directoryBranches.get(execOptions.cwd) : args[2];
+        const number = prNumberFromArgs(args) ?? [...prs.values()].find((pr) => pr.branch === branch)?.number ?? -1;
         const pr = prs.get(number);
         if (!pr || unavailablePrs.has(number)) {
           return { code: 1, stdout: "", stderr: "no pull request found" };
@@ -281,6 +287,7 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
         statuses.push(text);
       },
     },
+    cwd: "/work/repos",
     isIdle: () => idle,
     sessionManager: {
       getBranch: () => options.sessionManager?.getBranch() ?? branchEntries,
@@ -535,6 +542,9 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
     },
     setCurrentBranch(branch: string) {
       currentBranch = branch;
+    },
+    setDirectoryBranch(directory: string, branch: string) {
+      directoryBranches.set(directory, branch);
     },
     setLocalSha(sha: string) {
       localSha = sha;
@@ -2753,6 +2763,162 @@ test("gh pr create uses its output URL even when its title names another PR", as
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
 });
 
+// The PR-opening command from a real session: an apostrophe in the heredoc
+// body ("Marketing's") used to open a quote that hid the gh pr create.
+const heredocPrCreate = [
+  "cd /work/repos-player-card && cat > /tmp/prbody2.md <<'EOF'",
+  "## Why?",
+  "",
+  "#1786 followed Marketing's request for the change \"for now only … on the catalog\".",
+  "EOF",
+  'gh pr create --title "FCC-2204: Show the new disclosure on the player card page too" --body-file /tmp/prbody2.md 2>&1 | tail -1',
+].join("\n");
+
+const ghSegments = (command: string) => commandSegments(command).filter((tokens) => tokens.includes("gh"));
+
+test("heredoc bodies are not read as shell", () => {
+  assert.deepEqual(ghSegments(heredocPrCreate), [
+    ["gh", "pr", "create", "--title", "FCC-2204: Show the new disclosure on the player card page too", "--body-file", "/tmp/prbody2.md", "2>&1"],
+  ]);
+  // Unquoted and double-quoted delimiters, and <<- with indented bodies.
+  assert.deepEqual(ghSegments("cat > b <<EOF\nthe Fan's offers\nEOF\ngh pr create -F b"), [["gh", "pr", "create", "-F", "b"]]);
+  assert.deepEqual(ghSegments('cat > b << "END"\nit\'s\nEND\ngh pr create -F b'), [["gh", "pr", "create", "-F", "b"]]);
+  assert.deepEqual(ghSegments("cat > b <<-EOF\n\tdon't\n\tEOF\ngh pr create -F b"), [["gh", "pr", "create", "-F", "b"]]);
+  // A heredoc body that mentions commands runs none of them.
+  assert.deepEqual(ghSegments("cat > notes.md <<'EOF'\nthen gh pr view 105\ngit push\nEOF"), []);
+  assert.equal(commandSegments("cat > notes.md <<'EOF'\ngit push\nEOF").some(isGitPushSegment), false);
+  // Two heredocs on one line are read in order.
+  assert.deepEqual(ghSegments("cat <<A <<B\nit's\nA\nwe're\nB\ngh pr create"), [["gh", "pr", "create"]]);
+  // An unterminated heredoc runs to the end of the command.
+  assert.deepEqual(ghSegments("cat <<EOF\ngh pr create"), []);
+});
+
+test("shell syntax around a command does not hide it", () => {
+  // Comments are prose too.
+  assert.deepEqual(ghSegments("# don't forget the draft\ngh pr create --draft"), [["gh", "pr", "create", "--draft"]]);
+  // Command substitutions, backticks, and subshells.
+  assert.deepEqual(ghSegments('A=$(gh pr create --draft -F a.md 2>&1 | tail -1); echo $A'), [
+    ["gh", "pr", "create", "--draft", "-F", "a.md", "2>&1"],
+  ]);
+  assert.deepEqual(ghSegments('echo "opened $(gh pr view --json url -q .url)"'), [["gh", "pr", "view", "--json", "url", "-q", ".url"]]);
+  assert.deepEqual(ghSegments("echo `gh pr view 5`"), [["gh", "pr", "view", "5"]]);
+  assert.deepEqual(ghSegments("(cd wt && gh pr create)"), [["gh", "pr", "create"]]);
+  // Environment assignments before the command word.
+  assert.deepEqual(ghSegments('GH_TOKEN=$(gh auth token --user me) gh pr create --repo o/r').filter((tokens) => tokens.includes("create")), [
+    ["GH_TOKEN=$()", "gh", "pr", "create", "--repo", "o/r"],
+  ]);
+  assert.equal(commandSegments("GIT_SSH_COMMAND='ssh -i k' git push").some(isGitPushSegment), true);
+  // Quoted text stays literal.
+  assert.deepEqual(ghSegments("echo '$(gh pr create)'"), []);
+  // A line continuation joins one command's arguments.
+  assert.deepEqual(ghSegments("gh pr create \\\n  --title t"), [["gh", "pr", "create", "--title", "t"]]);
+  // Arithmetic shifts are not heredocs, and redirections are not separators.
+  assert.deepEqual(ghSegments("echo $((1 << 2))\ngh pr view 9 &>/dev/null"), [["gh", "pr", "view", "9", "&>/dev/null"]]);
+  assert.deepEqual(commandTargets("gh pr view 2>&1 | head", "pr", ["view"]), []);
+  // Arguments after a substitution stay with their command.
+  assert.deepEqual(commandTargets('gh pr edit --body "$(cat b.md)" 123', "pr", ["edit"]), ["123"]);
+  assert.deepEqual(ghSegments("x=$( (cd a) ; gh pr view 5 )"), [["gh", "pr", "view", "5"]]);
+});
+
+test("a command's directory follows its cd and git -C", () => {
+  const cwd = "/work/repos";
+  assert.equal(commandDirectory("cd /work/repos-wt && git push -u origin HEAD", cwd, isGitPushSegment), "/work/repos-wt");
+  assert.equal(commandDirectory("cd ../repos-wt; git add -A; git push", cwd, isGitPushSegment), "/work/repos-wt");
+  assert.equal(commandDirectory("git -C ../repos-wt push", cwd, isGitPushSegment), "/work/repos-wt");
+  assert.equal(commandDirectory("git push", cwd, isGitPushSegment), cwd);
+  assert.equal(commandDirectory("cd $WT && git push", cwd, isGitPushSegment), undefined);
+  assert.equal(commandDirectory("git status", cwd, isGitPushSegment), undefined);
+  // A cd inside a subshell or substitution ends with it.
+  assert.equal(commandDirectory("(cd ../repos-wt && pnpm test); git push", cwd, isGitPushSegment), cwd);
+  assert.equal(commandDirectory("HEAD_SHA=$(cd ../repos-wt && git rev-parse HEAD) && git push", cwd, isGitPushSegment), cwd);
+  assert.equal(commandDirectory("(cd ../repos-wt && git push)", cwd, isGitPushSegment), "/work/repos-wt");
+  assert.equal(commandDirectory("echo $(cd /a) $(git -C ../b status) && (git push)", cwd, isGitPushSegment), cwd);
+  assert.equal(commandDirectory("cd /x && (cd /y) && (git push)", cwd, isGitPushSegment), "/x");
+  // A cd whose target is computed is unknown.
+  assert.equal(commandDirectory('cd "$(git rev-parse --show-toplevel)" && git push', cwd, isGitPushSegment), undefined);
+});
+
+test("gh pr create after a heredoc body with an apostrophe is watched", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, heredocPrCreate, `${pr104Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+  assert.ok(harness.savedStates.at(-1)?.ownedPrs.includes("eli0shin/repos#104"));
+});
+
+test("gh pr create after an environment assignment is watched", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, 'GH_TOKEN=$(gh auth token --user eli0shin) gh pr create --repo eli0shin/repos --title "t" -F b.md', `${pr104Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+});
+
+test("gh pr create inside a command substitution is watched", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, 'cd /work/repos-wt && A=$(gh pr create --draft --title "t" -F b.md 2>&1 | tail -1); echo $A', `${pr104Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [104]);
+});
+
+test("a heredoc that only mentions a PR command watches nothing", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, `cat > /tmp/notes.md <<'EOF'\nReview with gh pr view 105, it's ready\nEOF\ncat /tmp/notes.md`, `${pr105Url}\n`);
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs ?? [], []);
+});
+
+for (const command of ["cd /work/repos-wt && git push -u origin HEAD 2>&1 | tail -2", "git -C /work/repos-wt push -q"]) {
+  test(`a push from another checkout watches that checkout's PR: ${command}`, async () => {
+    const harness = createHarness();
+    harness.setCurrentBranch("main");
+    harness.setDirectoryBranch("/work/repos-wt", "second-feature");
+    await harness.startSession();
+
+    await runBash(harness, command, "");
+    await harness.shutdown();
+
+    assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+    assert.ok(
+      harness.execCalls.some(
+        ({ command: executable, args, cwd }) => executable === "gh" && args[1] === "view" && cwd === "/work/repos-wt",
+      ),
+    );
+  });
+}
+
+test("gh pr view without a target in another checkout watches that checkout's PR", async () => {
+  const harness = createHarness();
+  harness.setDirectoryBranch("/work/repos-wt", "second-feature");
+  await harness.startSession();
+
+  await runBash(harness, "cd /work/repos-wt && gh pr view --json state,mergeable", '{"state":"OPEN"}');
+  await harness.shutdown();
+
+  assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
+});
+
+test("gh output after a heredoc is recorded", async () => {
+  const harness = createHarness();
+  await harness.startSession();
+
+  await runBash(harness, "cat > /tmp/q.graphql <<'EOF'\nquery { viewer { login } }\nEOF\ngh api graphql -F query=@/tmp/q.graphql", "review-555");
+  await harness.shutdown();
+
+  assert.ok(harness.savedStates.at(-1)?.recentGhOutputs.includes("review-555"));
+});
+
 test("a merge commit looks up runs in the merged PR's repository", async () => {
   const harness = createHarness();
   harness.setCurrentBranch("main");
@@ -4929,4 +5095,16 @@ test("a rate-limited activity refresh leaves the seen activity baseline unchange
 
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77"]);
   assert.equal(harness.savedStates.at(-1)?.lastError, undefined);
+});
+
+test("a push after a subshell cd watches the session checkout's PR", async () => {
+  const harness = createHarness();
+  harness.setDirectoryBranch("/work/repos-wt", "second-feature");
+  await harness.startSession();
+
+  await runBash(harness, "(cd /work/repos-wt && pnpm test); git push", "");
+  await harness.shutdown();
+
+  assert.ok(!harness.savedStates.at(-1)?.watchedPrs.some(({ pr }: any) => pr.number === 105));
+  assert.ok(!harness.execCalls.some(({ cwd }) => cwd === "/work/repos-wt"));
 });
