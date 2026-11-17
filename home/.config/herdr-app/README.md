@@ -60,7 +60,9 @@ Tab keys never land on an agent's tab either:
   scrolling the bar step over hidden tabs, wrapping. From an agent's tab they
   go to the nearest shown tab in that direction.
 - Closing the shown tab shows the nearest shown tab to its left, else to its
-  right.
+  right. Closing an agent's tab instead focuses the next agent in the Agents
+  list order, wrapping and across spaces. It falls back to a shown tab only
+  when no other agent is left.
 
 `keys.json` binds these keys in the `eli` layout to `navigator-status.tab-N`,
 `tab-next` and `tab-prev`, which use the same rule (`tab-order.js`). The app's

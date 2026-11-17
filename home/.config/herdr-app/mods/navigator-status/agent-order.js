@@ -8,7 +8,7 @@
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 const COMMAND = /^agent-([1-9])$/;
 // Keep in sync with eli-agents/main.js.
-const ORDER_KEY = "dotfiles.agents.order";
+export const ORDER_KEY = "dotfiles.agents.order";
 export const orderInputs = (list, sort) => [sort ?? "", list.find((a) => a.focused)?.address ?? "", ...list.map((a) => `${a.address}:${a.status}:${a.pinned ? 1 : 0}`)].join("\n");
 
 function subAgentRank(all, listed, address) {
@@ -38,13 +38,16 @@ function sidebarOrder(list, sort, published) {
   return published.addresses.map((address) => byAddress.get(address)).filter(Boolean);
 }
 
+// The Agents list's order for `list`, given the sort and published order read with it.
+export function agentOrder(list, { terminals, sort, published }) {
+  return sidebarOrder(list, sort, published) ?? orderAgents(list, terminals(), sort);
+}
+
 // Returns true when it handled the command.
 export function focusNumberedAgent(command, { agents, terminals, shared, run }) {
   const n = COMMAND.exec(command)?.[1];
   if (!n) return false;
-  const list = agents();
-  const sort = shared("agents.sort");
-  const ordered = sidebarOrder(list, sort, shared(ORDER_KEY)) ?? orderAgents(list, terminals(), sort);
+  const ordered = agentOrder(agents(), { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY) });
   const agent = ordered[Number(n) - 1];
   if (agent) run("agent.focus", { terminal: agent.address });
   return true;

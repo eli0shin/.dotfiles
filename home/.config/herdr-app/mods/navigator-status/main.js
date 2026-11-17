@@ -2,8 +2,8 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared } from "herdr";
 import { createNavigator } from "./navigation.js";
-import { focusNumberedAgent } from "./agent-order.js";
-import { selectTab, agentTabIds } from "./tab-order.js";
+import { focusNumberedAgent, agentOrder, ORDER_KEY } from "./agent-order.js";
+import { selectTab } from "./tab-order.js";
 import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
 
@@ -11,7 +11,7 @@ export default class NavigatorStatus extends View {
   init(_props, cx) {
     this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     this.tabCloseFocus = createTabCloseFocus({ run });
-    this.tabCloseFocus.onSpacesChanged(spaces(), agentTabIds(agents()));
+    this.seeSpaces(spaces(), agents());
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();
@@ -20,6 +20,13 @@ export default class NavigatorStatus extends View {
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
     });
+  }
+
+  // The Agents list order is read only when a closed tab had an agent: it
+  // costs a terminals() read when the sidebar's published order is stale.
+  seeSpaces(all, list) {
+    const sort = shared("agents.sort"), published = shared(ORDER_KEY);
+    this.tabCloseFocus.onSpacesChanged(all, list, () => agentOrder(list, { terminals, sort, published }));
   }
 
   // The palette key as actually bound, not a hardcoded one; without a
@@ -37,7 +44,7 @@ export default class NavigatorStatus extends View {
     this.navigator.onTerminalsChanged();
     const all = spaces();
     const list = agents();
-    this.tabCloseFocus.onSpacesChanged(all, agentTabIds(list));
+    this.seeSpaces(all, list);
     const t = theme();
     const space = all.find(s => s.active);
     const needs = list.filter(a => a.status === "blocked").length;
