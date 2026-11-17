@@ -26,26 +26,6 @@
       "maxRetryDelayMs": 60000
     }
   },
-  "permissionGate": {
-    "bash": {
-      "askCommands": [
-        "rm",
-        "sudo"
-      ],
-      "rmPolicy": {
-        "allowGitRepositories": true,
-        "allowTempDirectories": true,
-        "blockHome": true,
-        "blockRecursiveOutsideAllowedLocations": true
-      },
-      "ask": [
-        "\\bgit\\s+push\\b(?:(?![;&|]).)*(?:(?:^|\\s)(?:refs/heads/)?(?:main|master)(?=$|\\s)|:(?:refs/heads/)?(?:main|master)(?=$|\\s))",
-        "\\bgit\\s+reset\\s+--hard\\b",
-        "\\b(chmod|chown)\\b.*777"
-      ],
-      "block": []
-    }
-  },
   "packages": [
     "git:https://github.com/d-b/pi-exa.git@e06fb2fa6fb731b80a3a392939830cdd3267b2f4",
     "npm:@observal/pi-insights",
@@ -63,7 +43,8 @@
     }
   ],
   "extensions": [
-    "-extensions/permission-gate.ts"
+    "-extensions/permission-gate.ts",
+    "-extensions/protected-paths.ts"
   ],
   "provider": {
     "openai": {
