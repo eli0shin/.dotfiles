@@ -46,6 +46,29 @@ monochrome Neovim glyph with its blue/green logo in `program-icons/neovim.svg`
 Full-color pictures keep their original colors. These personal files survive
 app restarts and upgrades; the shipped tab bar and icons remain untouched.
 
+The Agents list (`eli-agents`) is the main way to reach agents, so `eli-tabs`
+hides every tab that has an entry in `agents()`, even the active one. That
+includes split tabs where an agent runs next to other panes. The bar shows
+only the remaining tabs (editors, shells, and so on). The rule uses the same
+source as the Agents list. A program that hasn't reported agent status keeps
+its tab until it shows up in the list.
+
+Tab keys never land on an agent's tab either:
+
+- Numbered tabs (Cmd+1–9, Ctrl+G 1–9) count only the shown tabs.
+- Next/previous (Ctrl+G N/P, Ctrl+Tab, Ctrl+Shift+Tab, Cmd+Shift+]/[) and
+  scrolling the bar step over hidden tabs, wrapping. From an agent's tab they
+  go to the nearest shown tab in that direction.
+- Closing the shown tab shows the nearest shown tab to its left, else to its
+  right.
+
+`keys.json` binds these keys in the `eli` layout to `navigator-status.tab-N`,
+`tab-next` and `tab-prev`, which use the same rule (`tab-order.js`). The app's
+`tab.select {index}` and `tab.next`/`tab.prev` would count hidden tabs. The
+Cmd+P picker still lists agents' tabs. Check with
+`node tests/herdr-app-agent-tabs.mjs` and
+`node tests/herdr-app-tab-close-focus.mjs`.
+
 Pi's `auto-session-name.ts` extension generates the session name and
 reassesses it after the second and third user prompts. Whenever Pi's name
 changes (automatic or `/name`), and when a named session starts or resumes, the
@@ -138,7 +161,7 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | Ctrl+S / X | New space in a picked folder (`new-space`) / close space |
 | D | Close the window; core terminals keep running (legacy detach) |
 | T / R | New / rename tab |
-| P / N / 1–9 | Previous / next / numbered tab |
+| P / N / 1–9 | Previous / next / numbered tab (skipping agents' tabs in `eli`) |
 | Shift+1–9 | Focus agent N, in the Agents list order (`eli` layout) |
 | Shift+Q | Close tab |
 | V / H | Split right / down |
@@ -189,6 +212,7 @@ uv run tests/herdr-font-preparation.py
 swift tests/herdr-app-font.swift
 node tests/herdr-app-navigation.mjs
 node tests/herdr-app-tab-icons.mjs
+node tests/herdr-app-agent-tabs.mjs
 node tests/herdr-app-session-names.mjs
 bash tests/hc-pi-resume.sh
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua

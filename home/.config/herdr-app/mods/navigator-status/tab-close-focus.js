@@ -1,14 +1,17 @@
 // Closing the shown tab shows the one to its left, like the Herdr TUI
 // (Workspace::close_tab); the app picks the one to its right. Closing the
 // first tab keeps the app's choice, the new first tab, as the TUI does.
-// Settled tabs are skipped, as tab.next/prev skip them. Only the shown space:
-// tab.select also shows its space, so a background close keeps the app's choice.
+// Settled tabs are skipped, as tab.next/prev skip them, and so are agents' tabs,
+// which the `eli-tabs` bar hides: with none to the left, the nearest shown tab
+// to the right. Only the shown space: tab.select also shows its space, so a
+// background close keeps the app's choice.
 export function createTabCloseFocus({ run }) {
   // Space id -> the tab order and shown tab last seen.
   const seen = new Map();
 
   return {
-    onSpacesChanged(list) {
+    // agentTabs: ids of tabs with an agent in them.
+    onSpacesChanged(list, agentTabs = new Set()) {
       const live = new Set();
       for (const space of list) {
         live.add(space.id);
@@ -19,8 +22,9 @@ export function createTabCloseFocus({ run }) {
         if (!active) continue;
         if (space.active && before && !tabs.includes(before.active)) {
           const open = new Map(space.tabs.map((t) => [t.id, t]));
-          const left = before.tabs.slice(0, before.tabs.indexOf(before.active)).reverse();
-          const target = left.find((id) => open.has(id) && !open.get(id).settled);
+          const at = before.tabs.indexOf(before.active);
+          const nearest = [...before.tabs.slice(0, at).reverse(), ...before.tabs.slice(at + 1)];
+          const target = nearest.find((id) => open.has(id) && !open.get(id).settled && !agentTabs.has(id));
           if (target && target !== active) {
             run("tab.select", { id: target });
             active = target;

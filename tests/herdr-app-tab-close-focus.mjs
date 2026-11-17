@@ -8,10 +8,11 @@ const { createTabCloseFocus } = await import(new URL('mods/navigator-status/tab-
 const calls = [];
 const focus = createTabCloseFocus({ run: (name, args) => calls.push([name, args]) });
 const tab = (id, active = false, settled = false) => ({ id, active, settled });
+let agentTabs = new Set();
 const see = (...spaces) => {
   calls.length = 0;
   // The first space listed is the shown one.
-  focus.onSpacesChanged(spaces.map(([id, tabs], i) => ({ id, tabs, active: i === 0 })));
+  focus.onSpacesChanged(spaces.map(([id, tabs], i) => ({ id, tabs, active: i === 0 })), agentTabs);
   return calls.map(([, args]) => args.id);
 };
 
@@ -52,4 +53,16 @@ assert.deepEqual(see(['work/t', [tab('work/X'), tab('work/Z', true)]]), ['work/X
 see(['s', [tab('A'), tab('B', true)]]);
 assert.deepEqual(see(['work/t', [tab('work/X'), tab('work/Z', true)]]), []);
 
-console.log('PASS: closing the shown tab shows its left neighbor, like the TUI');
+// Agents' tabs are hidden from the bar, so closing never shows one.
+agentTabs = new Set(['A', 'C']);
+see(['s', [tab('X'), tab('A'), tab('B', true), tab('C')]]);
+assert.deepEqual(see(['s', [tab('X'), tab('A'), tab('C', true)]]), ['X'], 'Skips the agent tab to the left');
+// No shown tab to the left: the nearest shown one to the right, not the app's agent tab.
+see(['s', [tab('A'), tab('B', true), tab('C'), tab('D')]]);
+assert.deepEqual(see(['s', [tab('A'), tab('C', true), tab('D')]]), ['D']);
+// Only agents' tabs left: nothing better to show.
+see(['s', [tab('A'), tab('B', true), tab('C')]]);
+assert.deepEqual(see(['s', [tab('A'), tab('C', true)]]), []);
+agentTabs = new Set();
+
+console.log('PASS: closing the shown tab shows its left neighbor, like the TUI, skipping agents\' tabs');

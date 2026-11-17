@@ -3,6 +3,7 @@ import { h_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared } from "herdr";
 import { createNavigator } from "./navigation.js";
 import { focusNumberedAgent } from "./agent-order.js";
+import { selectTab, agentTabIds } from "./tab-order.js";
 import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
 
@@ -10,11 +11,12 @@ export default class NavigatorStatus extends View {
   init(_props, cx) {
     this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     this.tabCloseFocus = createTabCloseFocus({ run });
-    this.tabCloseFocus.onSpacesChanged(spaces());
+    this.tabCloseFocus.onSpacesChanged(spaces(), agentTabIds(agents()));
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();
         if (applySharedPreferences(command, { setShared, notify })) continue;
+        if (selectTab(command, { spaces, agents, run })) continue;
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
     });
@@ -34,10 +36,10 @@ export default class NavigatorStatus extends View {
   render() {
     this.navigator.onTerminalsChanged();
     const all = spaces();
-    this.tabCloseFocus.onSpacesChanged(all);
+    const list = agents();
+    this.tabCloseFocus.onSpacesChanged(all, agentTabIds(list));
     const t = theme();
     const space = all.find(s => s.active);
-    const list = agents();
     const needs = list.filter(a => a.status === "blocked").length;
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)

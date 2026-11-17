@@ -26,6 +26,7 @@
 !/mods/navigator-status/agent-order.js
 !/mods/navigator-status/preferences.js
 !/mods/navigator-status/tab-close-focus.js
+!/mods/navigator-status/tab-order.js
 !/mods/space-picker/
 /mods/space-picker/*
 !/mods/space-picker/main.js
@@ -40,6 +41,8 @@
 !/mods/eli-agents/main.js
 !/mods/eli-agents/mod.json
 !/mods/eli-agents/names.js
+!/mods/eli-agents/watch.js
+!/mods/eli-agents/git-pull-request.svg
 !/mods/eli-spaces/
 /mods/eli-spaces/*
 !/mods/eli-spaces/main.js
