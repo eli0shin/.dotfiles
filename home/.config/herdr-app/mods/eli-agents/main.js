@@ -376,8 +376,8 @@ export default class Agents extends View {
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
-      // Orchestrators and workers read muted unless shown, as sub-agent rows do; their status says the rest.
-      const idle = (a.status === "idle" || Boolean(line) || ws.length > 0) && !a.focused;
+      // Only the focused row reads bright, as sub-agent rows do; the status says the rest.
+      const idle = !a.focused;
       const isPinned = a.pinned;
       const pin = div()
         .id(`pin-${a.address}`)

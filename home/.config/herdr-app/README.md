@@ -299,8 +299,9 @@ third line lists those PRs (italic with `· paused` when the watch is
 paused), or the second line does when it would otherwise be empty. Workers
 nest under their orchestrator with tree lines and take labels right after
 it, shown only while the orchestrator or one of its workers is focused (no
-fold button; the narrow rail shows them all). Both read muted unless
-focused. Workers leave out the space, so their PRs go on the second line. The orchestrator's second line counts its workers and names the Jira
+fold button; the narrow rail shows them all). Workers leave out the space,
+so their PRs go on the second line. Every row's title reads muted unless it is
+the focused agent; its status icon says the rest. The orchestrator's second line counts its workers and names the Jira
 ticket its worker branches share, and its PR line lists every PR it watches,
 even ones a worker also shows. A worker whose orchestrator isn't listed is
 an ordinary row. The group's place follows the orchestrator's status, except
