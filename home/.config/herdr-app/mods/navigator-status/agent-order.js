@@ -6,7 +6,8 @@
 // list's sort: pinned first, then (priority sort) the most urgent agent, a
 // parent ranking with its most urgent sub-agent, ties by most recent change.
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
-const COMMAND = /^agent-([1-9])$/;
+// agent-10 is Shift+0, the tenth row's 0.
+const COMMAND = /^agent-([1-9]|10)$/;
 // Keep in sync with eli-agents/main.js.
 export const ORDER_KEY = "dotfiles.agents.order";
 export const orderInputs = (list, sort) => [sort ?? "", list.find((a) => a.focused)?.address ?? "", ...list.map((a) => `${a.address}:${a.status}:${a.pinned ? 1 : 0}`)].join("\n");

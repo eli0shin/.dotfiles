@@ -43,6 +43,12 @@
 !/mods/eli-agents/names.js
 !/mods/eli-agents/watch.js
 !/mods/eli-agents/git-pull-request.svg
+!/mods/eli-agents/jump.js
+!/mods/agent-jump/
+/mods/agent-jump/*
+!/mods/agent-jump/main.js
+!/mods/agent-jump/mod.json
+!/mods/agent-jump/jump.js
 !/mods/eli-spaces/
 /mods/eli-spaces/*
 !/mods/eli-spaces/main.js

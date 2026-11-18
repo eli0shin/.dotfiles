@@ -55,10 +55,12 @@ its tab until it shows up in the list.
 
 Tab keys never land on an agent's tab either:
 
-- Numbered tabs (Cmd+1–9, Ctrl+G 1–9) count only the shown tabs.
+- Numbered tabs (Cmd+1–9, Ctrl+G 1–9) count only the shown tabs. An
+  unnamed tab's label is the same count, not its place among all tabs.
 - Next/previous (Ctrl+G N/P, Ctrl+Tab, Ctrl+Shift+Tab, Cmd+Shift+]/[) and
-  scrolling the bar step over hidden tabs, wrapping. From an agent's tab they
-  go to the nearest shown tab in that direction.
+  scrolling the bar step over hidden tabs, wrapping. On an agent's tab they
+  move down/up the Agents list instead, wrapping, and never leave it for a
+  tab.
 - Closing the shown tab shows the nearest shown tab to its left, else to its
   right. Closing an agent's tab instead focuses the next agent in the Agents
   list order, wrapping and across spaces. It falls back to a shown tab only
@@ -164,12 +166,23 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | D | Close the window; core terminals keep running (legacy detach) |
 | T / R | New / rename tab |
 | P / N / 1–9 | Previous / next / numbered tab (skipping agents' tabs in `eli`) |
-| Shift+1–9 | Focus agent N, in the Agents list order (`eli` layout) |
+| Shift+1–9 / Shift+0 | Focus agent N / the tenth, in the Agents list order (`eli` layout) |
 | Shift+Q | Close tab |
 | V / H | Split right / down |
 | Q | Close pane |
 | B | Toggle sidebar |
 | Ctrl+L | Send Ctrl+L to the terminal (clear shell screen) |
+
+Ctrl+; (`eli` layout) jumps to any agent in two keys: it opens the `agent-jump`
+bar, and the label each Agents row always shows brightens: 1–9 and 0, which
+Ctrl+G Shift+1–0 also reach, then a, s, d, f… (home row first), or two
+letters each past the tenth once there are more than 36 rows. Press a label
+to focus that agent. Esc, Ctrl+; or a click elsewhere leaves. The bar holds
+the keyboard, so letters never reach the terminal. It reads the order
+`eli-agents` publishes, so the label you press is the row you see; a hidden
+sidebar is shown for the jump and hidden again after. `jump.js` makes the
+labels in both mods (sandboxing needs two identical copies). Check with
+`node tests/herdr-app-agent-jump.mjs`.
 
 ### Neovim-aware Ctrl+H/J/K/L
 
@@ -252,16 +265,17 @@ spaces only, numbered in sidebar order. J/K or arrows move, Enter switches,
 picker stays on Cmd+P. Ctrl+1–9 also switch spaces directly.
 
 `eli-agents` is a personal clone of the shipped Agents list that ends each
-row with its number (1–9), so there's no counting. Ctrl+G, Shift+1–9 (bound
-as both `shift-1` and `!` spellings) focuses that row: the app has no
+row with its label (1–9, 0, then letters for Ctrl+;), so there's no counting.
+Ctrl+G, Shift+1–9 and Shift+0 (bound as both `shift-1` and `!` spellings)
+focus the first ten rows: the app has no
 "focus agent N" command, so `eli-agents` publishes its order in shared state
 and `navigator-status` focuses the Nth agent from it. When that order is
 stale (the sidebar hasn't been shown since launch, so it isn't running),
 `agent-order.js` mirrors the list's sort instead: pinned first, then by
 priority (a parent takes its most urgent sub-agent's rank) or by space when
 grouped. That fallback can differ from the list for an agent you're viewing
-that just finished, or for ties within a section; open the sidebar once
-(Ctrl+G, B) to use the exact order.
+that just finished, for ties within a section, or for Pi workers (it doesn't
+nest them); open the sidebar once (Ctrl+G, B) to use the exact order.
 
 `eli-spaces` is a personal clone of the shipped Spaces sidebar. Nested worktrees
 show one name without the `repos` `<repo>@` prefix or a second branch suffix.
@@ -276,6 +290,22 @@ can use the whole width up to the status and number. The second holds the
 space, then, right-aligned, the machine (remote agents only) and the idle
 time. Under a space header (grouped view) the second line leaves out the
 space.
+
+Pi's `pr-watch.ts` labels its terminal `dotfiles.pi_pr_watch` with its
+orchestration role and the PRs it watches, named as in Pi's status line
+(`#1901` in the current repo, `tool#7` elsewhere); `watch.js` reads it only
+while the terminal runs Pi, and the fish hook clears it when Pi exits. A
+third line lists those PRs (italic with `· paused` when the watch is
+paused), or the second line does when it would otherwise be empty. Workers
+nest under their orchestrator with tree lines, take numbers right after it,
+and fold with it; they leave out the space, so their PRs go on the second
+line. The orchestrator's second line counts its workers and names the Jira
+ticket its worker branches share, and its PR line lists every PR it watches,
+even ones a worker also shows. A worker whose orchestrator isn't listed is
+an ordinary row. The group's place follows the orchestrator's status, except
+that any worker needing you moves it to Needs you and a working worker lifts
+an idle orchestrator to Working; a done worker doesn't move it, since it
+reports to the orchestrator. Check with `node tests/herdr-app-agent-watch.mjs`.
 
 ### Copy mode
 

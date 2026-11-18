@@ -1,14 +1,16 @@
 // Agents in grouped or priority views; parents take their most urgent sub-agent's place.
 // A viewed done agent stays in Done until left. Pi workers nest under their
 // orchestrator, and each Pi row lists the PRs it watches (see watch.js).
-// Personal clone of the shipped `agents` mod: each row ends with its position
-// (1–9), and the order is published for navigator-status's Ctrl+G, Shift+1–9.
+// Personal clone of the shipped `agents` mod: each row ends with its label
+// (1–9, 0, then letters; see jump.js), and the order is published for
+// navigator-status's Ctrl+G, Shift+1–0 and agent-jump's Ctrl+;.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
 import { tabNames } from "./names.js";
 import { piWatch, watchText, orchestrations } from "./watch.js";
+import { JUMP_KEY, jumpLabels, jumping } from "./jump.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -192,14 +194,17 @@ export default class Agents extends View {
     });
   }
 
-  subRow(t, s, shown, compact) {
+  // lead: under a nested Pi worker, whether its orchestrator's tree line goes on past it.
+  subRow(t, s, shown, compact, lead = null) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 14, t.foreground);
     const on = k.address === shown;
     return h_flex()
       .id(`sub-${k.address}`)
-      .pl(39)
+      .pl(lead ? 8 : 39)
+      .when(Boolean(lead), (el) => el.child(div().w(9).ml(8).mr(35).flex_none().self_stretch()
+        .when(lead === "│", (el) => el.border_l(1.5).border_color(t.input))))
       .pr(8)
       .rounded(8)
       .h(26)
@@ -259,22 +264,36 @@ export default class Agents extends View {
     const pinned = list.filter((a) => a.pinned);
     const rest = list.filter((a) => !a.pinned);
     list = [...pinned, ...rest];
-    // The published order is the rows' order: an unfolded orchestrator's workers follow it.
-    const shownWorkers = (a) => (this.folded.has(a.address) ? [] : workersOf(a));
+    // Workers follow their orchestrator. Agent next/previous keeps folded ones in
+    // place; the published numbers follow the rows shown (the rail has no folds).
+    const shownWorkers = (a) => (this.folded.has(a.address) && !collapsed ? [] : workersOf(a));
     const order = list.flatMap((a) => [a, ...shownWorkers(a)]);
-    setAgentOrder(order.map((a) => a.address));
+    setAgentOrder(list.flatMap((a) => [a, ...workersOf(a)]).map((a) => a.address));
     const published = { inputs: orderInputs(agents(), shared("agents.sort")), addresses: order.map((a) => a.address) };
     const previous = shared(ORDER_KEY);
     if (previous?.inputs !== published.inputs || previous?.addresses?.join("\n") !== published.addresses.join("\n")) setShared(ORDER_KEY, published);
-    const position = new Map(order.map((a, i) => [a.address, i + 1]));
-    const number = (a) => div().w(10).flex_none().text_right().text_size(11).text_color(t.dim).child(position.get(a.address) <= 9 ? String(position.get(a.address)) : "");
+    // Every row shows its jump label; brighter while agent-jump runs (Ctrl+;).
+    const jumpOn = jumping(shared(JUMP_KEY), now);
+    const labelsByRow = jumpLabels(order.length);
+    const jumpLabel = new Map(order.map((a, i) => [a.address, labelsByRow[i]]));
+    const mark = (a) => jumpLabel.get(a.address) ?? "";
+    const number = (a) => div().w(labelsByRow.at(-1)?.length > 1 ? 16 : 10).flex_none().text_right().text_size(11)
+      .when(jumpOn, (el) => el.font_semibold().text_color(t.working)).when(!jumpOn, (el) => el.text_color(t.dim)).child(mark(a));
 
     const withKids = (a) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
       const ws = workersOf(a);
-      const r = row(a, subs, ws);
-      if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...ws.map((w, i) => row(w, [], [], i === ws.length - 1 ? "└" : "├"))];
+      const wsubs = new Map(ws.map((w) => [w.address, collapsed ? [] : this.tree(all, w.address)]));
+      const r = row(a, subs, ws, null, [...wsubs.values()].flat());
+      if (this.folded.has(a.address) && !collapsed) return [r];
+      return [
+        r,
+        ...subs.map((s) => this.subRow(t, s, shown, byPriority)),
+        ...ws.flatMap((w, i) => {
+          const last = i === ws.length - 1;
+          return [row(w, [], [], last ? "└" : "├"), ...wsubs.get(w.address).map((s) => this.subRow(t, s, shown, byPriority, last ? " " : "│"))];
+        }),
+      ];
     };
 
     // The fold chevron; folded, the count too, colored by the most urgent one.
@@ -312,16 +331,14 @@ export default class Agents extends View {
       const names = tabNames(s.tabs, allPanes);
       return s.tabs.map(tab => [tab.id, tab.named || names.get(tab.id) !== tab.name ? names.get(tab.id) : title(tab, leads.get(tab.id))]);
     }));
-    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
+    const labels = new Map(order.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
     const label = (a) => labels.get(a.address);
-    const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
+    const detail = new Map(order.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
     const seen = {};
-    for (const a of list) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
-    for (const a of list) {
+    for (const a of order) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
+    for (const a of order) {
       if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
     }
-    for (const w of nested) labels.set(w, labels.get(w) ?? "");
-    for (const a of agents()) if (nested.has(a.address)) labels.set(a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || ""));
 
     // The PRs a Pi session watches, behind a pull-request icon.
     const prs = (a) => {
@@ -336,9 +353,9 @@ export default class Agents extends View {
       .child(div().mt(-4).h(14).flex_none().border_l(1.5).border_b(1.5).rounded_bl(6).border_color(t.input))
       .when(line === "├", (el) => el.child(div().flex_1().mb(-4).border_l(1.5).border_color(t.input)));
 
-    const row = (a, subs = [], ws = [], line = null) => {
+    const row = (a, subs = [], ws = [], line = null, workerSubs = []) => {
       const pic = icon(a.program, 16, t.foreground);
-      const foldable = [...subs, ...ws.map((w) => ({ t: w }))];
+      const foldable = [...subs, ...ws.map((w) => ({ t: w })), ...workerSubs];
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
@@ -352,7 +369,7 @@ export default class Agents extends View {
           .gap(4)
           .hover((s) => s.bg(t.hover))
           .on_click(() => run("pane.focus", { pane: a.pane }))
-          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(position.get(a.address))))
+          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(jumpOn ? t.working : t.muted).child(mark(a)))
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
@@ -382,7 +399,8 @@ export default class Agents extends View {
       // (priority, pinned) the second line names it.
       const full = byPriority || isPinned;
       const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      // A worker's space is its orchestrator's; an orchestrator counts its workers.
+      // Under its orchestrator a worker leaves out its space, so its PRs take
+      // line 2; an orchestrator counts its workers.
       const watch = watchOf(a);
       const about = line ? null : [full ? a.space_name : null, ws.length ? `${ws.length} worker${ws.length === 1 ? "" : "s"}` : null, ws.length ? watch?.ticket : null].filter(Boolean).join(" · ");
       // With nothing else to say, line 2 takes the PRs instead of a third line.
@@ -391,13 +409,6 @@ export default class Agents extends View {
       const body = v_flex()
         .flex_1()
         .min_w(0)
-        .cursor_pointer()
-        .hover((s) => s.bg(t.hover))
-        .on_hover((on, cx) => {
-          if (on) this.hovered = a.address;
-          else if (this.hovered === a.address) this.hovered = null;
-          cx.notify();
-        })
         .child(h_flex().h(20).gap(9).items_center()
           .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
             .when(foldable.length > 0, el => el.on_click((_e, cx) => {
@@ -410,7 +421,7 @@ export default class Agents extends View {
           .child(this.status(t, a, byPriority && !isPinned))
           .child(number(a)))
         .child(h_flex().h(17).gap(9).items_center().text_size(11).text_color(t.dim)
-          .child(prsOnLine2 ? prLine : div().flex_1().min_w(0).truncate().child(about))
+          .child(prsOnLine2 ? prLine : div().flex_1().min_w(0).truncate().child(about || ""))
           .when(Boolean(machine), el => el.child(div().flex_none().text_size(10).child(machine)))
           .when(this.hovered === a.address, el => el.child(pin))
           .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().child(duration(now - when)))))
@@ -422,6 +433,17 @@ export default class Agents extends View {
         .flex_none()
         .rounded(8)
         .when(a.focused, (el) => el.bg(t.selected))
+        .cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .on_hover((on, cx) => {
+          if (on) this.hovered = a.address;
+          else if (this.hovered === a.address) this.hovered = null;
+          cx.notify();
+        })
+        .on_click(() => run("pane.focus", { pane: a.pane }))
+        .when(Boolean(line), (el) => el.child(treeLine(line)))
+        .child(body);
+    };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
     // space are next to each other in agents(), so neighbours make a group.
@@ -436,7 +458,8 @@ export default class Agents extends View {
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
     const header = (g) => {
       const open = !this.folded.has(g.id);
-      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
+      const top = g.members.flatMap((a) => [a.status, ...workersOf(a).map((w) => kidStatus(w, this.listed))])
+        .reduce((m, st) => ((RANK[st] ?? 0) > (RANK[m] ?? 0) ? st : m), null);
       return h_flex()
         .id(g.id)
         .px(8)

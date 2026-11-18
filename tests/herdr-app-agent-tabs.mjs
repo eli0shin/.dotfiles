@@ -76,6 +76,9 @@ const agents = [{ tab: 'a', address: 't1' }, { tab: 'c', address: 't2' }];
 let out = render({ tabs, panes, agents });
 assert.deepEqual(tabIds(out.ids), ['tab-b', 'tab-d'], 'Tabs with agents must be hidden; others shown');
 assert.ok(!out.text.includes('fix bug'), 'A hidden agent tab must not render its name');
+// An unnamed tab reads as its place among the shown tabs (as Cmd+1–9 count), not among all tabs.
+assert.ok(out.text.includes('2') && !out.text.includes('4'), 'Unnamed tab d is the 2nd shown tab, not the 4th tab');
+assert.ok(out.text.includes('editor'), 'A named tab keeps its name');
 
 // The active tab is hidden too when an agent runs in it.
 out = render({ tabs: tabs.map(t => ({ ...t, active: t.id === 'a' })), panes, agents });
@@ -95,7 +98,9 @@ assert.ok(out.ids.includes('tab-new'));
 const select = (command, next) => {
   state = next;
   const calls = [];
-  const handled = selectTab(command, { spaces: () => [{ id: 'other', tabs: [{ id: 'z' }] }, { id: 'space', active: true, tabs: state.tabs }], agents: () => state.agents, run: (name, args) => calls.push([name, args]) });
+  // The Agents list order can differ from agents(): here, reversed.
+  const order = list => [...list].reverse();
+  const handled = selectTab(command, { spaces: () => [{ id: 'other', tabs: [{ id: 'z' }] }, { id: 'space', active: true, tabs: state.tabs }], agents: () => state.agents, run: (name, args) => calls.push([name, args]), order });
   return { handled, calls };
 };
 const shownIds = tabIds(render({ tabs, panes, agents }).ids).map(id => id.slice('tab-'.length));
@@ -113,11 +118,31 @@ assert.deepEqual(step('tab-next', 'b'), ['d']);
 assert.deepEqual(step('tab-next', 'd'), ['b'], 'Next wraps past the hidden first tab');
 assert.deepEqual(step('tab-prev', 'b'), ['d'], 'Prev wraps past the hidden first tab');
 assert.deepEqual(step('tab-prev', 'd'), ['b']);
-// From a hidden agent tab (focused through the Agents list): the next shown one either way.
-assert.deepEqual(step('tab-next', 'c'), ['d']);
-assert.deepEqual(step('tab-prev', 'c'), ['b']);
-assert.deepEqual(step('tab-next', 'a'), ['b']);
-assert.deepEqual(step('tab-prev', 'a'), ['d']);
+// On an agent's tab, next/prev move down/up the Agents list instead, wrapping.
+const stepAgents = (command, active, list) => select(command, { tabs: on(active), agents: list }).calls;
+const listed = [{ tab: 'a', address: 't1' }, { tab: 'c', address: 't2' }, { tab: 'd', address: 't3' }];
+// List order (reversed): t3, t2, t1.
+assert.deepEqual(stepAgents('tab-next', 'c', listed), [['agent.focus', { terminal: 't1' }]], 'Next is the row below in the Agents list');
+assert.deepEqual(stepAgents('tab-prev', 'c', listed), [['agent.focus', { terminal: 't3' }]], 'Prev is the row above');
+assert.deepEqual(stepAgents('tab-next', 'a', listed), [['agent.focus', { terminal: 't3' }]], 'Next wraps from the last row');
+assert.deepEqual(stepAgents('tab-prev', 'd', listed), [['agent.focus', { terminal: 't1' }]], 'Prev wraps from the first row');
+// A split tab with two agents: from the focused one.
+const split = [{ tab: 'a', address: 't1' }, { tab: 'c', address: 't2' }, { tab: 'c', address: 't4', focused: true }];
+// List order: t4, t2, t1.
+assert.deepEqual(stepAgents('tab-next', 'c', split), [['agent.focus', { terminal: 't2' }]]);
+// The only agent: nothing to move to, and never a tab.
+assert.deepEqual(stepAgents('tab-next', 'a', [{ tab: 'a', address: 't1' }]), []);
+// An agent the list order leaves out (a worker under a folded orchestrator) starts outside it.
+const folded = command => {
+  state = { tabs: on('c'), agents: listed };
+  const calls = [];
+  selectTab(command, { spaces: () => [{ id: 'space', active: true, tabs: state.tabs }], agents: () => listed, run: (...call) => calls.push(call), order: () => listed.filter(a => a.tab !== 'c') });
+  return calls;
+};
+assert.deepEqual(folded('tab-next'), [['agent.focus', { terminal: 't1' }]], 'Next from outside the list is the top row');
+assert.deepEqual(folded('tab-prev'), [['agent.focus', { terminal: 't3' }]], 'Prev from outside the list is the bottom row');
+// Numbers still count shown tabs from an agent's tab.
+assert.deepEqual(select('tab-1', { tabs: on('a'), agents }).calls, [['tab.select', { id: 'b' }]]);
 // The only shown tab: nothing to step to.
 assert.deepEqual(select('tab-next', { tabs: on('b').slice(0, 2), agents }).calls, []);
 // Settled tabs are skipped, as the app's tab.next does.

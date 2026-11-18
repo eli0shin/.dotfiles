@@ -112,10 +112,10 @@ await pending;
 assert.deepEqual(calls, []);
 console.log('PASS: Neovim key routing over RPC, edge handoffs, remote machines, dead servers, stale focus');
 
-// Legacy Ctrl+G, S: the spaces picker; Ctrl+G, Shift+1–9: numbered agents.
+// Legacy Ctrl+G, S: the spaces picker; Ctrl+G, Shift+1–9 and 0 (the tenth): numbered agents.
 assert.equal(keys.global['ctrl-g s'], 'mod.open:space-picker');
-for (const [i, shifted] of [...'!@#$%^&*('].entries()) {
-  assert.equal(keys['layout:eli'][`ctrl-g shift-${i + 1}`], `navigator-status.agent-${i + 1}`);
+for (const [i, shifted] of [...'!@#$%^&*()'].entries()) {
+  assert.equal(keys['layout:eli'][`ctrl-g shift-${(i + 1) % 10}`], `navigator-status.agent-${i + 1}`);
   assert.equal(keys['layout:eli'][`ctrl-g ${shifted}`], `navigator-status.agent-${i + 1}`);
 }
 
@@ -140,6 +140,10 @@ const focusAgent = (n) => {
 assert.deepEqual([1, 2, 3, 4].map(focusAgent), ['c', 'd', 'b', 'a']);
 assert.equal(focusAgent(5), null, 'a missing agent number does nothing');
 assert.equal(focusAgent(0), 'unhandled');
+assert.equal(focusAgent(11), 'unhandled');
+agentList.push(...[5, 6, 7, 8, 9, 10].map((n) => agent(`x${n}`, 'idle', -n)));
+assert.equal(focusAgent(10), 'x10', 'Shift+0 focuses the tenth agent');
+agentList.splice(4);
 // A parent takes its most urgent live sub-agent's rank.
 allTerminals = [{ address: 'k', parent: 'a', state: 'live', status: 'error' }];
 assert.equal(focusAgent(1), 'a');

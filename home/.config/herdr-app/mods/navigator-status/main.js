@@ -16,7 +16,8 @@ export default class NavigatorStatus extends View {
       for (;;) {
         const command = await nextCommand();
         if (applySharedPreferences(command, { setShared, notify })) continue;
-        if (selectTab(command, { spaces, agents, run })) continue;
+        const order = (list) => agentOrder(list, { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY) });
+        if (selectTab(command, { spaces, agents, run, order })) continue;
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
     });
