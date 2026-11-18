@@ -204,7 +204,7 @@ export default class Agents extends View {
       .id(`sub-${k.address}`)
       .pl(lead ? 8 : 39)
       .when(Boolean(lead), (el) => el.child(div().w(9).ml(8).mr(35).flex_none().self_stretch()
-        .when(lead === "│", (el) => el.border_l(1.5).border_color(t.input))))
+        .when(lead === "│", (el) => el.border_l(1.5).border_color(t.dim))))
       .pr(8)
       .rounded(8)
       .h(26)
@@ -264,9 +264,11 @@ export default class Agents extends View {
     const pinned = list.filter((a) => a.pinned);
     const rest = list.filter((a) => !a.pinned);
     list = [...pinned, ...rest];
-    // Workers follow their orchestrator. Agent next/previous keeps folded ones in
-    // place; the published numbers follow the rows shown (the rail has no folds).
-    const shownWorkers = (a) => (this.folded.has(a.address) && !collapsed ? [] : workersOf(a));
+    // An orchestrator opens only while it or one of its workers is focused; other
+    // rows fold by hand. The rail shows everything. Agent next/previous keeps
+    // closed workers in place; the published numbers follow the rows shown.
+    const open = (a) => collapsed || (workersOf(a).length ? a.focused || workersOf(a).some((w) => w.focused) : !this.folded.has(a.address));
+    const shownWorkers = (a) => (open(a) ? workersOf(a) : []);
     const order = list.flatMap((a) => [a, ...shownWorkers(a)]);
     setAgentOrder(list.flatMap((a) => [a, ...workersOf(a)]).map((a) => a.address));
     const published = { inputs: orderInputs(agents(), shared("agents.sort")), addresses: order.map((a) => a.address) };
@@ -284,8 +286,8 @@ export default class Agents extends View {
       const subs = collapsed ? [] : this.tree(all, a.address);
       const ws = workersOf(a);
       const wsubs = new Map(ws.map((w) => [w.address, collapsed ? [] : this.tree(all, w.address)]));
-      const r = row(a, subs, ws, null, [...wsubs.values()].flat());
-      if (this.folded.has(a.address) && !collapsed) return [r];
+      const r = row(a, subs, ws);
+      if (!open(a)) return [r];
       return [
         r,
         ...subs.map((s) => this.subRow(t, s, shown, byPriority)),
@@ -350,12 +352,13 @@ export default class Agents extends View {
     };
     // A worker's tree line: an elbow to its first line, continuing for all but the last.
     const treeLine = (line) => v_flex().w(9).ml(8).mr(4).flex_none().self_stretch()
-      .child(div().mt(-4).h(14).flex_none().border_l(1.5).border_b(1.5).rounded_bl(6).border_color(t.input))
-      .when(line === "├", (el) => el.child(div().flex_1().mb(-4).border_l(1.5).border_color(t.input)));
+      .child(div().mt(-4).h(14).flex_none().border_l(1.5).border_b(1.5).rounded_bl(6).border_color(t.dim))
+      .when(line === "├", (el) => el.child(div().flex_1().mb(-4).border_l(1.5).border_color(t.dim)));
 
-    const row = (a, subs = [], ws = [], line = null, workerSubs = []) => {
+    const row = (a, subs = [], ws = [], line = null) => {
       const pic = icon(a.program, 16, t.foreground);
-      const foldable = [...subs, ...ws.map((w) => ({ t: w })), ...workerSubs];
+      // An orchestrator opens with focus, so only other rows get a fold control.
+      const foldable = ws.length ? [] : subs;
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
@@ -373,7 +376,8 @@ export default class Agents extends View {
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
-      const idle = a.status === "idle" && !a.focused;
+      // Orchestrators and workers read muted unless shown, as sub-agent rows do; their status says the rest.
+      const idle = (a.status === "idle" || Boolean(line) || ws.length > 0) && !a.focused;
       const isPinned = a.pinned;
       const pin = div()
         .id(`pin-${a.address}`)
