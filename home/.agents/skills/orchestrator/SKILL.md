@@ -60,6 +60,8 @@ printf '%s\n' "Use the accepted A design, not the later draft." | ~/.agents/skil
 
 Use `--repo <path>` for a worker in a repo other than the current directory's, instead of changing directory.
 
+A worker runs the harness default model. To run it on another, pass `--model <name>` before the ticket name or `--branch`, with a name from `~/.agents/skills/orchestrator/scripts/spawn-worker --list-models`. Choose a model only when the user asks for one or the work clearly suits another eligible model. When restarting a worker, pass the model it was spawned with.
+
 **Ticket first; context is steering only.** Default to the ticket-name-only command. The script invokes `/skill:ticket-worker` and supplies the ticket, worker identity, and PR base. The worker already has its prompt, skill, and repository instructions; those sources define how it works.
 
 Add context only for a task-specific decision or constraint absent from the ticket. Use one or two short sentences. If the ticket is outside the worker checkout, give its exact path as a reference, not a tracker tutorial. Leave context empty when the ticket is sufficient. Do not repeat the ticket, worker duties, or workflow instructions for claiming, worktrees, tests, review, commits, PRs, or waiting for feedback.

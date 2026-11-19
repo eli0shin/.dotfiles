@@ -789,6 +789,9 @@ test("spawn-worker rejects invalid handoffs before calling dependencies", async 
       { args: ["one", "--repo"], sessionId: "session-123" },
       { args: ["--repo", "/nonexistent/spawn-worker-repo", "one"], sessionId: "session-123" },
       { args: ["--repo", root, "--repo", root, "one"], sessionId: "session-123" },
+      { args: ["--model"], sessionId: "session-123" },
+      { args: ["--model", "--repo", root, "one"], sessionId: "session-123" },
+      { args: ["--model", "a", "--model", "b", "one"], sessionId: "session-123" },
     ];
     for (const fixtureCase of cases) {
       const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
@@ -873,5 +876,100 @@ test("spawn-worker rejects a detached HEAD before creating a worker", async () =
     await assert.rejects(readFile(called));
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// Copies spawn-worker into a skill directory whose worker-models.json lists models.
+async function skillWithModels(root: string, models: string[] | undefined): Promise<string> {
+  const { copyFile, mkdir } = await import("node:fs/promises");
+  const scripts = join(root, "orchestrator", "scripts");
+  await mkdir(scripts, { recursive: true });
+  const script = join(scripts, "spawn-worker");
+  await copyFile(spawnWorker, script);
+  await chmod(script, 0o755);
+  if (models) await writeFile(join(root, "orchestrator", "worker-models.json"), JSON.stringify({ models }));
+  return script;
+}
+
+test("spawn-worker --model launches Pi on the eligible model with that name", async () => {
+  const { root, fakeBin } = await fixture();
+  const created = join(root, "created");
+  const commandFile = join(root, "command");
+  const received = join(root, "received");
+  const script = await skillWithModels(root, ["claude-bridge/claude-opus-5-5", "claude-bridge/claude-sonnet-5-5"]);
+  await executable(join(fakeBin, "tickets"), "#!/bin/sh\nexit 0\n");
+  await executable(join(fakeBin, "git"), `#!/bin/sh
+case "$*" in
+  "branch --show-current") echo main ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{upstream}") echo origin/main ;;
+  "rev-parse --path-format=absolute --git-common-dir") echo /work/repo/.git ;;
+  show-ref*|ls-remote*) exit 1 ;;
+  *) echo abc123 ;;
+esac
+`);
+  await executable(join(fakeBin, "repos"), `#!/bin/sh\ntouch ${JSON.stringify(created)}\n`);
+  await executable(join(fakeBin, "tmux"), `#!/bin/sh
+if [ "$1" = has-session ]; then test -f ${JSON.stringify(created)}
+elif [ "$2" = -l ]; then printf '%s' "$6" > ${JSON.stringify(commandFile)}; fi
+`);
+  await executable(join(fakeBin, "pi"), `#!/bin/sh
+[ "$#" = 3 ] && [ "$1" = --model ] || exit 5
+printf '%s\\n%s' "$2" "$3" > ${JSON.stringify(received)}
+`);
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, TMPDIR: root, PI_ORCHESTRATION_SESSION_ID: "session-123" };
+
+  try {
+    const result = spawnSync(script, ["--model", "claude-sonnet-5-5", "ticket-one"], { encoding: "utf8", env, input: "" });
+    assert.equal(result.status, 0, result.stderr);
+    const launched = spawnSync("fish", ["--no-config", "-c", await readFile(commandFile, "utf8")], { encoding: "utf8", env });
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.equal(
+      await readFile(received, "utf8"),
+      "claude-bridge/claude-sonnet-5-5\n/skill:ticket-worker \n\nTicket: ticket-one\nWorker identity: repo@ticket-one\nPR base: main",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker --list-models prints eligible model names without providers", async () => {
+  const { root } = await fixture();
+  try {
+    const script = await skillWithModels(root, ["claude-bridge/claude-opus-5-5", "openai-codex/gpt-6.1-sol"]);
+    const result = spawnSync(script, ["--list-models"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "claude-opus-5-5\ngpt-6.1-sol\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("spawn-worker rejects a model that does not name exactly one eligible model", async () => {
+  const cases = [
+    { models: ["claude-bridge/claude-opus-5-5"], model: "claude-sonnet-5-5", error: /not an eligible worker model; eligible: claude-opus-5-5/ },
+    { models: ["claude-bridge/claude-opus-5-5"], model: "claude-bridge/claude-opus-5-5", error: /not an eligible worker model/ },
+    { models: ["claude-bridge/claude-opus-5-5", "amazon-bedrock/claude-opus-5-5"], model: "claude-opus-5-5", error: /more than one eligible model/ },
+    { models: undefined, model: "claude-opus-5-5", error: /eligible: none/ },
+    { models: ["claude-bridge/claude-opus-5-5"], model: "claude-opus-5-5", harness: "opencode", error: /only Pi workers/ },
+  ];
+  for (const fixtureCase of cases) {
+    const { root, fakeBin } = await fixture();
+    const called = join(root, "called");
+    for (const command of ["git", "tickets", "repos", "tmux"]) {
+      await executable(join(fakeBin, command), `#!/bin/sh\ntouch ${JSON.stringify(called)}\n`);
+    }
+    try {
+      const script = await skillWithModels(root, fixtureCase.models);
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` };
+      delete env.PI_ORCHESTRATION_SESSION_ID;
+      delete env.OPENCODE_ORCHESTRATION_SESSION_ID;
+      env[fixtureCase.harness === "opencode" ? "OPENCODE_ORCHESTRATION_SESSION_ID" : "PI_ORCHESTRATION_SESSION_ID"] = "session-123";
+      const result = spawnSync(script, ["--model", fixtureCase.model, "one"], { encoding: "utf8", env });
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, fixtureCase.error);
+      await assert.rejects(readFile(called));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
