@@ -62,7 +62,7 @@ export function getFinalAssistantText(messages: readonly ReadableMessage[]): str
 
 export interface RunReviewOptions {
   signal?: AbortSignal;
-  /** Use the caller's currently selected model instead of pi's default model. */
+  /** The reviewer model. Omit to use pi's default model. */
   model?: Model<any>;
   thinkingLevel?: ThinkingLevel;
   /** Called with the streaming review text as it grows. */
@@ -84,6 +84,16 @@ export async function findReviewSession(
   const match = sessions.find((candidate) => candidate.id === requestedId);
   if (!match) throw new Error(`Review session not found for this project: ${requestedId}`);
   return match.path;
+}
+
+/** The provider and model ID recorded in an existing review session, if any. */
+export async function reviewSessionModel(
+  sessionId: string,
+  cwd: string,
+  sessionDir = REVIEW_SESSION_DIR,
+): Promise<{ provider: string; modelId: string } | undefined> {
+  const sessionFile = await findReviewSession(sessionId, cwd, sessionDir);
+  return SessionManager.open(sessionFile, sessionDir, cwd).buildSessionContext().model ?? undefined;
 }
 
 /** Load only the local extension needed by the review model. Never installs. */
@@ -173,6 +183,7 @@ export async function runReview(
   }
   const sessionId = session.sessionId;
   const sessionFile = session.sessionFile;
+  const model = session.model && `${session.model.provider}/${session.model.id}`;
   try {
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   } catch (e) {
@@ -180,7 +191,7 @@ export async function runReview(
   } finally {
     session.dispose();
   }
-  return { output, sessionId, sessionFile, aborted, error };
+  return { output, sessionId, sessionFile, model, aborted, error };
 }
 
 export function isReviewFailure(result: ReviewResult): boolean {

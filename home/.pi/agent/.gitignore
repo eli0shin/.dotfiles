@@ -24,3 +24,6 @@ extensions/**/*-local.*
 !keybindings.base.json
 !keybindings.personal.json
 !keybindings.work.json
+!roles.base.json
+!roles.personal.json
+!roles.work.json

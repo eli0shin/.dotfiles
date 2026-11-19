@@ -43,7 +43,7 @@ export function buildContinuedReviewPrompt(taskContext?: string): string {
 }
 
 /** Wrap the findings as an advisory user message for the main agent. */
-export function buildAdvisoryMessage(findings: string, sessionId?: string): string {
+export function buildAdvisoryMessage(findings: string, sessionId?: string, model?: string): string {
   return [
     "A separate code-review subagent reviewed the current changes. Its findings are below.",
     "",
@@ -54,6 +54,7 @@ export function buildAdvisoryMessage(findings: string, sessionId?: string): stri
     "",
     "--- Review findings ---",
     findings.trim() || "No actionable issues found.",
+    ...(model ? ["", `Reviewer model: ${model}`] : []),
     ...(sessionId
       ? [
           "",

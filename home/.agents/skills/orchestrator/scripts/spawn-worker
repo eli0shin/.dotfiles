@@ -9,40 +9,49 @@ usage() {
   exit 2
 }
 
-# The eligible worker models, as provider/model IDs. dot merge generates
-# this file from worker-models.base.json and its profile layers. Resolve it
-# before --repo changes directory.
-models_file="$(cd -- "$(dirname -- "$0")/.." && pwd)/worker-models.json" || exit
-
-# `worker_models` prints every eligible model name, which is its ID without the
-# provider; `worker_models <name>` prints the one eligible ID with that name.
+# Worker models come from the "worker" role in Pi's roles.json, which dot merge
+# generates from roles.base.json and its profile layers. "default" is the
+# provider/model ID every worker runs; "eligible" lists the IDs --model may
+# name, and the default is always eligible. A model's name is its ID without
+# the provider.
+#
+# `worker_models --list` prints every eligible name, marking the default.
+# `worker_models` prints the default ID, or nothing without one.
+# `worker_models <name>` prints the one eligible ID with that name.
 worker_models() {
   python3 -c '
-import json, sys
+import json, os, sys
+path = os.path.join(os.path.expanduser(os.environ.get("PI_CODING_AGENT_DIR") or "~/.pi/agent"), "roles.json")
 try:
-    with open(sys.argv[1]) as f:
-        models = json.load(f).get("models", [])
+    with open(path) as f:
+        role = json.load(f).get("worker") or {}
 except FileNotFoundError:
-    models = []
+    role = {}
+except ValueError as error:
+    sys.exit("spawn-worker: invalid %s: %s" % (path, error))
+default = role.get("default") or ""
+models = list(dict.fromkeys(([default] if default else []) + list(role.get("eligible") or [])))
 name_of = lambda model: model.partition("/")[2] or model
-if len(sys.argv) == 2:
+if len(sys.argv) == 1:
+    print(default)
+elif sys.argv[1] == "--list":
     for model in models:
-        print(name_of(model))
-    sys.exit()
-name = sys.argv[2]
-matches = [model for model in models if name_of(model) == name]
-if len(matches) == 1:
-    print(matches[0])
-elif matches:
-    sys.exit("spawn-worker --model %s matches more than one eligible model: %s" % (name, ", ".join(matches)))
+        print(name_of(model) + (" (default)" if model == default else ""))
 else:
-    names = ", ".join(map(name_of, models)) or "none"
-    sys.exit("spawn-worker --model %s is not an eligible worker model; eligible: %s" % (name, names))
-' "$models_file" "$@"
+    name = sys.argv[1]
+    matches = [model for model in models if name_of(model) == name]
+    if len(matches) == 1:
+        print(matches[0])
+    elif matches:
+        sys.exit("spawn-worker --model %s matches more than one eligible model: %s" % (name, ", ".join(matches)))
+    else:
+        names = ", ".join(map(name_of, models)) or "none"
+        sys.exit("spawn-worker --model %s is not an eligible worker model; eligible: %s" % (name, names))
+' "$@"
 }
 
 if [[ $# -eq 1 && $1 == --list-models ]]; then
-  worker_models
+  worker_models --list
   exit
 fi
 
@@ -123,14 +132,15 @@ else
   exit 2
 fi
 
-# Resolve the model name to the one eligible provider/model ID it names.
+# Resolve the worker's model: the eligible model --model names, else the default.
 model_id=""
-if [[ -n $model ]]; then
-  if [[ $orchestration_harness == opencode ]]; then
+if [[ $orchestration_harness == opencode ]]; then
+  if [[ -n $model ]]; then
     echo "spawn-worker --model supports only Pi workers; OpenCode cannot choose a model at launch" >&2
     exit 2
   fi
-  model_id=$(worker_models "$model") || exit 2
+else
+  model_id=$(worker_models ${model:+"$model"}) || exit 2
 fi
 
 if ! landing_branch=$(git branch --show-current 2>/dev/null) || [[ -z $landing_branch ]]; then

@@ -60,7 +60,7 @@ printf '%s\n' "Use the accepted A design, not the later draft." | ~/.agents/skil
 
 Use `--repo <path>` for a worker in a repo other than the current directory's, instead of changing directory.
 
-A worker runs the harness default model. To run it on another, pass `--model <name>` before the ticket name or `--branch`, with a name from `~/.agents/skills/orchestrator/scripts/spawn-worker --list-models`. Choose a model only when the user asks for one or the work clearly suits another eligible model. When restarting a worker, pass the model it was spawned with.
+A worker runs the configured worker model. Pass `--model <name>` before the ticket name or `--branch` only when the user explicitly asks for a worker model, with a name from `~/.agents/skills/orchestrator/scripts/spawn-worker --list-models`. When restarting a worker that was spawned with `--model`, pass the same model.
 
 **Ticket first; context is steering only.** Default to the ticket-name-only command. The script invokes `/skill:ticket-worker` and supplies the ticket, worker identity, and PR base. The worker already has its prompt, skill, and repository instructions; those sources define how it works.
 
@@ -110,6 +110,8 @@ In `taskContext`, describe the worker worktree, PR, ticket, triggering CI-finish
 - mergeability verdict.
 
 The reviewer inspects the complete diff, files, PR metadata, comments, threads, checks, and actual generated outputs. When multiple PRs become reviewable together, emit one `run_code_review` call per PR in the same response so reviews run concurrently.
+
+Reviews run on the configured review model. Pass `run_code_review`'s `model` only when the user explicitly asks for a reviewer model. When the user asks for reviews from several models, emit one call per model in the same response, and treat the PR as reviewed only when every requested review covers the current head.
 
 A review cycle is complete only when delegated evidence covers the current successfully checked head commit and every item in the return contract. If the result is incomplete, delegate a follow-up review.
 

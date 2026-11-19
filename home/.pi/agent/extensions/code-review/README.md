@@ -16,13 +16,36 @@ Two entry points:
 All entry points present findings to the agent through the same advisory wrapper.
 They use isolated, persistent SDK sessions. Other user extensions stay disabled;
 the Exa extension is loaded for `web_search_exa` and
-`web_fetch_exa`. When the caller uses a `claude-bridge` model, the local
+`web_fetch_exa`. When the reviewer uses a `claude-bridge` model, the local
 `extensions/claude-bridge/index.ts` extension is loaded too so the
 reviewer can use the same model without an installed Git or npm package. The explicit tool allowlist is `read`, `grep`, `find`, `ls`,
 `bash`, `web_search_exa`, and `web_fetch_exa`. Review JSONL files are stored in
 `~/.pi/agent/code-review-sessions/`, separate from normal Pi sessions, so they do
 not affect `pi -c` or `/resume`. The subagent is instructed to use the
 `code-review` skill and not modify files.
+
+## Reviewer model
+
+Reviews run on the `review` role's model from `~/.pi/agent/roles.json`, which
+`dot merge` generates from `roles.base.json` and its profile layers:
+
+```json
+{
+  "review": {
+    "default": "openai-codex/gpt-6.2-astra",
+    "eligible": ["claude-bridge/claude-opus-5-5", "claude-bridge/claude-fable-5-2"]
+  }
+}
+```
+
+`default` is a full `provider/model` ID. Without one, a review uses the
+caller's model. `run_code_review` takes an optional `model`: a name from
+`eligible` (or the default) without its provider, such as `gpt-6.2-astra`. To get
+reviews from several models, the agent calls `run_code_review` once per model in
+the same response. `continue_code_review` takes no model; it keeps the model the
+review started with. `/code-review` always uses the default. Each result names
+its reviewer model. The same file's `worker` role sets the model
+`spawn-worker` launches orchestration workers with.
 
 ## `/code-review` usage
 
@@ -57,6 +80,7 @@ an overlay with the markdown-rendered findings and the action choices.
 - `code-review-runner.ts` — creates the isolated SDK session, streams output, and reports failures
 - `code-review-message.ts` — builds the review task prompt and the advisory message
 - `code-review-ui.ts` — the overlay and in-progress widget
+- `role-models.ts` — reads `roles.json` and resolves model names for a role
 - `types.ts` — shared types
 
 ## Development

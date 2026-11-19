@@ -5,6 +5,8 @@ export interface ReviewResult {
   sessionId: string;
   /** JSONL path in the dedicated review session directory. */
   sessionFile?: string;
+  /** The reviewer's provider/model ID. */
+  model?: string;
   aborted: boolean;
   error?: string;
 }

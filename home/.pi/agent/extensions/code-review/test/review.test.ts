@@ -15,7 +15,9 @@ import {
   getFinalAssistantText,
   isReviewFailure,
   providerExtensionPaths,
+  reviewSessionModel,
 } from "../code-review-runner.ts";
+import { eligibleModels, readRoles, resolveRoleModel } from "../role-models.ts";
 
 test("buildReviewPrompt references the skill and preserves the requirements boundary", () => {
   const p = buildReviewPrompt();
@@ -59,6 +61,87 @@ test("buildAdvisoryMessage includes an optional continuation ID", () => {
   assert.match(msg, /No actionable issues found/);
   assert.match(msg, /Review session ID: review-session-id/);
   assert.match(msg, /continue_code_review/);
+});
+
+test("buildAdvisoryMessage names the reviewer model when known", () => {
+  assert.match(buildAdvisoryMessage("", "id", "openai-codex/gpt-6-astra"), /Reviewer model: openai-codex\/gpt-6-astra/);
+  assert.doesNotMatch(buildAdvisoryMessage("", "id"), /Reviewer model/);
+});
+
+test("resolveRoleModel uses the role default and resolves names among eligible models", () => {
+  const roles = {
+    review: {
+      default: "claude-bridge/claude-sonnet-5-5",
+      eligible: ["claude-bridge/claude-fable-5-2", "openai-codex/gpt-6-astra"],
+    },
+  };
+  assert.equal(resolveRoleModel(roles, "review"), "claude-bridge/claude-sonnet-5-5");
+  assert.equal(resolveRoleModel(roles, "review", "  "), "claude-bridge/claude-sonnet-5-5");
+  assert.equal(resolveRoleModel(roles, "review", "gpt-6-astra"), "openai-codex/gpt-6-astra");
+  // The default is eligible without being listed.
+  assert.equal(resolveRoleModel(roles, "review", "claude-sonnet-5-5"), "claude-bridge/claude-sonnet-5-5");
+  assert.deepEqual(eligibleModels(roles, "review"), [
+    "claude-bridge/claude-sonnet-5-5",
+    "claude-bridge/claude-fable-5-2",
+    "openai-codex/gpt-6-astra",
+  ]);
+  assert.equal(resolveRoleModel(roles, "worker"), undefined);
+});
+
+test("resolveRoleModel rejects names that are not exactly one eligible model", () => {
+  const roles = { review: { eligible: ["claude-bridge/claude-opus-5-5", "amazon-bedrock/claude-opus-5-5"] } };
+  assert.throws(() => resolveRoleModel(roles, "review", "claude-opus-5-5"), /more than one eligible review model/);
+  assert.throws(
+    () => resolveRoleModel(roles, "review", "gpt-6-astra"),
+    /not an eligible review model; eligible: claude-opus-5-5, claude-opus-5-5/,
+  );
+  assert.throws(() => resolveRoleModel(roles, "review", "claude-bridge/claude-opus-5-5"), /not an eligible/);
+  assert.throws(() => resolveRoleModel({}, "review", "gpt-6-astra"), /eligible: none/);
+});
+
+test("readRoles treats a missing file as no roles and rejects invalid JSON", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-code-review-roles-"));
+  try {
+    assert.deepEqual(readRoles(join(dir, "roles.json")), {});
+    await writeFile(join(dir, "roles.json"), "{", "utf8");
+    assert.throws(() => readRoles(join(dir, "roles.json")), /Invalid .*roles\.json/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reviewSessionModel returns the model a review session started with", async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), "pi-code-review-test-"));
+  const cwd = process.cwd();
+  try {
+    const sessionManager = SessionManager.create(cwd, sessionDir);
+    sessionManager.appendModelChange("openai-codex", "gpt-6-astra");
+    sessionManager.appendMessage({ role: "user", content: "review", timestamp: Date.now() });
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      api: "test",
+      provider: "openai-codex",
+      model: "gpt-6-astra",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+
+    assert.deepEqual(await reviewSessionModel(sessionManager.getSessionId(), cwd, sessionDir), {
+      provider: "openai-codex",
+      modelId: "gpt-6-astra",
+    });
+  } finally {
+    await rm(sessionDir, { recursive: true, force: true });
+  }
 });
 
 test("findReviewSession requires an exact ID in the matching cwd", async () => {

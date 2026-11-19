@@ -1,0 +1,17 @@
+{
+  "worker": {
+    "default": "claude-bridge/claude-opus-5-5",
+    "eligible": [
+      "claude-bridge/claude-opus-5-5",
+      "claude-bridge/claude-fable-5-2"
+    ]
+  },
+  "review": {
+    "default": "openai-codex/gpt-6.2-astra",
+    "eligible": [
+      "openai-codex/gpt-6.2-astra",
+      "claude-bridge/claude-opus-5-5",
+      "claude-bridge/claude-fable-5-2"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "worker": {
+    "default": "claude-bridge/claude-opus-5-5",
+    "eligible": [
+      "claude-bridge/claude-opus-5-5"
+    ]
+  },
+  "review": {
+    "default": "claude-bridge/claude-opus-5-5",
+    "eligible": [
+      "claude-bridge/claude-opus-5-5",
+      "openai-codex/gpt-6.2-sol"
+    ]
+  }
+}
