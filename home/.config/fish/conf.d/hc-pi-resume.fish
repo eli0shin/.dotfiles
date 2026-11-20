@@ -45,7 +45,15 @@ function __dotfiles_hc_pi_resume
     set_color --dim
     echo "Resuming pi session $session"
     set_color normal
-    pi --session $session
+    # Run pi as if typed at the prompt. fish keeps a command run from an event
+    # handler in its own process group and never hands it the terminal. The
+    # leading space keeps the command out of history.
+    # herdr-core tracks pi as an agent from its OSC 7501 status reports. pi
+    # only reports once the terminal answers its 7501 query before DA, but
+    # this early, the reply to fish's own startup DA query reaches pi first and
+    # pi decides the terminal can't take reports. herdr-core always can.
+    commandline --replace -- " PI_PROGRAM_STATUS=1 pi --session "(string escape -- $session)
+    commandline -f execute
 end
 
 function __dotfiles_hc_pi_returned
@@ -62,8 +70,7 @@ function __dotfiles_hc_pi_prompt --on-event fish_prompt
     __dotfiles_hc_pi_returned
 end
 
-# A resumed pi killed by SIGINT cancels the rest of the prompt handler, so
-# check again before the next command.
+# Check again before the next command, in case the prompt handler was cut short.
 function __dotfiles_hc_pi_preexec --on-event fish_preexec
     __dotfiles_hc_pi_returned
 end

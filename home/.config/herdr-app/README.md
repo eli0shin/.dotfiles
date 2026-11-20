@@ -147,8 +147,17 @@ Two pieces use that to bring Pi back:
 - `~/.config/fish/conf.d/hc-pi-resume.fish` gives each terminal's first shell
   a new token. On that shell's first prompt, a session labelled under another
   token is one the terminal was running when it was lost, so the shell runs
-  `pi --session <file>`. When Pi returns to the shell that ran it, the shell
-  clears the labels, so a Pi you quit stays quit.
+  `pi --session <file>` from its command line, as if typed. When Pi returns to
+  the shell that ran it, the shell clears the labels, so a Pi you quit stays
+  quit.
+
+The Herdr app treats a terminal as an agent once Pi reports its status with
+OSC 7501. Pi only reports after the terminal answers its 7501 query before the
+DA reply, and on a reopened terminal's first prompt the reply to fish's own
+startup DA query reaches Pi first, so the hook runs Pi with
+`PI_PROGRAM_STATUS=1`. It runs Pi from the command line, not from the prompt
+handler, because fish never hands the terminal to a command run from an event
+handler.
 
 It only looks at the labels once, when a terminal starts, and checks for a
 marker file at each prompt. Check with `bash tests/hc-pi-resume.sh`.

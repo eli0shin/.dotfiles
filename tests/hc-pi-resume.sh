@@ -27,6 +27,10 @@ MOCK
 cat >"$bin/pi" <<'MOCK'
 #!/usr/bin/env bash
 printf 'pi %s shell=%s\n' "$*" "$DOTFILES_HC_SHELL" >>"$CALLS"
+printf 'pi-args %s\n' "$#" >>"$CALLS"
+printf 'pi-program-status %s\n' "${PI_PROGRAM_STATUS-unset}" >>"$CALLS"
+# Its pid, its process group, and the terminal's foreground process group.
+printf 'pi-group %s\n' "$(ps -o pid=,pgid=,tpgid= -p $$ | xargs)" >>"$CALLS"
 : >"$XDG_STATE_HOME/dotfiles/hc-pi/$DOTFILES_HC_SHELL"
 MOCK
 chmod +x "$bin/hc" "$bin/pi"
@@ -37,15 +41,28 @@ fail() {
     exit 1
 }
 
-# Runs the hook in an interactive fish, then fires PROMPTS prompt events.
-# Extra arguments are environment assignments.
+# fish -c has no line editor, so this commandline logs what the hook puts on
+# the command line, and the prompt loop below runs it the way the editor would.
+readonly commandline_stub='function commandline
+    printf "commandline %s\n" "$argv" >>$CALLS
+    test "$argv[1]" = --replace; and set -g __test_command $argv[3]
+end'
+
+# Runs the hook in an interactive fish, then fires PROMPTS prompt events, running
+# a command the hook queued after each. Extra arguments are environment assignments.
 run_shell() {
     local labels=$1 prompts=$2
     shift 2
     : >"$calls"
     env -u DOTFILES_HC_SHELL PATH="$bin:$PATH" CALLS="$calls" LABELS="$labels" \
         XDG_STATE_HOME="$test_root/state" HC_TERMINAL_ID=t7 "$@" \
-        fish --no-config -i -c "source '$hook'; for i in (seq $prompts); emit fish_prompt; end; echo \"token \$DOTFILES_HC_SHELL\" >>'$calls'" \
+        fish --no-config -i -c "$commandline_stub
+            source '$hook'
+            for i in (seq $prompts)
+                emit fish_prompt
+                set -q __test_command; and eval \$__test_command; and set -e __test_command
+            end
+            echo \"token \$DOTFILES_HC_SHELL\" >>'$calls'" \
         </dev/null >/dev/null 2>&1
 }
 
@@ -55,11 +72,13 @@ run_shell '{}' 2
 grep -q '^pi ' "$calls" && fail 'a new terminal started pi'
 grep -Eq '^token t7-[0-9]+-[0-9]+$' "$calls" || fail 'a new terminal got no token'
 
-# A reopened terminal: resume the session, drop the old marker, and clear the
-# label once pi returns.
+# A reopened terminal: resume the session as if typed, out of history, drop
+# the old marker, and clear the label at the prompt pi returns to.
 : >"$markers/t7-1-1"
-run_shell "{\"dotfiles.pi_session\":\"$session\",\"dotfiles.pi_shell\":\"t7-1-1\"}" 1
+run_shell "{\"dotfiles.pi_session\":\"$session\",\"dotfiles.pi_shell\":\"t7-1-1\"}" 2
 token=$(sed -n 's/^token //p' "$calls")
+grep -q '^commandline --replace --  PI_PROGRAM_STATUS=1 pi --session ' "$calls" || fail 'a reopened terminal did not put pi on the command line'
+grep -Fxq 'commandline -f execute' "$calls" || fail 'a reopened terminal did not run the command line'
 grep -Fxq "pi --session $session shell=$token" "$calls" || fail 'a reopened terminal did not resume its session'
 [[ -e $markers/t7-1-1 ]] && fail 'the old marker was left behind'
 grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_watch=' "$calls" || fail 'the label outlived the resumed pi'
@@ -68,6 +87,49 @@ grep -Fxq 'hc label t7 dotfiles.pi_session= dotfiles.pi_shell= dotfiles.pi_pr_wa
 # pi started directly by hc run has no shell token, and is resumed too.
 run_shell "{\"dotfiles.pi_session\":\"$session\"}" 1
 grep -q "^pi --session $session " "$calls" || fail 'a pi without a shell token was not resumed'
+
+# A session path with spaces and quotes reaches pi as one argument.
+odd_session="$test_root/it's a session.jsonl"
+: >"$odd_session"
+run_shell "$(jq -cn --arg s "$odd_session" '{"dotfiles.pi_session":$s}')" 1
+grep -Fq "pi --session $odd_session shell=" "$calls" && grep -Fxq 'pi-args 2' "$calls" ||
+    fail 'a session path with spaces did not reach pi whole'
+
+# In a real terminal, the resumed pi owns the terminal: it leads the
+# terminal's foreground process group, as a pi typed at the prompt does. The
+# harness answers fish's startup queries and ends fish once pi has run.
+cat >"$test_root/pty.py" <<'PTY'
+import os, pty, select, signal, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("fish", ["fish", "--no-config", "-i", "-C", f"source '{sys.argv[1]}'"])
+deadline = time.time() + 10
+while time.time() < deadline and "pi-group" not in open(os.environ["CALLS"]).read():
+    if select.select([fd], [], [], 0.1)[0]:
+        try:
+            out = os.read(fd, 4096)
+        except OSError:
+            break
+        if b"\x1b[0c" in out:
+            os.write(fd, b"\x1b[?62c")
+        if b"\x1b[6n" in out:
+            os.write(fd, b"\x1b[1;1R")
+os.kill(pid, signal.SIGKILL)
+# A process exiting with unread terminal output waits for it to drain.
+os.close(fd)
+os.waitpid(pid, 0)
+PTY
+: >"$calls"
+env -u DOTFILES_HC_SHELL PATH="$bin:$PATH" CALLS="$calls" LABELS="{\"dotfiles.pi_session\":\"$session\"}" \
+    XDG_STATE_HOME="$test_root/state" HC_TERMINAL_ID=t7 python3 -I "$test_root/pty.py" "$hook"
+group=$(sed -n 's/^pi-group //p' "$calls")
+[[ -n $group ]] || fail 'a resumed pi did not run in a real terminal'
+read -r pi_pid pi_pgid fg_pgid <<<"$group"
+[[ $pi_pgid == "$pi_pid" && $fg_pgid == "$pi_pid" ]] ||
+    fail "a resumed pi does not lead the terminal's foreground process group (pid pgid tpgid: $group)"
+# herdr-core tracks pi from its status reports, which pi only sends when told
+# to: fish's startup DA reply would otherwise make pi think it can't.
+grep -Fxq 'pi-program-status 1' "$calls" || fail 'a resumed pi was not told to report its status'
 
 # A session file that is gone: forget it instead of starting pi.
 run_shell "{\"dotfiles.pi_session\":\"$test_root/gone.jsonl\",\"dotfiles.pi_shell\":\"t7-1-1\"}" 1
