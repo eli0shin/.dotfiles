@@ -151,6 +151,30 @@ type ControllerOptions = {
 
 const execFileAsync = promisify(execFile);
 const POLL_INTERVAL_MS = 60_000;
+// ghp (https://github.com/eli0shin/gh-proxy) serves every session's GitHub
+// reads from one shared cache, so more sessions do not mean more requests.
+const GHP = "ghp";
+const GHP_CONSUMER = "opencode-pr-watch";
+// Polls accept shared data up to this old; reads after a command use 0.
+const POLL_MAX_AGE_S = 30;
+const STATUS_MEMO_MS = 5_000;
+
+type GhpResult<T> = { value: T | null; fetchedAt: number | null; stale: boolean; error: string | null };
+type GhpActivity = { id: string; author: { login: string; type: string; isBot: boolean } | null };
+type GhpPrStatus = {
+  url: string;
+  number: number;
+  state: string;
+  headRefName: string;
+  headRefOid: string;
+  headRepository: { nameWithOwner: string } | null;
+  author: { login: string } | null;
+  mergeable: string;
+  checks: Check[];
+  issueComments: GhpActivity[];
+  reviews: GhpActivity[];
+  reviewComments: GhpActivity[];
+};
 const MAX_RECENT_GH_OUTPUTS = 3;
 const MAX_NOTIFICATIONS = 100;
 const ORCHESTRATION_IGNORED_ACTIVITY_AUTHORS = ["chatgpt-codex-connector[bot]"];
@@ -575,8 +599,82 @@ export async function createPrWatchController(options: ControllerOptions) {
     }
   }
 
+  // A ghp read. ghp prints JSON results even when it exits non-zero because a
+  // result has no value. A value that failed to refresh is not used.
+  async function ghp<T>(args: string[]): Promise<T | undefined> {
+    const fullArgs = [...args, "--consumer", GHP_CONSUMER];
+    let stdout = "";
+    let failure = "";
+    try {
+      const result = options.exec
+        ? await options.exec(GHP, fullArgs)
+        : await execFileAsync(GHP, fullArgs, { cwd: options.directory, timeout: 90_000 }).then((value) => ({ ...value, code: 0 }));
+      stdout = result.stdout;
+      failure = result.stderr;
+    } catch (error) {
+      stdout = isObject(error) && typeof error.stdout === "string" ? error.stdout : "";
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (!stdout.trim()) {
+      state.lastError = failure.trim() || "ghp printed nothing";
+      return undefined;
+    }
+    let parsed: GhpResult<T> | GhpResult<T>[];
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      state.lastError = "Could not parse ghp output";
+      return undefined;
+    }
+    const result = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!result || result.value === null || (result.stale && result.error)) {
+      if (result?.error) state.lastError = result.error;
+      return undefined;
+    }
+    return result.value;
+  }
+
+  const statusMemo = new Map<string, { status: GhpPrStatus | undefined; at: number }>();
+
+  async function prStatus(url: string, maxAgeS = POLL_MAX_AGE_S): Promise<GhpPrStatus | undefined> {
+    const memo = statusMemo.get(url);
+    if (maxAgeS > 0 && memo && Date.now() - memo.at < STATUS_MEMO_MS) return memo.status;
+    const status = await ghp<GhpPrStatus>(["pr", "status", "--max-age", String(maxAgeS), url]);
+    statusMemo.set(url, { status, at: Date.now() });
+    return status;
+  }
+
+  // One ghp call for every watched PR; the rest of the poll reads the memo.
+  async function prefetchStatuses(urls: string[]): Promise<void> {
+    if (urls.length === 0) return;
+    let parsed: GhpResult<GhpPrStatus>[] | undefined;
+    try {
+      const fullArgs = ["pr", "status", "--max-age", String(POLL_MAX_AGE_S), ...urls, "--consumer", GHP_CONSUMER];
+      const result = options.exec
+        ? await options.exec(GHP, fullArgs)
+        : await execFileAsync(GHP, fullArgs, { cwd: options.directory, timeout: 90_000 }).then((value) => ({ ...value, code: 0 }));
+      parsed = JSON.parse(result.stdout);
+    } catch (error) {
+      const stdout = isObject(error) && typeof error.stdout === "string" ? error.stdout : "";
+      try {
+        parsed = stdout.trim() ? JSON.parse(stdout) : undefined;
+      } catch {
+        parsed = undefined;
+      }
+    }
+    if (!Array.isArray(parsed)) return;
+    const at = Date.now();
+    urls.forEach((url, index) => {
+      const result = parsed?.[index];
+      if (!result) return;
+      const usable = result.value !== null && !(result.stale && result.error);
+      if (!usable && result.error) state.lastError = result.error;
+      statusMemo.set(url, { status: usable ? (result.value ?? undefined) : undefined, at });
+    });
+  }
+
   async function refreshSelfLogin(): Promise<void> {
-    state.selfLogin = (await run<{ login?: string }>("gh", ["api", "user"]))?.login;
+    state.selfLogin = (await ghp<{ login: string }>(["whoami"]))?.login;
   }
 
   async function save(): Promise<void> {
@@ -609,19 +707,14 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function ensureCurrentRepo(): Promise<string | undefined> {
     if (currentRepo) return currentRepo;
-    currentRepo = (await run<{ nameWithOwner: string }>("gh", ["repo", "view", "--json", "nameWithOwner"]))
-      ?.nameWithOwner;
+    currentRepo = (await ghp<{ nameWithOwner: string }>(["repo"]))?.nameWithOwner;
     return currentRepo;
   }
 
   async function baselinePr(watched: WatchedPrState): Promise<boolean> {
     const [activities, checks] = await Promise.all([
       fetchActivities(watched.pr),
-      run<Check[]>(
-        "gh",
-        ["pr", "checks", watched.pr.url, "--json", "name,state,bucket,workflow,link,completedAt"],
-        "empty-array",
-      ),
+      prStatus(watched.pr.url).then((status) => status?.checks),
     ]);
     if (!activities || checks === undefined) return false;
     const checksKey = checksCompletionKey(watched.pr.headSha, checks);
@@ -663,12 +756,15 @@ export async function createPrWatchController(options: ControllerOptions) {
   }
 
   async function fetchActivities(pr: WatchedPr): Promise<TrackedActivity[] | undefined> {
-    const [issueComments, reviews, reviewComments] = await Promise.all([
-      run<Activity[]>("gh", ["api", `repos/${pr.repo}/issues/${pr.number}/comments?per_page=100`]),
-      run<Activity[]>("gh", ["api", `repos/${pr.repo}/pulls/${pr.number}/reviews?per_page=100`]),
-      run<Activity[]>("gh", ["api", `repos/${pr.repo}/pulls/${pr.number}/comments?per_page=100`]),
-    ]);
-    if (!issueComments || !reviews || !reviewComments) return undefined;
+    const status = await prStatus(pr.url);
+    if (!status) return undefined;
+    const toActivity = (activity: GhpActivity): Activity => ({
+      id: activity.id,
+      author: activity.author ? { login: activity.author.login, type: activity.author.type } : undefined,
+    });
+    const issueComments = status.issueComments.map(toActivity);
+    const reviews = status.reviews.map(toActivity);
+    const reviewComments = status.reviewComments.map(toActivity);
     const result: TrackedActivity[] = [];
     for (const [kind, activities] of [
       ["issue-comment", issueComments],
@@ -686,6 +782,33 @@ export async function createPrWatchController(options: ControllerOptions) {
     return result;
   }
 
+  // gh pr view [target]: a PR URL, a number in the current repository, a
+  // branch, or nothing for the current branch.
+  async function resolvePr(target: string | undefined, maxAgeS: number): Promise<GhpPrStatus | undefined> {
+    let url: string | undefined;
+    if (target && /^https?:\/\//.test(target)) url = target;
+    else if (target && /^\d+$/.test(target)) {
+      const repo = await ensureCurrentRepo();
+      if (!repo) return undefined;
+      url = `https://github.com/${repo}/pull/${target}`;
+    } else {
+      const lastError = state.lastError;
+      const args = ["pr", "find", "--max-age", String(maxAgeS)];
+      if (target) {
+        const repo = await ensureCurrentRepo();
+        if (!repo) return undefined;
+        args.push(repo, target);
+      }
+      url = (await ghp<{ pullRequest: { url: string } | null }>(args))?.pullRequest?.url;
+      // A branch without a PR is not an error.
+      if (!url) {
+        state.lastError = lastError;
+        return undefined;
+      }
+    }
+    return prStatus(url, maxAgeS);
+  }
+
   async function discover(
     reason: string,
     target?: string,
@@ -695,10 +818,7 @@ export async function createPrWatchController(options: ControllerOptions) {
     if (state.mode === "off") return false;
     const repo = (target ? repositoryFromPrUrl(target) : undefined) ?? (await ensureCurrentRepo());
     if (!repo) return false;
-    const args = ["pr", "view"];
-    if (target) args.push(target);
-    args.push("--json", "number,url,headRefName,headRefOid,headRepository,state,author,mergeable");
-    const value = await run<any>("gh", args, target ? false : "none");
+    const value = await resolvePr(target, reason === "worker snapshot" || reason === "startup" ? POLL_MAX_AGE_S : 0);
     if (!value) return false;
     if (value.state !== "OPEN") {
       if (target) {
@@ -753,7 +873,9 @@ export async function createPrWatchController(options: ControllerOptions) {
       }
       if (showNotification) notify(`PR watch added #${pr.number} (${reason}).`, "info");
     }
-    if (!state.orchestrationSessionId) await syncWatchedSha();
+    if (!state.orchestrationSessionId) {
+      await syncWatchedSha(reason === "worker snapshot" || reason === "startup" ? POLL_MAX_AGE_S : 0);
+    }
     await save();
     startPolling();
     return true;
@@ -764,7 +886,9 @@ export async function createPrWatchController(options: ControllerOptions) {
     state.pendingPrUpdates = state.pendingPrUpdates.filter((item) => prIdentityKey(item.pr) !== prIdentityKey(pr));
   }
 
-  async function syncWatchedSha(): Promise<void> {
+  // Reads after a command that moved the branch (push, merge, rerun) must
+  // see newer data than the command, so those callers pass 0.
+  async function syncWatchedSha(maxAgeS = POLL_MAX_AGE_S): Promise<void> {
     const repo = await ensureCurrentRepo();
     if (!repo) {
       state.lastError = "Could not resolve the current GitHub repository";
@@ -793,7 +917,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       state.pendingShaUpdate = undefined;
       return;
     }
-    const commit = await run<{ sha?: string }>("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`]);
+    const commit = await ghp<{ sha: string | null }>(["branch-tip", "--max-age", String(maxAgeS), repo, branch]);
     const sha = commit?.sha;
     if (!sha) {
       state.lastError ||= `Could not resolve the GitHub tip of branch ${branch}`;
@@ -815,15 +939,8 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function baselineWatchedSha(force = false): Promise<boolean> {
     if (!state.watchedSha || (!force && !state.watchedSha.baselinePending)) return true;
-    const { sha } = state.watchedSha;
-    const runs = await run<WorkflowRun[]>("gh", [
-      "run",
-      "list",
-      "--commit",
-      sha,
-      "--json",
-      "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
-    ]);
+    const { sha, repo } = state.watchedSha;
+    const runs = await ghp<WorkflowRun[]>(["runs", "--max-age", String(POLL_MAX_AGE_S), repo, sha]);
     if (!runs) return false;
     const allTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const runsKey = runsCompletionKey(sha, runs);
@@ -941,13 +1058,7 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function pollPr(watched: WatchedPrState): Promise<number> {
     if (watched.baselinePending && !(await baselinePr(watched))) return 0;
-    const latest = await run<any>("gh", [
-      "pr",
-      "view",
-      watched.pr.url,
-      "--json",
-      "headRefOid,headRefName,headRepository,state,author,mergeable",
-    ]);
+    const latest = await prStatus(watched.pr.url);
     if (!latest) return 0;
     if (latest.state !== "OPEN") {
       if (state.orchestrationSessionId) {
@@ -977,11 +1088,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       }
     }
     let added = 0;
-    const checks = await run<Check[]>(
-      "gh",
-      ["pr", "checks", watched.pr.url, "--json", "name,state,bucket,workflow,link,completedAt"],
-      "empty-array",
-    );
+    const checks = latest.checks;
     if (checks !== undefined) {
       const allTerminal = checks.length > 0 && checks.every(isTerminalCheck);
       const key = checksCompletionKey(watched.pr.headSha, checks);
@@ -1050,14 +1157,7 @@ export async function createPrWatchController(options: ControllerOptions) {
 
   async function pollSha(): Promise<number> {
     if (!state.watchedSha || !(await baselineWatchedSha())) return 0;
-    const runs = await run<WorkflowRun[]>("gh", [
-      "run",
-      "list",
-      "--commit",
-      state.watchedSha.sha,
-      "--json",
-      "databaseId,attempt,name,workflowName,status,conclusion,url,createdAt,updatedAt",
-    ]);
+    const runs = await ghp<WorkflowRun[]>(["runs", "--max-age", String(POLL_MAX_AGE_S), state.watchedSha.repo, state.watchedSha.sha]);
     if (!runs) return 0;
     const allTerminal = runs.length > 0 && runs.every(isTerminalRun);
     const key = runsCompletionKey(state.watchedSha.sha, runs);
@@ -1208,6 +1308,7 @@ export async function createPrWatchController(options: ControllerOptions) {
       const errors = state.orchestrationSessionId ? await reconcileOrchestrationMembership() : [];
       if (state.orchestrationSessionId || state.watchedSha) await syncWatchedSha();
       let added = await pollSha();
+      await prefetchStatuses(state.watchedPrs.map((watched) => watched.pr.url));
       for (const watched of [...state.watchedPrs]) {
         try {
           added += await pollPr(watched);
@@ -1313,22 +1414,22 @@ export async function createPrWatchController(options: ControllerOptions) {
     if (isActivationCommand(command)) {
       const target = pullRequestUrlFromText(output);
       if (!(await discover("gh pr command", target)) && !target) {
-        await syncWatchedSha();
+        await syncWatchedSha(0);
         await save();
         startPolling();
       }
     } else if (isGitPush(command)) {
       if (!(await discover("git push", undefined, false))) {
-        await syncWatchedSha();
+        await syncWatchedSha(0);
         await save();
         startPolling();
       }
     } else if (isPrMerge(command)) {
-      if (!(await discover("gh pr merge", undefined, false))) await syncWatchedSha();
+      if (!(await discover("gh pr merge", undefined, false))) await syncWatchedSha(0);
       await save();
       startPolling();
     } else if (isRunRerun(command) && !hasTargets()) {
-      if (!(await discover("gh run rerun", undefined, false))) await syncWatchedSha();
+      if (!(await discover("gh run rerun", undefined, false))) await syncWatchedSha(0);
       await save();
       startPolling();
     }

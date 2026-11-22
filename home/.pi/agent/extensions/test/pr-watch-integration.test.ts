@@ -183,6 +183,19 @@ else if(args[0]==='api'&&args[1]==='user') console.log(JSON.stringify({login:'ow
 else if(args[0]==='run') console.log(JSON.stringify([{databaseId:84,attempt:1,name:'Version',workflowName:'Version',status:'completed',conclusion:'success',url:'https://github.com/owner/foreign/actions/runs/84',event:'push',updatedAt:'2026-01-01T00:00:00Z'}]));
 else console.log('[]');
 `, { mode: 0o755 });
+      await writeFile(join(bin, "ghp"), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(join(root, "ghp-calls"))}, JSON.stringify(args) + '\\n');
+const ok = (value) => ({value, fetchedAt: Date.now(), stale: false, error: null});
+const print = (body) => console.log(JSON.stringify(body));
+if(args[0]==='repo') print(ok({nameWithOwner:'owner/current',url:'https://github.com/owner/current',defaultBranch:'main'}));
+else if(args[0]==='whoami') print(ok({login:'owner'}));
+else if(args[0]==='pr'&&args[1]==='status') print([ok({number:84,url:'https://github.com/owner/foreign/pull/84',headRefName:'changeset-release/main',headRefOid:'release-sha',headRepository:{nameWithOwner:'owner/foreign'},state:'MERGED',author:{login:'release-bot[bot]',type:'Bot',isBot:true},mergeable:'UNKNOWN',mergeCommit:{oid:'foreign-merge-sha'},mergedAt:'2026-11-08T21:20:44Z',checks:[],issueComments:[],reviews:[],reviewComments:[]})]);
+else if(args[0]==='runs') print([ok([{databaseId:84,attempt:1,name:'Version',workflowName:'Version',status:'completed',conclusion:'success',url:'https://github.com/owner/foreign/actions/runs/84',event:'push',updatedAt:'2026-01-01T00:00:00Z'}])]);
+else if(args[0]==='pr'&&args[1]==='find') print([ok({pullRequest:null,candidates:[]})]);
+else print([ok({branch:'main',sha:'main-sha'})]);
+`, { mode: 0o755 });
       session = await startSession(repo, root);
       await runCommand(session, 'timeout 90 gh pr merge 84 -R owner/foreign --squash 2>&1 | tail -2; timeout 30 gh pr view 84 -R owner/foreign --json state,mergeCommit');
       assert.equal(watchState(session).watchedSha?.repo, "owner/foreign");
@@ -196,8 +209,8 @@ else console.log('[]');
       assert.match(JSON.stringify(notices[0]), /CI finished for the merge commit of PR #84/);
       assert.match(JSON.stringify(notices[0]), /Repo: owner\/foreign/);
       assert.equal(watchState(session).watchedSha, undefined);
-      const calls: string[][] = (await readFile(join(root, "gh-calls"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      assert.ok(calls.some((args) => args[0] === "run" && args.includes("foreign-merge-sha") && args.includes("owner/foreign")));
+      const calls: string[][] = (await readFile(join(root, "ghp-calls"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.ok(calls.some((args) => args[0] === "runs" && args.includes("foreign-merge-sha") && args.includes("owner/foreign")));
     } finally {
       if (session) await stopSession(session);
       timer.restore();
@@ -252,6 +265,22 @@ else if(args[0]==='api'&&args[1]==='user') console.log(JSON.stringify({login:'ow
 else if(args[0]==='api'&&args[1].includes('/commits/')) console.log(JSON.stringify({sha:'main-sha'}));
 else if(args[0]==='api'&&args.includes('--include')) process.stdout.write('HTTP/2.0 200 OK\\r\\nEtag: "empty"\\r\\n\\r\\n[]');
 else console.log('[]');
+`);
+      await executable("ghp", `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2), root = process.env.REPRO_ROOT, open = fs.existsSync(root + '/pr-open');
+const ok = (value) => ({value, fetchedAt: Date.now(), stale: false, error: null});
+const print = (body) => console.log(JSON.stringify(body));
+const url = 'https://github.com/owner/repo/pull/104';
+const checks = fs.existsSync(root + '/ci-complete') ? [{name:'CI',state:'SUCCESS',bucket:'pass',workflow:'CI',link:'https://github.com/owner/repo/actions/runs/104',completedAt:'2026-07-13T22:00:00Z'}] : [];
+const pr = {number:104,url,headRefName:'ticket-one',headRefOid:'worker-sha',headRepository:{nameWithOwner:'owner/repo'},state:'OPEN',author:{login:'owner',type:'User',isBot:false},mergeable:'MERGEABLE',mergeCommit:null,mergedAt:null,checks,issueComments:[],reviews:[],reviewComments:[]};
+if(args[0]==='repo') print(ok({nameWithOwner:'owner/repo',url:'https://github.com/owner/repo',defaultBranch:'main'}));
+else if(args[0]==='whoami') print(ok({login:'owner'}));
+else if(args[0]==='pr'&&args[1]==='status') print([open ? ok(pr) : {value:null,fetchedAt:null,stale:true,error:'not found: pull request'}]);
+else if(args[0]==='pr'&&args[1]==='find') print([ok({pullRequest: open ? {number:104,url,state:'OPEN',headRefName:'ticket-one',headRepository:{nameWithOwner:'owner/repo'}} : null,candidates:[]})]);
+else if(args[0]==='branch-tip') print([ok({branch:'main',sha:'main-sha'})]);
+else if(args[0]==='runs') print([ok([])]);
+else process.exit(2);
 `);
       await executable("tickets", "#!/bin/sh\nexit 0\n");
       await executable("repos", '#!/bin/sh\nexec git worktree add "$REPRO_WORKER" -b "$3"\n');

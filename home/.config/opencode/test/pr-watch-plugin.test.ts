@@ -17,7 +17,7 @@ test("every root session of a standalone OpenCode Mini worker publishes its orch
   const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-plugin-"));
   const bin = join(root, "bin");
   await mkdir(bin);
-  await writeFile(join(bin, "gh"), '#!/bin/sh\nprintf \'{"login":"eli0shin"}\'\n', { mode: 0o755 });
+  await writeFile(join(bin, "ghp"), '#!/bin/sh\nprintf \'{"value":{"login":"eli0shin"},"fetchedAt":1,"stale":false,"error":null}\'\n', { mode: 0o755 });
   await writeFile(join(bin, "git"), '#!/bin/sh\nprintf \'worker-branch\\n\'\n', { mode: 0o755 });
   const oldPath = process.env.PATH;
   const oldStateHome = process.env.XDG_STATE_HOME;
@@ -79,7 +79,7 @@ test("the server process environment cannot promote an ordinary PR Watch session
   const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-plugin-"));
   const bin = join(root, "bin");
   await mkdir(bin);
-  await writeFile(join(bin, "gh"), '#!/bin/sh\nprintf \'{"login":"eli0shin"}\'\n', { mode: 0o755 });
+  await writeFile(join(bin, "ghp"), '#!/bin/sh\nprintf \'{"value":{"login":"eli0shin"},"fetchedAt":1,"stale":false,"error":null}\'\n', { mode: 0o755 });
   const oldPath = process.env.PATH;
   const oldStateHome = process.env.XDG_STATE_HOME;
   const oldOrchestrationID = process.env.OPENCODE_ORCHESTRATION_SESSION_ID;
@@ -151,9 +151,9 @@ test("the OpenCode adapter adds PR Watch harness guidance to active sessions", a
   const root = await mkdtemp(join(tmpdir(), "opencode-pr-watch-plugin-"));
   const bin = join(root, "bin");
   await mkdir(bin);
-  const gh = join(bin, "gh");
-  await writeFile(gh, '#!/bin/sh\nprintf \'{"login":"eli0shin"}\'\n');
-  await chmod(gh, 0o755);
+  const ghp = join(bin, "ghp");
+  await writeFile(ghp, '#!/bin/sh\nprintf \'{"value":{"login":"eli0shin"},"fetchedAt":1,"stale":false,"error":null}\'\n');
+  await chmod(ghp, 0o755);
   const oldPath = process.env.PATH;
   const oldStateHome = process.env.XDG_STATE_HOME;
   process.env.PATH = `${bin}:${oldPath}`;
@@ -215,9 +215,9 @@ test("only the OpenCode plugin for a session location starts its PR Watch contro
   const bin = join(root, "bin");
   const calls = join(root, "gh-calls");
   await Promise.all([mkdir(firstDirectory), mkdir(secondDirectory), mkdir(bin)]);
-  const gh = join(bin, "gh");
-  await writeFile(gh, `#!/bin/sh\nprintf 'call\\n' >> '${calls}'\nprintf '{"login":"eli0shin"}'\n`);
-  await chmod(gh, 0o755);
+  const ghp = join(bin, "ghp");
+  await writeFile(ghp, `#!/bin/sh\nprintf 'call\\n' >> '${calls}'\nprintf '{"value":{"login":"eli0shin"},"fetchedAt":1,"stale":false,"error":null}'\n`);
+  await chmod(ghp, 0o755);
   const oldPath = process.env.PATH;
   const oldStateHome = process.env.XDG_STATE_HOME;
   process.env.PATH = `${bin}:${oldPath}`;
@@ -281,7 +281,7 @@ test("a server does not claim another server's session at the same location", as
   const bin = join(root, "bin");
   const calls = join(root, "gh-calls");
   await mkdir(bin);
-  await writeFile(join(bin, "gh"), `#!/bin/sh\nprintf 'call\\n' >> '${calls}'\nprintf '{"login":"eli0shin"}'\n`, {
+  await writeFile(join(bin, "ghp"), `#!/bin/sh\nprintf 'call\\n' >> '${calls}'\nprintf '{"value":{"login":"eli0shin"},"fetchedAt":1,"stale":false,"error":null}'\n`, {
     mode: 0o755,
   });
   const oldPath = process.env.PATH;

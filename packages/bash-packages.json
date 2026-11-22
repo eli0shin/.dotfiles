@@ -129,6 +129,11 @@
     "update": "tickets update"
   },
   {
+    "command": "ghp",
+    "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/gh-proxy/main/install.sh | bash",
+    "update": "curl -fsSL https://raw.githubusercontent.com/eli0shin/gh-proxy/main/install.sh | bash"
+  },
+  {
     "command": "review",
     "install": "curl -fsSL https://raw.githubusercontent.com/eli0shin/code-review-tui/main/install.sh | bash",
     "update": "review update"

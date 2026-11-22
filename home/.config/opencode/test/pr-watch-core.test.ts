@@ -20,7 +20,44 @@ function createExecutor(
     login?: string;
   } = {},
 ) {
+  const ok = (value: unknown) => ({ value, fetchedAt: Date.now(), stale: false, error: null });
+  const fail = (error: string) => ({ value: null, fetchedAt: null, stale: true, error });
+  const print = (body: unknown) => ({ code: 0, stdout: JSON.stringify(body), stderr: "" });
+  // ghp reads served from the same fixture as the gh fakes below.
+  const ghp = (args: string[]) => {
+    if (args[0] === "repo") return print(ok({ nameWithOwner: "eli0shin/repos", url: "", defaultBranch: "main" }));
+    if (args[0] === "whoami") return print(ok({ login: options.login ?? "eli0shin" }));
+    if (args[0] === "branch-tip") return print([ok({ branch: "main", sha: "main-sha" })]);
+    if (args[0] === "runs") return print([ok(options.runs ?? [])]);
+    if (args[0] === "pr" && args[1] === "find") return print([ok({ pullRequest: null, candidates: [] })]);
+    if (args[0] === "pr" && args[1] === "status") {
+      const urls = args.slice(4).filter((arg, index, all) => arg !== "--consumer" && all[index - 1] !== "--consumer");
+      return print(urls.map((url) => {
+        if (url !== prUrl) return fail("not found: pull request");
+        if (options.failChecks) return fail("checks unavailable");
+        return ok({
+          url: prUrl,
+          number: 104,
+          state: options.state ?? "OPEN",
+          headRefName: "worktree-feature",
+          headRefOid: "pr-sha",
+          headRepository: { nameWithOwner: "eli0shin/repos" },
+          author: { login: "eli0shin" },
+          mergeable: options.mergeable ?? "MERGEABLE",
+          checks: options.checks ?? [],
+          issueComments: [],
+          reviews: (options.reviews ?? []).map((review: any) => ({
+            id: String(review.id),
+            author: review.user ? { login: review.user.login, type: review.user.type ?? "User", isBot: review.user.type === "Bot" } : null,
+          })),
+          reviewComments: [],
+        });
+      }));
+    }
+    return { code: 2, stdout: "", stderr: "unsupported ghp command" };
+  };
   return async (command: string, args: string[]) => {
+    if (command === "ghp") return ghp(args);
     if (command === "gh" && args[0] === "repo")
       return {
         code: 0,

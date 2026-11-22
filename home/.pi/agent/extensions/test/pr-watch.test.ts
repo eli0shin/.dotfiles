@@ -15,8 +15,6 @@ import prWatch, {
   commandSegments,
   commandTargets,
   isGitPushSegment,
-  parseGhApiResponse,
-  pollIntervalMs,
   prIdentityKey,
   prStatusIdentity,
   pullRequestUrlFromText,
@@ -283,9 +281,77 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
           ? { code: 0, stdout: JSON.stringify(runs), stderr: "" }
           : { code: 1, stdout: "", stderr: "temporary failure" };
       }
+      if (command === "ghp") return fakeGhp(args, execOptions?.cwd);
       return { code: 1, stdout: "", stderr: "unsupported command" };
     },
   } as any);
+
+  // ghp reads served from the same fixtures as the gh fakes above.
+  function fakeGhp(args: string[], cwd?: string) {
+    const valueFlags = new Set(["--max-age", "--consumer", "--dir", "--wait", "--host"]);
+    const positional: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      if (valueFlags.has(args[index] ?? "")) index += 1;
+      else positional.push(args[index] ?? "");
+    }
+    const dir = args.includes("--dir") ? args[args.indexOf("--dir") + 1] : undefined;
+    const ok = (value: unknown) => ({ value, fetchedAt: Date.now(), stale: false, error: null });
+    const fail = (error: string) => ({ value: null, fetchedAt: null, stale: true, error });
+    const print = (body: unknown) => ({ code: 0, stdout: JSON.stringify(body), stderr: "" });
+    const activity = (item: any) => {
+      const author = item.author ?? item.user;
+      const login = author?.login ?? "";
+      return {
+        id: String(item.id),
+        author: author ? { login, type: author.type ?? "User", isBot: author.type === "Bot" || login.endsWith("[bot]") } : null,
+      };
+    };
+    const [group, subcommand] = positional;
+    if (group === "repo") {
+      return print(repoAvailable
+        ? ok({ nameWithOwner: positional[1] ?? "eli0shin/repos", url: "https://github.com/eli0shin/repos", defaultBranch: "main" })
+        : fail("temporary failure"));
+    }
+    if (group === "whoami") return print(selfLoginAvailable ? ok({ login: "eli0shin" }) : fail("temporary failure"));
+    if (group === "branch-tip") {
+      return print([shaAvailable && branchTipAvailable ? ok({ branch: positional[2], sha: remoteBranchSha }) : fail("temporary failure")]);
+    }
+    if (group === "runs") return print([runsAvailable ? ok(runs) : fail("temporary failure")]);
+    if (group === "pr" && subcommand === "find") {
+      const branch = positional[3] ?? (dir ? directoryBranches.get(dir) : cwd ? directoryBranches.get(cwd) : undefined);
+      const pr = [...prs.values()].find((candidate) => candidate.branch === branch && !unavailablePrs.has(candidate.number));
+      const found = pr && {
+        number: pr.number, url: pr.url, state: pr.state, headRefName: pr.branch, headRepository: { nameWithOwner: pr.headRepo },
+      };
+      return print([ok({ pullRequest: found ?? null, candidates: found ? [found] : [] })]);
+    }
+    if (group === "pr" && subcommand === "status") {
+      return print(positional.slice(2).map((url) => {
+        const number = prNumberFromArgs([url]) ?? -1;
+        const pr = prs.get(number);
+        if (!pr || unavailablePrs.has(number)) return fail("not found: pull request");
+        // GitHub rate-limited the refresh; ghp serves no current value.
+        if (!activitiesAvailable) return fail("GitHub graphql requests paused until later: rate limit exhausted");
+        return ok({
+          url: pr.url,
+          number: pr.number,
+          state: pr.state,
+          headRefName: pr.branch,
+          headRefOid: pr.headSha,
+          headRepository: { nameWithOwner: pr.headRepo },
+          author: { login: pr.authorLogin, type: "User", isBot: false },
+          mergeable: pr.mergeable,
+          mergeCommit: pr.mergeCommitSha ? { oid: pr.mergeCommitSha } : null,
+          mergedAt: pr.mergedAt ?? null,
+          checks: checks.get(number) ?? [],
+          issueComments: (issueComments.get(number) ?? []).map(activity),
+          reviews: (reviews.get(number) ?? []).map(activity),
+          reviewComments: (reviewComments.get(number) ?? []).map(activity),
+        });
+      }));
+    }
+    return { code: 2, stdout: "", stderr: "unsupported ghp command" };
+  }
 
   const ctx = {
     ui: {
@@ -500,6 +566,10 @@ function createHarness(options: { stateRoot?: string; sessionId?: string; sessio
       await handlers.get("turn_start")?.({}, ctx);
     },
     execCalls,
+    // What the fake ghp prints for args, for a paused call's payload.
+    ghpOutput(args: string[]): unknown {
+      return JSON.parse(fakeGhp(args).stdout);
+    },
     pauseExec(matches: (command: string, args: string[]) => boolean, payload: unknown) {
       let started!: () => void;
       let release!: () => void;
@@ -2220,13 +2290,13 @@ test("adds PRs created in multiple worktrees without replacing earlier watches",
   );
   assert.equal(
     harness.execCalls.some(
-      ({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "checks" && args.includes(pr104Url),
+      ({ command, args }) => command === "ghp" && args[0] === "pr" && args[1] === "status" && args.includes(pr104Url),
     ),
     true,
   );
   assert.equal(
     harness.execCalls.some(
-      ({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "checks" && args.includes(pr105Url),
+      ({ command, args }) => command === "ghp" && args[0] === "pr" && args[1] === "status" && args.includes(pr105Url),
     ),
     true,
   );
@@ -2332,7 +2402,7 @@ test("with no watched PRs, PR watch uses the current checkout branch tip", async
   assert.equal(
     harness.execCalls.some(
       ({ command, args }) =>
-        command === "gh" && args[0] === "api" && args[1] === "repos/eli0shin/repos/commits/local-feature",
+        command === "ghp" && args[0] === "branch-tip" && args.includes("eli0shin/repos") && args.includes("local-feature"),
     ),
     true,
   );
@@ -2437,7 +2507,7 @@ test("SHA watch follows the remote branch tip when local HEAD is stale", async (
   assert.match(harness.sentMessages[0] ?? "", /CI finished for SHA remote-/);
   assert.equal(
     harness.execCalls.some(
-      ({ command, args }) => command === "gh" && args[0] === "run" && args.includes("remote-merge-sha"),
+      ({ command, args }) => command === "ghp" && args[0] === "runs" && args.includes("remote-merge-sha"),
     ),
     true,
   );
@@ -2781,10 +2851,7 @@ test("SHA watch notifies when a rerun reaches the same conclusion", async () => 
   assert.equal(
     harness.execCalls.some(
       ({ command, args }) =>
-        command === "gh" &&
-        args[0] === "run" &&
-        args[1] === "list" &&
-        args[args.indexOf("--json") + 1]?.split(",").includes("attempt"),
+        command === "ghp" && args[0] === "runs",
     ),
     true,
   );
@@ -2968,7 +3035,7 @@ for (const command of ["cd /work/repos-wt && git push -u origin HEAD 2>&1 | tail
     assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs.map(({ pr }: any) => pr.number), [105]);
     assert.ok(
       harness.execCalls.some(
-        ({ command: executable, args, cwd }) => executable === "gh" && args[1] === "view" && cwd === "/work/repos-wt",
+        ({ command: executable, args, cwd }) => executable === "ghp" && args[1] === "find" && cwd === "/work/repos-wt",
       ),
     );
   });
@@ -3013,7 +3080,7 @@ test("a merge commit looks up runs in the merged PR's repository", async () => {
   assert.equal(
     harness.execCalls.some(
       ({ command, args }) =>
-        command === "gh" && args[0] === "run" && args.includes("merge-104-sha") && args.includes("another-owner/another-repo"),
+        command === "ghp" && args[0] === "runs" && args.includes("merge-104-sha") && args.includes("another-owner/another-repo"),
     ),
     true,
   );
@@ -3074,7 +3141,7 @@ for (const authorLogin of ["eli0shin", "release-bot[bot]"]) {
       assert.match(harness.sentMessages[0]!, /Repo: another-owner\/another-repo/);
       assert.match(harness.sentMessages[0]!, /SHA: cross-repo-merge-sha/);
       assert.ok(harness.execCalls.some(({ command, args }) =>
-        command === "gh" && args[0] === "run" && args.includes("cross-repo-merge-sha") && args.includes("another-owner/another-repo")));
+        command === "ghp" && args[0] === "runs" && args.includes("cross-repo-merge-sha") && args.includes("another-owner/another-repo")));
       assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined, "the merge reports once");
     } finally {
       await harness.shutdown();
@@ -3122,7 +3189,7 @@ test("ordinary sessions do not follow the default branch tip on startup or rerun
 
   assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
   assert.equal(
-    harness.execCalls.some(({ command, args }) => command === "gh" && args[1] === "repos/eli0shin/repos/commits/main"),
+    harness.execCalls.some(({ command, args }) => command === "ghp" && args[0] === "branch-tip" && args.includes("main")),
     false,
   );
 });
@@ -3699,7 +3766,7 @@ test("orchestration does not watch its landing branch tip", async () => {
     assert.equal(harness.savedStates.at(-1)?.watchedSha, undefined);
     assert.equal(harness.sentMessages.length, 0);
     assert.equal(
-      harness.execCalls.some(({ command, args }) => command === "gh" && args[0] === "api" && args[1]?.includes("/commits/")),
+      harness.execCalls.some(({ command, args }) => command === "ghp" && args[0] === "branch-tip"),
       false,
     );
   } finally {
@@ -4971,7 +5038,11 @@ test("opt-out during snapshot enrollment cannot recreate buffered CI", { timeout
     await harness.startSession();
     harness.setIdle(false);
     await harness.writeWorkerSnapshot("enrollment-race", "worker-one", [104]);
-    gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "checks", [terminalCheck("104")]);
+    harness.checks.set(104, [terminalCheck("104")]);
+    gate = harness.pauseExec(
+      (command, args) => command === "ghp" && args[0] === "pr" && args[1] === "status" && args.includes(pr104Url),
+      harness.ghpOutput(["pr", "status", pr104Url]),
+    );
     const polling = harness.runPoll();
     await gate.started;
     await harness.callTool("unwatch_pr", "104");
@@ -4999,11 +5070,10 @@ test("stopping orchestration during snapshot enrollment cannot keep the worker P
     await harness.startSession();
     await harness.writeWorkerSnapshot("stop-race", "worker-one", [104]);
     // Pause before the PR is enrolled.
-    gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "view" && args.includes(pr104Url), {
-      number: 104, url: pr104Url, headRefName: "remove-collapse-command", headRefOid: "abc104", state: "OPEN",
-      author: { login: "eli0shin" }, headRepository: { nameWithOwner: "eli0shin/repos" }, mergeable: "MERGEABLE",
-      mergeCommit: null, mergedAt: null,
-    });
+    gate = harness.pauseExec(
+      (command, args) => command === "ghp" && args[0] === "pr" && args[1] === "status" && args.includes(pr104Url),
+      harness.ghpOutput(["pr", "status", pr104Url]),
+    );
     const polling = harness.runPoll();
     await gate.started;
     await harness.callTool("stop_orchestrating");
@@ -5029,8 +5099,8 @@ test("opt-out during merge CI polling cannot attribute old runs to the replaceme
   harness.prs.get(104)!.state = "MERGED";
   harness.prs.get(104)!.mergeCommitSha = "merged104";
   harness.runs.push({ databaseId: 2, status: "in_progress", event: "push" });
-  const gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "run" && args.includes("merged104"), [
-    { databaseId: 1, status: "completed", conclusion: "success", event: "push" },
+  const gate = harness.pauseExec((command, args) => command === "ghp" && args[0] === "runs" && args.includes("merged104"), [
+    { value: [{ databaseId: 1, status: "completed", conclusion: "success", event: "push" }], fetchedAt: 1, stale: false, error: null },
   ]);
   try {
     const polling = harness.runPoll();
@@ -5089,30 +5159,7 @@ test("closing a PR or manually removing it discards its pending updates", async 
   assert.equal(secondHarness.savedStates.at(-1)?.watchedSha?.sha, "tip-sha");
 });
 
-test("poll interval grows with the watched PR count between one and ten minutes", () => {
-  assert.equal(pollIntervalMs(0), 60_000);
-  assert.equal(pollIntervalMs(2), 60_000);
-  assert.equal(pollIntervalMs(3), 90_000);
-  assert.equal(pollIntervalMs(13), 390_000);
-  assert.equal(pollIntervalMs(40), 600_000);
-});
-
-test("parses gh api --include output", () => {
-  assert.deepEqual(parseGhApiResponse('HTTP/2.0 200 OK\r\nEtag: W/"abc"\r\nX-Other: 1\r\n\r\n[{"id":1}]'), {
-    status: 200,
-    etag: 'W/"abc"',
-    body: '[{"id":1}]',
-  });
-  assert.deepEqual(parseGhApiResponse('HTTP/2.0 304 Not Modified\r\nETag: "abc"\r\n\r\n'), {
-    status: 304,
-    etag: '"abc"',
-    body: "",
-  });
-  assert.equal(parseGhApiResponse('[{"id":1}]'), undefined);
-  assert.equal(parseGhApiResponse(""), undefined);
-});
-
-test("polling slows down once a session watches more than two PRs", async () => {
+test("polling stays at one minute however many PRs a session watches", async () => {
   const harness = createHarness();
   harness.prs.set(106, {
     ...harness.prs.get(105)!,
@@ -5122,10 +5169,9 @@ test("polling slows down once a session watches more than two PRs", async () => 
     headSha: "abc106",
   });
   await harness.activate(104);
-  assert.equal(harness.intervalMs(), 60_000);
   await harness.activate(105);
   await harness.activate(106);
-  assert.equal(harness.intervalMs(), 90_000);
+  assert.equal(harness.intervalMs(), 60_000);
 });
 
 test("the gh login is looked up once rather than on every poll", async () => {
@@ -5133,26 +5179,27 @@ test("the gh login is looked up once rather than on every poll", async () => {
   await harness.activate(104);
   await harness.runPoll();
   await harness.runPoll();
-  const userCalls = harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "api" && args[1] === "user");
+  const userCalls = harness.execCalls.filter(({ command, args }) => command === "ghp" && args[0] === "whoami");
   assert.equal(userCalls.length, 1);
   assert.equal(harness.savedStates.at(-1)?.selfLogin, "eli0shin");
 });
 
-test("activity lists are requested conditionally and an unchanged list is reused", async () => {
+test("a poll reads every watched PR in one shared-cache ghp call", async () => {
   const harness = createHarness();
   harness.prs.get(104)!.authorLogin = "another-author";
   harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
   await harness.activate(104);
-  const reviewCalls = () =>
-    harness.execCalls.filter(({ command, args }) => command === "gh" && args[0] === "api" && args[1]?.includes("/reviews"));
-  const firstCallCount = reviewCalls().length;
+  await harness.activate(105);
+  const statusCalls = () => harness.execCalls.filter(({ command, args }) => command === "ghp" && args[0] === "pr" && args[1] === "status");
+  const before = statusCalls().length;
 
   await harness.runPoll();
-  const conditional = reviewCalls().at(-1)?.args ?? [];
-  assert.ok(reviewCalls().length > firstCallCount);
-  assert.ok(conditional.some((arg) => arg.startsWith("If-None-Match: ")));
+  const pollCalls = statusCalls().slice(before);
+  assert.equal(pollCalls.length, 1);
+  assert.ok(pollCalls[0]?.args.includes(pr104Url) && pollCalls[0]?.args.includes(pr105Url));
+  assert.deepEqual(pollCalls[0]?.args.slice(2, 4), ["--max-age", "30"]);
+  assert.ok(!harness.execCalls.some(({ command }) => command === "gh"));
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77"]);
-  assert.deepEqual(harness.savedStates.at(-1)?.pendingPrUpdates, []);
 
   harness.reviews.set(104, [
     { id: 77, user: { login: "reviewer", type: "User" } },
@@ -5162,7 +5209,14 @@ test("activity lists are requested conditionally and an unchanged list is reused
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77", "review:78"]);
 });
 
-test("a rate-limited activity refresh leaves the seen activity baseline unchanged", async () => {
+test("discovery after a command reads only data newer than the command", async () => {
+  const harness = createHarness();
+  await harness.activate(104);
+  const discovery = harness.execCalls.find(({ command, args }) => command === "ghp" && args[0] === "pr" && args[1] === "status");
+  assert.deepEqual(discovery?.args.slice(2, 4), ["--max-age", "0"]);
+});
+
+test("a rate-limited refresh leaves the seen activity baseline unchanged and reports why", async () => {
   const harness = createHarness();
   harness.reviews.set(104, [{ id: 77, user: { login: "reviewer", type: "User" } }]);
   await harness.activate(104);
@@ -5170,7 +5224,7 @@ test("a rate-limited activity refresh leaves the seen activity baseline unchange
   await harness.runPoll();
 
   assert.deepEqual(harness.savedStates.at(-1)?.watchedPrs[0]?.seenActivityIds, ["review:77"]);
-  assert.equal(harness.savedStates.at(-1)?.lastError, undefined);
+  assert.match(harness.savedStates.at(-1)?.lastError ?? "", /rate limit/);
 });
 
 test("a push after a subshell cd watches the session checkout's PR", async () => {
@@ -5190,7 +5244,10 @@ test("a poll in flight when Pi reloads finishes without touching the stale runti
   await harness.startSession();
   await harness.activate(104);
   const savedBeforeReload = harness.savedStates.length;
-  const gate = harness.pauseExec((command, args) => command === "gh" && args[0] === "pr" && args[1] === "checks", []);
+  const gate = harness.pauseExec(
+    (command, args) => command === "ghp" && args[0] === "pr" && args[1] === "status",
+    harness.ghpOutput(["pr", "status", pr104Url]),
+  );
 
   const polling = harness.runPoll();
   await gate.started;

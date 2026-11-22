@@ -283,24 +283,32 @@ def print_table(rows):
         print(f"| {herdr_kind} | {r['workspace']} | {tab} | {watched} | {role} |")
 
 
-def pr_details(url):
-    fields = "number,url,state,isDraft,mergedAt,author,reviewDecision,mergeable,reviewRequests,updatedAt"
-    pr = gh_json("pr", "view", url, "--json", fields)
-    if "error" in pr:
-        return {"url": url, "error": pr["error"]}
+def pr_statuses(urls):
+    """One ghp call reads every PR from the cache PR Watch shares."""
+    if not urls:
+        return {}
+    try:
+        result = subprocess.run(["ghp", "pr", "status", *urls, "--consumer", "agent-status"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return {url: {"url": url, "error": "ghp is not installed"} for url in urls}
+    try:
+        results = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        error = result.stderr.strip()[:300] or "ghp printed nothing"
+        return {url: {"url": url, "error": error} for url in urls}
+    return {url: pr_details(url, item) for url, item in zip(urls, results)}
+
+
+def pr_details(url, item):
+    pr = item.get("value")
+    if pr is None:
+        return {"url": url, "error": item.get("error") or "no result"}
     author = (pr.get("author") or {}).get("login")
 
-    # `gh pr checks` keeps only the latest run of each check, so superseded
-    # and concurrency-cancelled runs drop out. Read its JSON whatever the
-    # exit code, since gh can exit non-zero with valid check output.
+    # ghp's checks match `gh pr checks`: the latest run of each check.
     failed, pending, pending_ages = [], [], []
     passed = 0
-    checks = gh("pr", "checks", url, "--json", "name,state,bucket,startedAt")
-    try:
-        check_list = json.loads(checks.stdout) if checks.stdout.strip() else []
-    except json.JSONDecodeError:
-        check_list = []
-    for check in check_list:
+    for check in pr.get("checks") or []:
         bucket = check.get("bucket")
         if bucket == "pending":
             pending.append(check.get("name"))
@@ -312,17 +320,11 @@ def pr_details(url):
         else:
             passed += 1
 
-    # GraphQL logins carry no bot flag, so take reviewer types from REST.
-    match = PR_URL.search(pr["url"])
-    reviews = gh(
-        "api", f"repos/{match.group(1)}/pulls/{match.group(2)}/reviews", "--paginate",
-        "--jq", ".[] | {login: .user.login, type: .user.type, state: .state}",
-    )
     human_reviews = {}
-    for line in reviews.stdout.splitlines() if reviews.returncode == 0 else []:
-        review = json.loads(line)
-        if review["login"] != author and review["type"] != "Bot":
-            human_reviews[review["login"]] = review["state"]
+    for review in pr.get("reviews") or []:
+        reviewer = review.get("author") or {}
+        if reviewer.get("login") != author and not reviewer.get("isBot"):
+            human_reviews[reviewer.get("login")] = review.get("state")
     return {
         "url": pr["url"],
         "label": pr_label(pr),
@@ -334,6 +336,7 @@ def pr_details(url):
         "human_reviews": human_reviews,
         "review_requests": [q.get("login") or q.get("name") for q in pr.get("reviewRequests") or []],
         "mergeable": pr.get("mergeable"),
+        "stale": bool(item.get("stale") and item.get("error")),
         "checks": {
             "passed": passed,
             "failed": failed,
@@ -371,8 +374,8 @@ def print_signals(rows):
         pr_urls.update(r["watched_urls"], r["linked_pr_urls"])
         run_refs.update(r["linked_run_refs"])
 
+    prs = pr_statuses(sorted(pr_urls))
     with ThreadPoolExecutor(max_workers=8) as pool:
-        prs = dict(zip(sorted(pr_urls), pool.map(pr_details, sorted(pr_urls))))
         runs = dict(zip(sorted(run_refs), pool.map(lambda ref: run_details(*ref), sorted(run_refs))))
 
     out = []

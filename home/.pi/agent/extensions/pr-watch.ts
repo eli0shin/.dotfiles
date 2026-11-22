@@ -220,6 +220,9 @@ type DiscoverOptions = {
   explicit?: boolean;
   // The command that named the PR shows this session owns it (e.g. it opened the PR).
   owned?: boolean;
+  // Poll-time discovery may use shared data; discovery after a command must
+  // see the command's effect, so it reads only newer data.
+  cached?: boolean;
 };
 
 type BranchResult = { ok: true; branch: string } | { ok: false; error: string };
@@ -248,12 +251,17 @@ const NOTIFICATION_TAGS: Record<NotificationLabel, string> = {
   "worker-message": "worker-message",
 };
 const HARNESS_GUIDANCE = `PR Watch monitors CI and PR feedback after supported PR commands and pushes. Use watch_pr or unwatch_pr to explicitly opt a PR in or out of this session's watch membership, overriding automatic discovery and orchestration membership rules. Return control after these operations; PR Watch will trigger a new turn when a watched PR or commit changes. A notification that only reports status asks for nothing: act on it only if that PR is part of your current task. Treat <pr-watch-harness-notification>, <orchestrator-message>, and <worker-message> blocks as harness notifications, not user messages; the latter two carry messages from this session's orchestrator or workers.`;
-// Every session polls on its own and all of them share one GitHub rate limit,
-// so a session waits longer the more PRs it watches.
+// ghp serves every session's reads from one shared cache, so polling more
+// sessions or PRs does not send more GitHub requests.
 const POLL_INTERVAL_MS = 60_000;
-const POLL_INTERVAL_PER_PR_MS = 30_000;
-const MAX_POLL_INTERVAL_MS = 10 * 60_000;
 const INBOX_POLL_INTERVAL_MS = 5_000;
+const GHP = "ghp";
+const GHP_CONSUMER = "pi-pr-watch";
+// Polls accept shared data up to this old. Reads right after a command that
+// changed GitHub (a push, a merge, gh pr create) use 0: only newer data.
+const POLL_MAX_AGE_S = 30;
+// One poll reads all watched PRs at once; later reads in the same poll reuse it.
+const STATUS_MEMO_MS = 5_000;
 const MAX_RECENT_GH_OUTPUTS = 3;
 const MAX_DELIVERED_MESSAGE_IDS = 100;
 const MAX_WORKER_MESSAGE_LENGTH = 16_000;
@@ -286,21 +294,65 @@ const initialState = (): WatchState => ({
   recentGhOutputs: [],
 });
 
-export function pollIntervalMs(watchedPrCount: number): number {
-  return Math.min(MAX_POLL_INTERVAL_MS, Math.max(POLL_INTERVAL_MS, watchedPrCount * POLL_INTERVAL_PER_PR_MS));
+// One read from ghp (https://github.com/eli0shin/gh-proxy). `value` is the
+// last good value; `error` is set when the latest fetch failed.
+export type GhpResult<T> = {
+  target?: string;
+  value: T | null;
+  fetchedAt: number | null;
+  stale: boolean;
+  error: string | null;
+};
+
+type GhpActor = { login: string; type: string; isBot: boolean } | null;
+type GhpActivity = { id: string; author: GhpActor };
+
+// `ghp pr status` value: the fields PR Watch reads. `checks` are exactly
+// `gh pr checks --json` entries; activity ids are REST ids.
+export type GhpPrStatus = {
+  url: string;
+  number: number;
+  state: string;
+  headRefName: string;
+  headRefOid: string;
+  headRepository: { nameWithOwner: string } | null;
+  author: GhpActor;
+  mergeable: string;
+  mergeCommit: { oid: string } | null;
+  mergedAt: string | null;
+  checks: Check[];
+  issueComments: GhpActivity[];
+  reviews: GhpActivity[];
+  reviewComments: GhpActivity[];
+};
+
+// A value that failed to refresh is not used: acting on an old snapshot could
+// miss a merge or attribute old CI to a new head.
+export function currentValue<T>(result: GhpResult<T> | undefined): T | undefined {
+  if (!result || result.value === null || (result.stale && result.error)) return undefined;
+  return result.value;
 }
 
-// Splits `gh api --include` output into its status, ETag, and body.
-export function parseGhApiResponse(stdout: string): { status: number; etag?: string; body: string } | undefined {
-  const normalized = stdout.replace(/\r\n/g, "\n");
-  const separator = normalized.indexOf("\n\n");
-  const head = separator < 0 ? normalized : normalized.slice(0, separator);
-  const body = separator < 0 ? "" : normalized.slice(separator + 2);
-  const [statusLine = "", ...headers] = head.split("\n");
-  const status = Number(statusLine.match(/^HTTP\/\S+\s+(\d{3})\b/)?.[1]);
-  if (!status) return undefined;
-  const etag = headers.find((line) => /^etag:/i.test(line))?.slice("etag:".length).trim();
-  return { status, etag: etag || undefined, body };
+function prViewFromStatus(status: GhpPrStatus): PrViewResult {
+  return {
+    number: status.number,
+    url: status.url,
+    headRefName: status.headRefName,
+    headRefOid: status.headRefOid,
+    headRepository: status.headRepository ?? undefined,
+    state: status.state,
+    author: status.author ? { login: status.author.login } : undefined,
+    mergeable: status.mergeable,
+    mergeCommit: status.mergeCommit,
+    mergedAt: status.mergedAt,
+  };
+}
+
+function activitiesFromGhp(activities: GhpActivity[]): Activity[] {
+  return activities.map((activity) => ({
+    id: activity.id,
+    author: activity.author ? { login: activity.author.login, type: activity.author.type } : undefined,
+  }));
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -811,12 +863,10 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   let state: WatchState = initialState();
   let interval: ReturnType<typeof setInterval> | undefined;
-  let intervalMs: number | undefined;
   // The gh login does not change while Pi runs, so it is looked up once.
   let cachedSelfLogin: string | undefined;
-  // GitHub does not count a 304 against the rate limit, so activity lists are
-  // fetched conditionally on the ETag of the last list.
-  const activityCache = new Map<string, { etag: string; activities: Activity[] }>();
+  const statusMemo = new Map<string, { result: GhpResult<GhpPrStatus>; at: number }>();
+  let ghpMissingNotified = false;
   let inboxInterval: ReturnType<typeof setInterval> | undefined;
   let inboxQueue = Promise.resolve(0);
   let polling = false;
@@ -1134,7 +1184,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const repo = await ensureCurrentRepo(ctx);
     const branch = state.workerBranch;
     if (!repo || !branch || hasWatchedPrForBranch(repo, branch)) return;
-    await discover(ctx, branch, { ignoreUnresolved: true, owned: true });
+    await discover(ctx, branch, { ignoreUnresolved: true, owned: true, cached: true });
   }
 
   async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
@@ -1243,7 +1293,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       if (resolved.has(pr.url)) continue;
       if (state.watchedPrs.some((watched) => prIdentityKey(watched.pr) === prIdentityKey(pr))) continue;
       try {
-        await discover(ctx, pr.url);
+        await discover(ctx, pr.url, { cached: true });
         // A stop during discovery must not leave the worker PR enrolled.
         if (state.orchestrationSessionId !== orchestrationId && state.prOverrides?.[prIdentityKey(pr)] !== "watch") {
           removePr(pr);
@@ -1330,17 +1380,9 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function startPolling(ctx: ExtensionContext): void {
-    if (interval) return reschedulePolling(ctx);
-    if (disposed || state.mode === "off" || !hasTargets()) return;
-    intervalMs = pollIntervalMs(state.watchedPrs.length);
-    interval = setInterval(() => poll(ctx), intervalMs);
+    if (interval || disposed || state.mode === "off" || !hasTargets()) return;
+    interval = setInterval(() => poll(ctx), POLL_INTERVAL_MS);
     setStatus(ctx);
-  }
-
-  function reschedulePolling(ctx: ExtensionContext): void {
-    if (!interval || intervalMs === pollIntervalMs(state.watchedPrs.length)) return;
-    stopPolling();
-    startPolling(ctx);
   }
 
   function startInboxPolling(ctx: ExtensionContext): void {
@@ -1369,35 +1411,41 @@ export default function prWatch(pi: ExtensionAPI): void {
   function stopPolling(ctx?: ExtensionContext): void {
     if (interval) clearInterval(interval);
     interval = undefined;
-    intervalMs = undefined;
     if (ctx) setStatus(ctx);
   }
 
-  async function execJson<T>(
-    command: string,
-    args: string[],
-    ctx: ExtensionContext,
-    cwd?: string,
-  ): Promise<T | undefined> {
-    const result = await pi.exec(command, args, { timeout: 30_000, ...(cwd && { cwd }) });
-    if (!result.stdout.trim()) return undefined;
+  // Runs a ghp read. ghp prints JSON even when it exits non-zero because a
+  // result has no value, so the exit code alone means nothing here.
+  async function ghpJson<T>(args: string[], ctx: ExtensionContext, cwd?: string): Promise<T | undefined> {
+    const result = await pi.exec(GHP, [...args, "--consumer", GHP_CONSUMER], { timeout: 90_000, ...(cwd && { cwd }) });
+    if (!result.stdout.trim()) {
+      if (!ghpMissingNotified && result.code !== 0 && /not found|ENOENT|no such file/i.test(result.stderr)) {
+        ghpMissingNotified = true;
+        ctx.ui.notify("pr-watch needs ghp: curl -fsSL https://raw.githubusercontent.com/eli0shin/gh-proxy/main/install.sh | bash", "warning");
+      }
+      return undefined;
+    }
     try {
       return JSON.parse(result.stdout) as T;
     } catch {
-      if (result.code === 0) ctx.ui.notify(`pr-watch could not parse ${command} output`, "warning");
+      ctx.ui.notify("pr-watch could not parse ghp output", "warning");
       return undefined;
     }
   }
 
+  async function ghpOne<T>(args: string[], ctx: ExtensionContext, cwd?: string): Promise<T | undefined> {
+    return currentValue(await ghpJson<GhpResult<T>>(args, ctx, cwd));
+  }
+
+  async function ghpFirst<T>(args: string[], ctx: ExtensionContext, cwd?: string): Promise<T | undefined> {
+    return currentValue((await ghpJson<GhpResult<T>[]>(args, ctx, cwd))?.[0]);
+  }
+
   async function ensureCurrentRepo(ctx: ExtensionContext): Promise<string | undefined> {
     currentRepoLookup ??= (async () => {
-      const repo = await execJson<{ nameWithOwner: string; defaultBranchRef?: { name?: string } | null }>(
-        "gh",
-        ["repo", "view", "--json", "nameWithOwner,defaultBranchRef"],
-        ctx,
-      );
+      const repo = await ghpOne<{ nameWithOwner: string; defaultBranch: string | null }>(["repo"], ctx);
       currentRepo = repo?.nameWithOwner;
-      currentDefaultBranch = repo?.defaultBranchRef?.name || undefined;
+      currentDefaultBranch = repo?.defaultBranch || undefined;
       return currentRepo;
     })();
     const repo = await currentRepoLookup;
@@ -1411,12 +1459,8 @@ export default function prWatch(pi: ExtensionAPI): void {
 
     const key = repo.toLowerCase();
     if (!defaultBranches.has(key)) {
-      const result = await execJson<{ defaultBranchRef?: { name?: string } | null }>(
-        "gh",
-        ["repo", "view", repo, "--json", "defaultBranchRef"],
-        ctx,
-      );
-      const name = result?.defaultBranchRef?.name;
+      const result = await ghpOne<{ defaultBranch: string | null }>(["repo", repo], ctx);
+      const name = result?.defaultBranch;
       if (!name) return undefined;
       defaultBranches.set(key, name);
     }
@@ -1528,9 +1572,11 @@ export default function prWatch(pi: ExtensionAPI): void {
     return current.ok && current.branch === pr.branch;
   }
 
+  // Called after a push by default, so the tip it reads must be newer than the push.
   async function watchCurrentBranch(
     ctx: ExtensionContext,
     repoName: string,
+    maxAgeS = 0,
   ): Promise<boolean> {
     if (fixedShaWatchActive()) {
       startPolling(ctx);
@@ -1563,7 +1609,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       return true;
     }
 
-    const branchTip = await remoteBranchTip(repoName, current.branch);
+    const branchTip = await remoteBranchTip(repoName, current.branch, ctx, maxAgeS);
     if (!branchTip.ok) {
       state.lastError = branchTip.error;
       save();
@@ -1652,13 +1698,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const repoName = (prTarget ? repositoryFromPrUrl(prTarget) : undefined) ?? repoForCurrentDirectory;
     if (!repoName) return false;
 
-    const prViewArgs = ["pr", "view"];
-    if (prTarget) prViewArgs.push(prTarget);
-    prViewArgs.push(
-      "--json",
-      "number,url,headRefName,headRefOid,headRepository,state,author,mergeable,mergeCommit,mergedAt",
-    );
-    const pr = await execJson<PrViewResult>("gh", prViewArgs, ctx);
+    const pr = await resolvePr(prTarget, ctx, options.cached ? POLL_MAX_AGE_S : 0);
 
     if (!pr && prTarget) {
       if (options.ignoreUnresolved) return false;
@@ -1711,7 +1751,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       reconcileMergeability(watched, pr.mergeable, true);
       reconcilePendingPr(watchedPr);
 
-      if (!state.orchestrationSessionId) await syncWatchedSha(ctx);
+      if (!state.orchestrationSessionId) await syncWatchedSha(ctx, options.cached ? POLL_MAX_AGE_S : 0);
       state.lastError = undefined;
       save();
       startPolling(ctx);
@@ -1835,27 +1875,23 @@ export default function prWatch(pi: ExtensionAPI): void {
     return { ok: true, branch };
   }
 
-  async function remoteBranchTip(repo: string, branch: string): Promise<BranchTipResult> {
-    const commitResult = await pi.exec(
-      "gh",
-      ["api", `repos/${repo}/commits/${encodeURIComponent(branch)}`],
-      { timeout: 30_000 },
-    );
-    if (commitResult.code !== 0) {
-      const detail = commitResult.stderr.trim() || "GitHub returned no commit";
-      return { ok: false, error: `Could not resolve the GitHub tip of branch ${branch}: ${detail}` };
-    }
-
-    try {
-      const commit = JSON.parse(commitResult.stdout) as { sha?: string };
-      if (commit.sha) return { ok: true, branch, sha: commit.sha };
-    } catch {
-      // Report one branch-tip error below.
-    }
-    return { ok: false, error: `Could not resolve the GitHub tip of branch ${branch}: invalid commit response` };
+  async function remoteBranchTip(
+    repo: string,
+    branch: string,
+    ctx: ExtensionContext,
+    maxAgeS: number,
+  ): Promise<BranchTipResult> {
+    const result = (await ghpJson<GhpResult<{ sha: string | null }>[]>(
+      ["branch-tip", "--max-age", String(maxAgeS), repo, branch],
+      ctx,
+    ))?.[0];
+    const tip = currentValue(result);
+    if (tip?.sha) return { ok: true, branch, sha: tip.sha };
+    const detail = result?.error ?? (tip ? "the branch does not exist on GitHub" : "GitHub returned no commit");
+    return { ok: false, error: `Could not resolve the GitHub tip of branch ${branch}: ${detail}` };
   }
 
-  async function syncWatchedSha(ctx: ExtensionContext): Promise<ShaSyncResult> {
+  async function syncWatchedSha(ctx: ExtensionContext, maxAgeS = POLL_MAX_AGE_S): Promise<ShaSyncResult> {
     if (fixedShaWatchActive()) return { changed: false };
     // An orchestrator watches only the merge commits of its worker PRs.
     if (state.orchestrationSessionId) return { changed: clearBranchTipWatch() };
@@ -1867,7 +1903,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     const watchability = await branchTipIsWatchable(repo, current.branch, ctx);
     if (watchability.error) return { changed: false, error: watchability.error };
     if (!watchability.watchable) return { changed: clearBranchTipWatch() };
-    const branchTip = await remoteBranchTip(repo, current.branch);
+    const branchTip = await remoteBranchTip(repo, current.branch, ctx, maxAgeS);
     if (!branchTip.ok) return { changed: false, error: branchTip.error };
     const sha = branchTip.sha;
     if (state.watchedSha?.sha === sha) return { changed: false };
@@ -1883,35 +1919,71 @@ export default function prWatch(pi: ExtensionAPI): void {
 
   async function refreshSelfLogin(ctx: ExtensionContext): Promise<void> {
     if (!cachedSelfLogin) {
-      const user = await execJson<{ login?: string }>("gh", ["api", "user"], ctx);
+      const user = await ghpOne<{ login: string }>(["whoami"], ctx);
       cachedSelfLogin = user?.login || undefined;
     }
     state.selfLogin = cachedSelfLogin;
   }
 
+  // Reads several PRs in one ghp call and remembers the results briefly, so
+  // the rest of a poll or a discovery reads them without another call.
+  async function readPrStatuses(urls: string[], ctx: ExtensionContext, maxAgeS: number): Promise<void> {
+    if (urls.length === 0) return;
+    const results = await ghpJson<GhpResult<GhpPrStatus>[]>(["pr", "status", "--max-age", String(maxAgeS), ...urls], ctx);
+    const at = Date.now();
+    urls.forEach((url, index) => {
+      const result = results?.[index];
+      if (result) statusMemo.set(url, { result, at });
+      else statusMemo.delete(url);
+    });
+  }
+
+  async function prStatus(url: string, ctx: ExtensionContext, maxAgeS = POLL_MAX_AGE_S): Promise<GhpResult<GhpPrStatus> | undefined> {
+    const memo = statusMemo.get(url);
+    if (maxAgeS > 0 && memo && Date.now() - memo.at < STATUS_MEMO_MS) return memo.result;
+    await readPrStatuses([url], ctx, maxAgeS);
+    return statusMemo.get(url)?.result;
+  }
+
+  // gh pr view [target]: a PR URL, a number in the current repository, a
+  // branch name, or nothing for the current branch (in cwd when given).
+  async function resolvePr(
+    target: string | undefined,
+    ctx: ExtensionContext,
+    maxAgeS: number,
+    cwd?: string,
+  ): Promise<PrViewResult | undefined> {
+    let url: string | undefined;
+    if (target && /^https?:\/\//.test(target)) {
+      url = target;
+    } else if (target && /^\d+$/.test(target)) {
+      const repo = await ensureCurrentRepo(ctx);
+      if (!repo) return undefined;
+      url = `https://github.com/${repo}/pull/${target}`;
+    } else {
+      const args = ["pr", "find", "--max-age", String(maxAgeS)];
+      if (target) {
+        const repo = await ensureCurrentRepo(ctx);
+        if (!repo) return undefined;
+        args.push(repo, target);
+      }
+      const found = await ghpFirst<{ pullRequest: { url: string } | null }>(args, ctx, cwd);
+      url = found?.pullRequest?.url;
+      if (!url) return undefined;
+    }
+    const status = currentValue(await prStatus(url, ctx, maxAgeS));
+    return status && prViewFromStatus(status);
+  }
+
+  // An empty list means the head commit has no checks; undefined means unknown.
   async function fetchChecks(watched: WatchedPrState, ctx: ExtensionContext): Promise<Check[] | undefined> {
-    return execJson<Check[]>("gh", [
-      "pr",
-      "checks",
-      watched.pr.url,
-      "--json",
-      "name,state,bucket,workflow,link,completedAt",
-    ], ctx);
+    return currentValue(await prStatus(watched.pr.url, ctx))?.checks;
   }
 
   async function fetchRunsForSha(ctx: ExtensionContext): Promise<WorkflowRun[] | undefined> {
     const watched = state.watchedSha;
     if (!watched) return undefined;
-    const runs = await execJson<WorkflowRun[]>("gh", [
-      "run",
-      "list",
-      "--commit",
-      watched.sha,
-      "-R",
-      watched.repo,
-      "--json",
-      "databaseId,attempt,name,workflowName,status,conclusion,url,event,createdAt,updatedAt",
-    ], ctx);
+    const runs = await ghpFirst<WorkflowRun[]>(["runs", "--max-age", String(POLL_MAX_AGE_S), watched.repo, watched.sha], ctx);
     return runs && relevantRuns(runs, watched);
   }
 
@@ -2071,42 +2143,13 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function fetchActivities(watched: WatchedPrState, ctx: ExtensionContext): Promise<TrackedActivity[] | undefined> {
-    const { repo, number } = watched.pr;
-    const [issueComments, reviews, reviewComments] = await Promise.all([
-      fetchActivityList(`repos/${repo}/issues/${number}/comments?per_page=100`, ctx),
-      fetchActivityList(`repos/${repo}/pulls/${number}/reviews?per_page=100`, ctx),
-      fetchActivityList(`repos/${repo}/pulls/${number}/comments?per_page=100`, ctx),
-    ]);
-    if (!issueComments || !reviews || !reviewComments) return undefined;
-
+    const status = currentValue(await prStatus(watched.pr.url, ctx));
+    if (!status) return undefined;
     return [
-      ...trackActivities("issue-comment", issueComments),
-      ...trackActivities("review", reviews),
-      ...trackActivities("review-comment", reviewComments),
+      ...trackActivities("issue-comment", activitiesFromGhp(status.issueComments)),
+      ...trackActivities("review", activitiesFromGhp(status.reviews)),
+      ...trackActivities("review-comment", activitiesFromGhp(status.reviewComments)),
     ];
-  }
-
-  // A failed call (rate limit, 404) prints GitHub's JSON error object, so only
-  // a 200 list or a 304 for a cached list counts as a successful fetch.
-  async function fetchActivityList(endpoint: string, ctx: ExtensionContext): Promise<Activity[] | undefined> {
-    const cached = activityCache.get(endpoint);
-    const args = ["api", endpoint, "--include"];
-    if (cached) args.push("-H", `If-None-Match: ${cached.etag}`);
-    const result = await pi.exec("gh", args, { timeout: 30_000 });
-    const response = parseGhApiResponse(result.stdout);
-    if (response?.status === 304 && cached) return cached.activities;
-    if (response?.status !== 200) return undefined;
-    let activities: unknown;
-    try {
-      activities = JSON.parse(response.body);
-    } catch {
-      ctx.ui.notify("pr-watch could not parse gh output", "warning");
-      return undefined;
-    }
-    if (!Array.isArray(activities)) return undefined;
-    if (response.etag) activityCache.set(endpoint, { etag: response.etag, activities });
-    else activityCache.delete(endpoint);
-    return activities;
   }
 
   function trackActivities(kind: ActivityKind, activities: Activity[] | undefined): TrackedActivity[] {
@@ -2599,20 +2642,17 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   async function pollPr(watched: WatchedPrState, ctx: ExtensionContext): Promise<PrPollResult> {
-    const latest = await execJson<Omit<PrViewResult, "number" | "url" | "headRefName"> & { headRefName?: string }>(
-      "gh",
-      [
-        "pr",
-        "view",
-        watched.pr.url,
-        "--json",
-        "headRefOid,headRefName,headRepository,state,author,mergeable,mergeCommit,mergedAt",
-      ],
-      ctx,
-    );
+    const result = await prStatus(watched.pr.url, ctx);
+    const status = currentValue(result);
+    const latest = status && prViewFromStatus(status);
 
     if (!isWatchedPr(watched)) return { addedCount: 0 };
-    if (!latest) return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}` };
+    if (!latest) {
+      // Dropping feedback this session must not act on needs only the login.
+      reconcilePendingFeedback(watched);
+      const detail = result?.error ? `: ${result.error}` : "";
+      return { addedCount: 0, error: `Could not refresh watched PR ${watched.pr.url}${detail}` };
+    }
     if (latest.state === "MERGED") {
       return {
         addedCount: 0,
@@ -2702,6 +2742,7 @@ export default function prWatch(pi: ExtensionAPI): void {
 
       // Poll watched PRs before reconciling membership: a worker can drop a
       // merged PR from its snapshot before this session observes the merge.
+      await readPrStatuses(state.watchedPrs.map((watched) => watched.pr.url), ctx, POLL_MAX_AGE_S);
       for (const watched of [...state.watchedPrs]) {
         try {
           const result = await pollPr(watched, ctx);
@@ -2723,7 +2764,7 @@ export default function prWatch(pi: ExtensionAPI): void {
           const repo = await ensureCurrentRepo(ctx);
           if (!repo) {
             errors.push("Could not resolve the current GitHub repository");
-          } else if (!(await watchCurrentBranch(ctx, repo)) && state.lastError) {
+          } else if (!(await watchCurrentBranch(ctx, repo, POLL_MAX_AGE_S)) && state.lastError) {
             errors.push(state.lastError);
           }
         }
@@ -2733,7 +2774,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       state.lastPollAt = Date.now();
       state.lastError = errors.length > 0 ? errors.join("; ") : undefined;
       if (!hasTargets()) stopPolling(ctx);
-      else reschedulePolling(ctx);
       save();
       await publishWorkerSnapshot(ctx);
       setStatus(ctx);
@@ -2832,7 +2872,12 @@ export default function prWatch(pi: ExtensionAPI): void {
     options: DiscoverOptions = {},
   ): Promise<boolean> {
     if (!directory || resolve(directory) === resolve(ctx.cwd)) return false;
-    const pr = await execJson<{ url?: string; state?: string }>("gh", ["pr", "view", "--json", "url,state"], ctx, directory);
+    const found = await ghpFirst<{ pullRequest: { url: string; state: string } | null }>(
+      ["pr", "find", "--max-age", "0", "--dir", directory],
+      ctx,
+      directory,
+    );
+    const pr = found?.pullRequest;
     if (pr?.state !== "OPEN" || !pr.url) return false;
     return discover(ctx, pr.url, options);
   }
@@ -2925,7 +2970,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     const savedSha = state.watchedSha;
     if (!state.orchestrationSessionId) state.watchedSha = undefined;
     for (const watched of savedPrs) {
-      await discover(ctx, watched.pr.url, { alreadyEnrolled: true });
+      const refreshed = await discover(ctx, watched.pr.url, { alreadyEnrolled: true, cached: true });
+      // GitHub can be unreachable or rate-limited at startup. Dropping feedback
+      // this session must not act on needs only the login.
+      if (!refreshed && isWatchedPr(watched)) {
+        await refreshSelfLogin(ctx);
+        reconcilePendingFeedback(watched);
+      }
     }
     await discoverWorkerPr(ctx);
     const reconciliationErrors = await reconcileOrchestrationMembership(ctx);
@@ -3110,7 +3161,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
     }
     if (!hasTargets()) stopPolling(ctx);
-    else reschedulePolling(ctx);
     setStatus(ctx);
     return `Stopped watching PR ${repo}#${pr.number}. Automatic discovery cannot re-add it until explicit opt-in or /pr-watch reset.`;
   }
@@ -3171,7 +3221,6 @@ export default function prWatch(pi: ExtensionAPI): void {
       save();
     }
     if (!hasTargets()) stopPolling(ctx);
-    else reschedulePolling(ctx);
     setStatus(ctx);
     return orchestrationId;
   }
