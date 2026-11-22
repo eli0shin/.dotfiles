@@ -1,17 +1,22 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared } from "herdr";
+import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared, checking, home } from "herdr";
 import { createNavigator } from "./navigation.js";
 import { focusNumberedAgent, agentOrder, ORDER_KEY } from "./agent-order.js";
 import { selectTab } from "./tab-order.js";
 import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
+import { createDeadSpaces } from "./dead-spaces.js";
 
 export default class NavigatorStatus extends View {
   init(_props, cx) {
     this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     this.tabCloseFocus = createTabCloseFocus({ run });
     this.seeSpaces(spaces(), agents());
+    if (!checking()) {
+      const deadSpaces = createDeadSpaces({ spaces, terminals, exec, run, notify, home });
+      cx.timer.every(30000, (cx) => cx.spawn(() => deadSpaces.sweep()));
+    }
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();

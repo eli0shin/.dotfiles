@@ -244,6 +244,7 @@ herdr-app check ~/.config/herdr-app/mods/navigator-status
 herdr-app check ~/.config/herdr-app/mods/eli-tabs
 node tests/herdr-app-copy-mode.mjs
 herdr-app check ~/.config/herdr-app/mods/copy-mode
+node tests/herdr-app-dead-spaces.mjs
 ```
 
 The old Lumen Alt+J/K shell aliases also depend on the legacy pane API and
@@ -265,6 +266,29 @@ closes. In a space on another machine, it lists that machine's folders and
 makes the space there. The tab picker's "new space" rows still run plain
 `space.new`. Check with `node tests/herdr-app-new-space.mjs` and
 `herdr-app check ~/.config/herdr-app/mods/new-space`.
+
+### Closing spaces whose folder was deleted
+
+`repos clean` closes a worktree's space, but other ways of removing a
+worktree don't tell Herdr: `gh pr merge --delete-branch` run from the main
+checkout removes the PR branch's linked worktree itself, as do a plain
+`git worktree remove` and `rm -rf`. The space then lingers with a shell in a
+folder that no longer exists.
+
+In the `eli` layout, `navigator-status` (`dead-spaces.js`) checks every 30
+seconds and closes such a space with a toast naming it. A space qualifies only
+when all of these hold:
+
+- it is on this computer and isn't the shown space;
+- every live terminal in it is a plain shell: no agent, status report, editor
+  or other program in front;
+- its folder (home, for a space made without one) and each terminal's live
+  folder are all gone.
+
+It must qualify on two sweeps in a row with the same folders, so it closes 30–60
+seconds after the folder goes, and a folder that is only briefly missing keeps
+its space. A failed folder check closes nothing. Check with
+`node tests/herdr-app-dead-spaces.mjs`.
 
 ### Spaces picker and numbered agents
 
