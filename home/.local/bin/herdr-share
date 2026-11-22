@@ -18,34 +18,47 @@ herdr_args=()
 if [[ -n ${2:-} ]]; then
     herdr_args=(--session "$2")
 fi
-for dependency in herdr jq ssh; do
+for dependency in jq ssh; do
     command -v "$dependency" >/dev/null || {
         printf 'herdr-share: missing dependency: %s\n' "$dependency" >&2
         exit 1
     }
 done
 
-status=$(herdr "${herdr_args[@]}" status server --json)
-api_socket=$(jq -er 'select(.running == true) | .socket | select(type == "string" and startswith("/"))' <<<"$status") || {
-    printf 'herdr-share: start your Herdr session first.\n' >&2
+# Share whichever of the TUI server and herdr-core is already running; never
+# start either. A named TUI session is an explicit request, so it must be up.
+api_socket=
+client_socket=
+if command -v herdr >/dev/null; then
+    status=$(herdr "${herdr_args[@]}" status server --json) || status=
+    api_socket=$(jq -er 'select(.running == true) | .socket | select(type == "string" and startswith("/"))' <<<"$status" 2>/dev/null) || api_socket=
+fi
+if [[ -z $api_socket && -n ${2:-} ]]; then
+    printf 'herdr-share: Herdr session %s is not running.\n' "$2" >&2
     exit 1
-}
-# Match Herdr's filename file_stem(), including extensionless overrides and
-# leading-dot filenames. Never strip an extension from a parent directory.
-filename=${api_socket##*/}
-stem=${filename%.*}
-[[ -n $stem ]] || stem=$filename
-client_socket="${api_socket%/*}/$stem-client.sock"
-if [[ -z ${HERDR_SOCKET_PATH:-} && -z ${2:-} && -n ${HERDR_CLIENT_SOCKET_PATH:-} ]]; then
-    client_socket=$HERDR_CLIENT_SOCKET_PATH
+fi
+shared_sockets=()
+if [[ -n $api_socket ]]; then
+    # Match Herdr's filename file_stem(), including extensionless overrides and
+    # leading-dot filenames. Never strip an extension from a parent directory.
+    filename=${api_socket##*/}
+    stem=${filename%.*}
+    [[ -n $stem ]] || stem=$filename
+    client_socket="${api_socket%/*}/$stem-client.sock"
+    if [[ -z ${HERDR_SOCKET_PATH:-} && -z ${2:-} && -n ${HERDR_CLIENT_SOCKET_PATH:-} ]]; then
+        client_socket=$HERDR_CLIENT_SOCKET_PATH
+    fi
+    if [[ -z ${2:-} && ( ! -S $api_socket || ! -S $client_socket ) ]]; then
+        api_socket=
+        client_socket=
+    else
+        shared_sockets+=("$api_socket" "$client_socket")
+    fi
 fi
 # The desktop app uses herdr-core, not the TUI server. Forward its existing
-# socket too when present; custom endpoints can opt in explicitly. Do not start
-# a core or change the original TUI sharing behavior when it is absent.
+# socket when present; custom endpoints can opt in explicitly.
 core_session=${HC_SESSION:-default}
 core_socket=${HERDR_SHARE_HC_SOCKET:-${HC_SOCKET:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-core/$core_session/$core_session.sock}}
-extra_forwards=()
-shared_sockets=("$api_socket" "$client_socket")
 if [[ -S $core_socket ]]; then
     shared_sockets+=("$core_socket")
 elif [[ -n ${HERDR_SHARE_HC_SOCKET:-} ]]; then
@@ -53,6 +66,10 @@ elif [[ -n ${HERDR_SHARE_HC_SOCKET:-} ]]; then
     exit 1
 else
     core_socket=
+fi
+if (( ${#shared_sockets[@]} == 0 )); then
+    printf 'herdr-share: start herdr-core first.\n' >&2
+    exit 1
 fi
 for socket in "${shared_sockets[@]}"; do
     if [[ ! -S $socket ]]; then
@@ -106,9 +123,13 @@ REMOTE
             exit 1
         fi
 
-        extra_forwards=()
+        forwards=()
+        if [[ -n $api_socket ]]; then
+            forwards+=(-R "$remote_dir/herdr.sock:$api_socket"
+                -R "$remote_dir/herdr-client.sock:$client_socket")
+        fi
         if [[ -n $core_socket ]]; then
-            extra_forwards=(-R "$remote_dir/hc.sock:$core_socket")
+            forwards+=(-R "$remote_dir/hc.sock:$core_socket")
         fi
         # Quote for the remote login shell (which may be Fish), not Bash's printf %%q.
         quoted_remote_dir="'${remote_dir//\'/\'\\\'\'}'"
@@ -117,9 +138,7 @@ REMOTE
         # only for preparation, and explicitly allow forwarding on the tunnel.
         ssh "${ssh_options[@]}" -o ClearAllForwardings=no \
             -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177 \
-            -R "$remote_dir/herdr.sock:$api_socket" \
-            -R "$remote_dir/herdr-client.sock:$client_socket" \
-            "${extra_forwards[@]}" \
+            "${forwards[@]}" \
             "$target" "sh -s -- $quoted_remote_dir" <<'REMOTE' &
 set -eu
 dir=$1
@@ -138,7 +157,7 @@ trap 'exit 0' HUP INT TERM PIPE
     exit 1
 }
 ln -sfn "$dir" "$base/current"
-printf 'Ready. SSH into this host and run work-herdr.\n'
+printf 'Ready.\n'
 # Periodic writes let the remote shell notice a disconnected SSH channel and
 # clean up its sockets. This uses no daemon, sudo, sshd, or macOS settings.
 while sleep 15; do
