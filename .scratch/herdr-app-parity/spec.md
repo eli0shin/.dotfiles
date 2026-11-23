@@ -2,18 +2,17 @@
 
 Status: open
 
-Things Herdr App (0.1.16) can't do that the Herdr TUI could, or that block a keyboard-only, dotfiles-managed setup. Upstream issues are in `herdrdev/herdr-app` unless they say `herdr-core`.
+Things Herdr App (0.1.17) can't do that the Herdr TUI could, or that block a keyboard-only, dotfiles-managed setup. Upstream issues are in `herdrdev/herdr-app` unless they say `herdr-core`.
 
 ## Blocking
 
-| Gap | Upstream |
-|---|---|
-| **Keyboard pane resize.** Panes can only be resized by dragging the divider. Since 0.1.14, `layout.resize --id <pane> --weight N` sets a pane's share of its split, but only to an absolute size. Mods still can't see pane geometry or the parent split in 0.1.16, so they can't step a divider. | [#117](https://github.com/herdrdev/herdr-app/issues/117). [PR #991](https://github.com/herdrdev/herdr-app/pull/991) by romangolev (Nov 13) adds `pane.resize {direction, px?, pane?}`, which moves the nearest divider by 10px by default, with Cmd+Ctrl+arrow defaults on macOS. Superseded: [PR #1087](https://github.com/herdrdev/herdr-app/pull/1087) by darkwebber merged `pane.resize {direction, pane?, px?}` to master on Nov 16 (`d1dee7f`, after 0.1.16). It moves the nearest border 40px by default, in the direction given whichever side of it the pane is on, like tmux. It ships no default keys; once released, bind Alt+Shift+H/J/K/L in `keys.json`. #991 and #117 are still open. |
+None as of 0.1.17.
 
 ## Resolved
 
 | Gap | Fix |
 |---|---|
+| **Keyboard pane resize.** The TUI had Alt+Shift+H/J/K/L; the app could only drag dividers. | 0.1.17 ships `pane.resize {direction, pane?, px?}` ([#1087](https://github.com/herdrdev/herdr-app/pull/1087)), which moves the nearest divider 40px. `keys.json` binds Alt+Shift+H/J/K/L to it. |
 | **Line height was hard-coded** to 1.15 × the font height, which was taller than Ghostty. | 0.1.15 sizes rows from the font's own metrics, matching Ghostty (`738fce4`, [#66](https://github.com/herdrdev/herdr-app/issues/66)). On master after 0.1.15, `68188d1` adds a `terminal_line_height` multiplier (default 1.0) and `6a0cbc0` centres glyphs in their cells the way Ghostty does. |
 
 ## Worked around

@@ -10,6 +10,10 @@ for (const [key, direction] of Object.entries({ h: 'left', j: 'down', k: 'up', l
   assert.equal(binding, `navigator-status.${direction}`, `Ctrl+${key} must use the Neovim-aware bridge`);
 }
 
+for (const [key, direction] of Object.entries({ h: 'left', j: 'down', k: 'up', l: 'right' })) {
+  assert.equal(keys.global[`alt-shift-${key}`], `pane.resize:${direction}`, `Alt+Shift+${key} resizes panes, like the TUI`);
+}
+
 const { createNavigator } = await import(new URL('mods/navigator-status/navigation.js', root));
 let focus = { terminal: 't1', pane: 'p1', tab: 'tab1' };
 let records = [{ address: 't1', labels: {} }];

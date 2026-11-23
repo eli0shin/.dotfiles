@@ -207,6 +207,11 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | B | Toggle sidebar |
 | Ctrl+L | Send Ctrl+L to the terminal (clear shell screen) |
 
+Alt+Shift+H/J/K/L resizes the focused pane, as in the TUI: `pane.resize`
+(Herdr 0.1.17) moves the nearest divider 40px left, down, up or right,
+whichever side of it the pane is on. It needs Option to act as Alt, which
+Herdr does by default on US and ABC layouts (`option_as_alt`).
+
 Ctrl+; (`eli` layout) jumps to any agent in two keys: it opens the `agent-jump`
 bar, and the label each Agents row always shows brightens: 1–9 and 0, which
 Ctrl+G Shift+1–0 also reach, then a, s, d, f… (home row first), or two
@@ -427,7 +432,6 @@ terminal text. Esc reaches the mod through the `mod:copy-mode` section of
 ### Not migrated: no built-in equivalent
 
 - Ctrl+G, E: edit scrollback. Cmd+F searches scrollback.
-- Alt+Shift+H/J/K/L: resize panes (drag split dividers instead).
 - Annotation/document-review plugin keys: Ctrl+G followed by A, Shift+A,
   Ctrl+A, M, O or Shift+O. They need a separate mod/CLI integration.
 - The old pane navigation-mode H/J/K/L bindings. The tab/agent picker
