@@ -1016,12 +1016,12 @@ test("the terminal label carries the role, orchestration, ticket, PRs, and pause
   const watched = (repo: string, number: number) => ({ pr: { repo, number, url: `https://github.com/${repo}/pull/${number}`, branch: "b", headSha: "s" }, seenActivityIds: [] });
   const label = (state: object, repo?: string) => terminalLabelValue({ ...base, ...state } as any, repo);
   assert.equal(label({}), "");
-  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104), watched("another/tool", 7)] }, "eli0shin/repos"), '{"prs":["#104","tool#7"]}');
-  assert.equal(label({ mode: "paused", watchedPrs: [watched("eli0shin/repos", 104)] }, "eli0shin/repos"), '{"prs":["#104"],"paused":true}');
+  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104), watched("another/tool", 7)] }, "eli0shin/repos"), '{"prs":["#104","tool#7"],"refs":["eli0shin/repos#104","another/tool#7"]}');
+  assert.equal(label({ mode: "paused", watchedPrs: [watched("eli0shin/repos", 104)] }, "eli0shin/repos"), '{"prs":["#104"],"refs":["eli0shin/repos#104"],"paused":true}');
   assert.equal(label({ mode: "off", watchedPrs: [watched("eli0shin/repos", 104)] }), "");
   assert.equal(label({ watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "", mergedPr: { number: 9, url: "" } } }), '{"sha":"merge of #9"}');
   assert.equal(label({ watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "" } }), '{"sha":"SHA abcdef1"}');
-  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104)], watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "" } }, "eli0shin/repos"), '{"prs":["#104"]}');
+  assert.equal(label({ watchedPrs: [watched("eli0shin/repos", 104)], watchedSha: { repo: "eli0shin/repos", sha: "abcdef123", runsKey: "" } }, "eli0shin/repos"), '{"prs":["#104"],"refs":["eli0shin/repos#104"]}');
   assert.equal(label({ workerOrchestrationSessionId: "o1", mode: "off" }), '{"role":"worker","orchestration":"o1"}');
   const snapshot = (branch: string) => ({ version: 2, orchestrationId: "o1", workerSessionId: branch, revision: 1, branch, watchedPrs: [] });
   assert.equal(
@@ -1060,8 +1060,8 @@ test("an interactive Pi in a herdr-core terminal labels it whenever the label ch
     assert.deepEqual(await lines(3), [
       // Clears whatever an earlier Pi in this terminal left.
       `label t7 ${TERMINAL_LABEL}=`,
-      `label t7 ${TERMINAL_LABEL}={"prs":["#104"]}`,
-      `label t7 ${TERMINAL_LABEL}={"prs":["#104","#105"]}`,
+      `label t7 ${TERMINAL_LABEL}={"prs":["#104"],"refs":["eli0shin/repos#104"]}`,
+      `label t7 ${TERMINAL_LABEL}={"prs":["#104","#105"],"refs":["eli0shin/repos#104","eli0shin/repos#105"]}`,
     ]);
     await harness.shutdown();
   } finally {

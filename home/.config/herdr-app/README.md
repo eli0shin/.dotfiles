@@ -201,6 +201,7 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | P / N / 1–9 | Previous / next / numbered tab (skipping agents' tabs in `eli`) |
 | Shift+1–9 / Shift+0 | Focus agent N / the tenth, in the Agents list order (`eli` layout) |
 | / | Choose which machines' agents the Agents list shows (`agent-machines`) |
+| F | Find which agent watches a PR (`pr-finder`) |
 | Shift+Q | Close tab |
 | V / H | Split right / down |
 | Q | Close pane |
@@ -394,6 +395,20 @@ agents leave the list, its numbers, agent-jump, Ctrl+G Shift+1–0 and
 tab-close focus; `agent.next`/`agent.prev` (Cmd+[ / ]) still reach them, since
 the app appends agents the list leaves out. Check with
 `node tests/herdr-app-agent-machines.mjs`.
+
+### Finding a PR's agent (Ctrl+G, F)
+
+The Agents list shows one PR per row, so `pr-finder` answers "which agent
+owns this PR?": type a PR number, a repo, or both (`2032`, `ffs 2032`,
+`tool#7`). Every term must match one PR; a number matches the PR number
+(exact first), words match the repo (`match.js`). Rows look like the Agents
+list's without the status, jump label or time, with the matched PRs as chips;
+an orchestrator keeps its "N workers" chip, so a PR it shares with a worker
+shows both and tells them apart. Enter focuses the agent. Machines hidden in
+the Agents list stay hidden. Pi's PR watch label carries each PR's full
+`refs` (`owner/repo#N`) for this; a Pi from before that falls back to its
+space's name for `#N`. `names.js`, `watch.js` and `colors.js` are copies of
+eli-agents'. Check with `node tests/herdr-app-pr-finder.mjs`.
 
 ### Review view (Cmd+R)
 

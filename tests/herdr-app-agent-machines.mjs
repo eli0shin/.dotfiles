@@ -57,7 +57,7 @@ test('the copies of the filter key and machineOf agree, and Ctrl+G, / opens the 
     assert.ok(first, `${pattern} missing`);
     for (const other of rest) assert.equal(other, first);
   };
-  const filtering = ['mods/eli-agents/main.js', 'mods/agent-machines/main.js', 'mods/navigator-status/agent-order.js'];
+  const filtering = ['mods/eli-agents/main.js', 'mods/agent-machines/main.js', 'mods/navigator-status/agent-order.js', 'mods/pr-finder/main.js'];
   agree([...filtering, 'mods/eli-chrome/main.js'], /const HIDDEN_MACHINES_KEY = .*$/m);
   agree(filtering, /const machineOf = .*$/m);
   assert.equal(JSON.parse(read('keys.json')).global['ctrl-g /'], 'mod.open:agent-machines');

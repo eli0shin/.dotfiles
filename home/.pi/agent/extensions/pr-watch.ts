@@ -419,6 +419,8 @@ export function terminalLabelValue(state: WatchState, currentRepo: string | unde
   const orchestration = state.orchestrationSessionId ?? state.workerOrchestrationSessionId;
   const watching = state.mode !== "off";
   const prs = watching ? state.watchedPrs.map(({ pr }) => prStatusIdentity(pr, currentRepo)) : [];
+  // The same PRs in full (owner/repo#N), so a search can find "#N" by its repo.
+  const refs = watching ? state.watchedPrs.map(({ pr }) => `${pr.repo}#${pr.number}`) : [];
   // As in the status line, a SHA watch shows only without a watched PR.
   const sha = watching && prs.length === 0 && state.watchedSha
     ? state.watchedSha.mergedPr ? `merge of #${state.watchedSha.mergedPr.number}` : `SHA ${state.watchedSha.sha.slice(0, 7)}`
@@ -436,7 +438,7 @@ export function terminalLabelValue(state: WatchState, currentRepo: string | unde
   return JSON.stringify({
     ...(orchestration && { role: state.orchestrationSessionId ? "orchestrator" : "worker", orchestration }),
     ...(ticket && { ticket }),
-    ...(prs.length > 0 && { prs }),
+    ...(prs.length > 0 && { prs, refs }),
     ...(sha && { sha }),
     ...(state.mode === "paused" && { paused: true }),
   });

@@ -43,6 +43,14 @@
 /mods/eli-chrome/*
 !/mods/eli-chrome/main.js
 !/mods/eli-chrome/mod.json
+!/mods/pr-finder/
+/mods/pr-finder/*
+!/mods/pr-finder/main.js
+!/mods/pr-finder/mod.json
+!/mods/pr-finder/match.js
+!/mods/pr-finder/names.js
+!/mods/pr-finder/watch.js
+!/mods/pr-finder/colors.js
 !/mods/agent-machines/
 /mods/agent-machines/*
 !/mods/agent-machines/main.js
