@@ -274,6 +274,8 @@ nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status
 herdr-app check ~/.config/herdr-app/mods/eli-tabs
 node tests/herdr-app-copy-mode.mjs
+node tests/herdr-app-nvim-links.mjs
+herdr-app check ~/.config/herdr-app/mods/nvim-links
 herdr-app check ~/.config/herdr-app/mods/copy-mode
 node tests/herdr-app-dead-spaces.mjs
 ```
@@ -407,6 +409,18 @@ it's found, on any machine) and ends when review quits, so the next Cmd+R
 starts a fresh one; Herdr core keeps it running across app restarts. A review
 started by hand in a shell isn't labelled, so it stays an ordinary tab. Check
 with `node tests/herdr-app-review-view.mjs`.
+
+### File links open in Neovim
+
+Cmd-click a file path in a terminal and `nvim-links` opens it in Neovim, in a
+new split to the right of the pane you clicked in. A relative path is taken
+from the folder of what runs in that pane; Herdr resolves it, along with `~/`.
+`file.rs:42` and `file.rs:42:7` put the cursor there. Folders, images, PDFs,
+media and archives, and paths that don't exist here, keep Herdr's usual opener
+(Finder, Preview, QuickTime). In a pane on another machine a click opens
+nothing: Herdr has no opener there and this mod only reads local files. The `eli` layout turns it on with
+`link_handlers`. Check with `node tests/herdr-app-nvim-links.mjs` and
+`herdr-app check ~/.config/herdr-app/mods/nvim-links`.
 
 ### Copy mode
 

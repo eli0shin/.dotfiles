@@ -72,3 +72,8 @@
 !/mods/new-space/main.js
 !/mods/new-space/mod.json
 !/mods/new-space/folders.js
+!/mods/nvim-links/
+/mods/nvim-links/*
+!/mods/nvim-links/link.js
+!/mods/nvim-links/open.js
+!/mods/nvim-links/mod.json

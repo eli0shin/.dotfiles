@@ -5,7 +5,6 @@
     "version": "0.1.13"
   },
   "type": "row",
-  "preview": "layouts/eli.svg",
   "children": [
     {
       "id": "sidebar",
@@ -76,8 +75,7 @@
                 "pane": {
                   "background": "background",
                   "radius": 0,
-                  "gap": 1,
-                  "lone": false
+                  "gap": 1
                 }
               },
               "background": "border"
@@ -142,5 +140,9 @@
   "traffic_lights": [
     -80,
     4
+  ],
+  "preview": "layouts/eli.svg",
+  "link_handlers": [
+    "nvim-links"
   ]
 }
