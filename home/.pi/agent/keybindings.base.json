@@ -3,6 +3,8 @@
   "app.clear": [
     "ctrl+x"
   ],
+  "app.model.cycleForward": [],
+  "app.model.cycleBackward": [],
   "app.editor.external": "ctrl+e",
   "app.clipboard.pasteImage": "ctrl+shift+v",
   "tui.altScreen.bottom": [
