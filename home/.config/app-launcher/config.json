@@ -12,10 +12,15 @@
       "fin",
       "find"
     ],
+    "Google Calendar": [
+      "cal",
+      "calendar"
+    ],
     "Google Chrome": [
       "chrome",
       "browser",
-      "ch"
+      "ch",
+      "c"
     ],
     "System Settings": [
       "system"
