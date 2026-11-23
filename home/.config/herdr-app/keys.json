@@ -96,6 +96,8 @@
     "ctrl-l": "pane.go:right"
   },
   "layout:eli": {
+    "ctrl-g o": "navigator-status.jump-list-back",
+    "ctrl-g i": "navigator-status.jump-list-forward",
     "ctrl-h": "navigator-status.left",
     "ctrl-j": "navigator-status.down",
     "ctrl-k": "navigator-status.up",

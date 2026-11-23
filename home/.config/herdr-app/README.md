@@ -201,6 +201,7 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | P / N / 1–9 | Previous / next / numbered tab (skipping agents' tabs in `eli`) |
 | Shift+1–9 / Shift+0 | Focus agent N / the tenth, in the Agents list order (`eli` layout) |
 | / | Choose which machines' agents the Agents list shows (`agent-machines`) |
+| O / I | Back / forward through the jump list of tabs (`eli` layout) |
 | F | Find which agent watches a PR (`pr-finder`) |
 | Shift+Q | Close tab |
 | V / H | Split right / down |
@@ -223,6 +224,19 @@ the keyboard, so letters never reach the terminal. It reads the order
 sidebar is shown for the jump and hidden again after. `jump.js` makes the
 labels in both mods (sandboxing needs two identical copies). Check with
 `node tests/herdr-app-agent-jump.mjs`.
+
+### Jump list
+
+Ctrl+G O and Ctrl+G I go back and forward through the tabs you've looked at,
+like Neovim's Ctrl+O and Ctrl+I. A tab joins the jump list once it has been on
+screen for a full second, however it got there: a tab key, an agent jump, a
+click, a review opening its diff. Moving between panes in a tab doesn't
+count, and a tab you come back to shows the pane you left focused. It behaves
+like Neovim's default list, not `jumpoptions=stack`: a tab is in it once, where
+you last left it, and going somewhere new after jumping back drops nothing.
+Closed tabs are skipped; the list keeps the last 100 and starts empty when
+Herdr starts. `navigator-status` keeps it (`jump-list.js`); check with
+`node tests/herdr-app-jump-list.mjs`.
 
 ### Neovim-aware Ctrl+H/J/K/L
 
@@ -267,6 +281,7 @@ uv run tests/herdr-font-preparation.py
 # macOS after preparing fonts: verify native normal/bold/italic face selection.
 swift tests/herdr-app-font.swift
 node tests/herdr-app-navigation.mjs
+node tests/herdr-app-jump-list.mjs
 node tests/herdr-app-tab-icons.mjs
 node tests/herdr-app-agent-tabs.mjs
 node tests/herdr-app-session-names.mjs

@@ -26,6 +26,7 @@
 !/mods/navigator-status/agent-order.js
 !/mods/navigator-status/preferences.js
 !/mods/navigator-status/tab-close-focus.js
+!/mods/navigator-status/jump-list.js
 !/mods/navigator-status/tab-order.js
 !/mods/navigator-status/dead-spaces.js
 !/mods/navigator-status/review-view.js

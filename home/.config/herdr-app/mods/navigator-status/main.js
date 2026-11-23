@@ -7,12 +7,14 @@ import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
 import { createDeadSpaces } from "./dead-spaces.js";
 import { createReviewView, reviewTabIds } from "./review-view.js";
+import { createJumpList } from "./jump-list.js";
 
 export default class NavigatorStatus extends View {
   init(_props, cx) {
     this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     this.tabCloseFocus = createTabCloseFocus({ run });
     this.review = createReviewView({ spaces, focused, terminals, run });
+    this.jumpList = createJumpList();
     this.seeSpaces(spaces(), agents());
     if (!checking()) {
       const deadSpaces = createDeadSpaces({ spaces, terminals, exec, run, notify, home });
@@ -22,6 +24,13 @@ export default class NavigatorStatus extends View {
       for (;;) {
         const command = await nextCommand();
         if (applySharedPreferences(command, { setShared, notify })) continue;
+        if (command === "jump-list-back" || command === "jump-list-forward") {
+          const open = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+          const live = (tab) => open.has(tab);
+          const tab = command === "jump-list-back" ? this.jumpList.back(live) : this.jumpList.forward(live);
+          if (tab) run("tab.select", { id: tab });
+          continue;
+        }
         const order = (list) => agentOrder(list, { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY), hidden: shared(HIDDEN_MACHINES_KEY) });
         if (this.review.handle(command)) continue;
         // The review's tab is left out of the tab keys, as agents' tabs are.
@@ -46,6 +55,7 @@ export default class NavigatorStatus extends View {
   render() {
     this.navigator.onTerminalsChanged();
     this.seeSpaces(spaces(), agents());
+    this.jumpList.shown(focused()?.tab, Date.now());
     return div().size_full();
   }
 }
