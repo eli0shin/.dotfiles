@@ -416,9 +416,14 @@ Cmd-click a file path in a terminal and `nvim-links` opens it in Neovim, in a
 new split to the right of the pane you clicked in. A relative path is taken
 from the folder of what runs in that pane; Herdr resolves it, along with `~/`.
 `file.rs:42` and `file.rs:42:7` put the cursor there. Folders, images, PDFs,
-media and archives, and paths that don't exist here, keep Herdr's usual opener
-(Finder, Preview, QuickTime). In a pane on another machine a click opens
-nothing: Herdr has no opener there and this mod only reads local files. The `eli` layout turns it on with
+media and archives, and paths that don't exist, keep Herdr's usual opener
+(Finder, Preview, QuickTime).
+
+In a pane on another machine, the mod (which runs in this window) asks that
+machine with `hc exec --on` whether the path is a file there, relative to the
+pane's folder there, and the split's terminal and Neovim run on that machine
+too, as Herdr keeps a split on the machine of the pane it splits. Herdr has no
+opener for remote files, so anything else there opens nothing. The `eli` layout turns it on with
 `link_handlers`. Check with `node tests/herdr-app-nvim-links.mjs` and
 `herdr-app check ~/.config/herdr-app/mods/nvim-links`.
 
