@@ -430,9 +430,10 @@ with `node tests/herdr-app-review-view.mjs`.
 Cmd-click a file path in a terminal and `nvim-links` opens it in Neovim, in a
 new split to the right of the pane you clicked in. A relative path is taken
 from the folder of what runs in that pane; Herdr resolves it, along with `~/`.
-`file.rs:42` and `file.rs:42:7` put the cursor there. Folders, images, PDFs,
-media and archives, and paths that don't exist, keep Herdr's usual opener
-(Finder, Preview, QuickTime).
+`file.rs:42` and `file.rs:42:7` put the cursor there. Only the file types
+`~/.local/bin/install-neovim-app` makes Neovim the editor for open this way;
+everything else (images, PDFs, media, files without an extension), folders,
+and paths that don't exist keep Herdr's usual opener.
 
 In a pane on another machine, the mod (which runs in this window) asks that
 machine with `hc exec --on` whether the path is a file there, relative to the

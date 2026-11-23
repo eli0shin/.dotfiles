@@ -10,8 +10,22 @@
 // same spellings there itself (remoteLookup), against the folder the core
 // reports for that pane.
 
-// Files Neovim shouldn't open: the system's opener (Preview, QuickTime) does better.
-const NOT_TEXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|ico|heic|svgz|pdf|mp[34]|m4[av]|mov|mkv|webm|avi|wav|flac|ogg|zip|t?gz|tar|bz2|xz|7z|dmg|pkg)$/i;
+// The files Neovim edits: the document types ~/.local/bin/install-neovim-app
+// gives the Neovim app (CFBundleTypeExtensions). Everything else keeps the
+// system's opener. tests/herdr-app-nvim-links.mjs keeps the two lists equal.
+export const NEOVIM_EXTENSIONS = new Set([
+  "txt", "text", "md", "markdown", "json", "jsonc", "yaml", "yml", "toml", "xml", "csv", "log",
+  "conf", "config", "ini", "env", "c", "h", "cc", "cpp", "hpp", "m", "mm", "swift", "go", "rs",
+  "py", "rb", "php", "java", "kt", "kts", "scala", "js", "jsx", "ts", "tsx", "vue", "svelte",
+  "sh", "bash", "zsh", "fish", "lua", "vim", "sql", "html", "htm", "css", "scss", "sass", "less",
+]);
+
+/** Whether Neovim is the editor for the file at `path`, by its extension. */
+export function isNeovimFile(path) {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && NEOVIM_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
 
 /** `raw` without a sentence's period and a `:42` or `:42:7` place, and that place (or null). */
 export function splitPlace(raw) {
@@ -29,7 +43,7 @@ export function placeIn(raw, path) {
 }
 
 function plan(path, place, pane) {
-  if (NOT_TEXT.test(path)) return null;
+  if (!isNeovimFile(path)) return null;
   const at = !place ? [] : place.col ? [`+call cursor(${place.line}, ${place.col})`] : [`+${place.line}`];
   return { path, pane, argv: ["nvim", ...at, "--", path] };
 }

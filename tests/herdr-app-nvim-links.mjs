@@ -9,7 +9,7 @@ const layout = JSON.parse(readFileSync(new URL('layouts/eli.json', root)));
 assert.deepEqual(layout.link_handlers, ['nvim-links'], 'the eli layout sends file clicks to nvim-links');
 const mod = JSON.parse(readFileSync(new URL('mods/nvim-links/mod.json', root)));
 assert.deepEqual(mod.link_handlers, [{ kind: 'file', pattern: '.' }]);
-const { planOpen, placeIn, remoteLookup, planRemote, fileUriPath } = await import(new URL('mods/nvim-links/open.js', root));
+const { planOpen, placeIn, remoteLookup, planRemote, fileUriPath, NEOVIM_EXTENSIONS } = await import(new URL('mods/nvim-links/open.js', root));
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,15 +19,24 @@ const source = { terminal: 't7', machine: null, cwd: '/w/repo', pane: 'p1', tab:
 const click = (raw, path, extra = {}) => ({ link: { kind: 'file', raw, path }, source: { ...source, ...extra } });
 const argv = (...args) => planOpen(click(...args))?.argv ?? null;
 
+// Neovim opens the file types the Neovim app is the editor for, and nothing else.
+{
+  const script = readFileSync(new URL('../home/.local/bin/install-neovim-app', import.meta.url), 'utf8');
+  const block = script.slice(script.indexOf('<key>CFBundleTypeExtensions</key>'));
+  const listed = [...block.slice(0, block.indexOf('</array>')).matchAll(/<string>([^<]+)<\/string>/g)].map((m) => m[1]);
+  assert.ok(listed.length > 40);
+  assert.deepEqual([...NEOVIM_EXTENSIONS].sort(), [...listed].sort(), 'nvim-links opens what install-neovim-app makes Neovim the editor for');
+}
+
 // Absolute and relative paths both open the path Herdr resolved, in a split beside the clicked pane.
-assert.deepEqual(planOpen(click('/etc/hosts', '/etc/hosts')), { path: '/etc/hosts', pane: 'p1', argv: ['nvim', '--', '/etc/hosts'] });
+assert.deepEqual(planOpen(click('/tmp/notes.txt', '/tmp/notes.txt')), { path: '/tmp/notes.txt', pane: 'p1', argv: ['nvim', '--', '/tmp/notes.txt'] });
 assert.deepEqual(argv('src/a.ts', '/w/repo/src/a.ts'), ['nvim', '--', '/w/repo/src/a.ts']);
 
 // A place in the file puts the cursor there.
 assert.deepEqual(argv('src/a.ts:42', '/w/repo/src/a.ts'), ['nvim', '+42', '--', '/w/repo/src/a.ts']);
 assert.deepEqual(argv('src/a.ts:42:7', '/w/repo/src/a.ts'), ['nvim', '+call cursor(42, 7)', '--', '/w/repo/src/a.ts']);
 assert.deepEqual(argv('src/a.ts:42.', '/w/repo/src/a.ts'), ['nvim', '+42', '--', '/w/repo/src/a.ts'], 'a sentence\'s period is not part of it');
-assert.equal(placeIn('notes:42', '/w/repo/notes:42'), null, 'a file named with a colon and digits opens as named');
+assert.equal(placeIn('notes:42', '/w/repo/notes:42'), null, 'a file named with a colon and digits keeps its name');
 assert.equal(placeIn('file:///w/repo/a.ts', '/w/repo/a.ts'), null);
 assert.deepEqual(argv('-weird.md', '/w/repo/-weird.md'), ['nvim', '--', '/w/repo/-weird.md'], 'a path starting with - is still a file');
 
@@ -35,8 +44,11 @@ assert.deepEqual(argv('-weird.md', '/w/repo/-weird.md'), ['nvim', '--', '/w/repo
 assert.equal(planOpen(click('src/gone.ts', null)), null);
 assert.equal(planOpen(click('/srv/app.ts', null, { machine: 'vps' })), null, 'a remote click is looked up there instead');
 assert.equal(planOpen({ link: { kind: 'url', raw: 'https://x.dev', url: 'https://x.dev' }, source }), null);
-for (const file of ['shot.png', 'a.JPG', 'doc.pdf', 'clip.mov', 'out.tar.gz']) {
+for (const file of ['shot.png', 'a.JPG', 'doc.pdf', 'clip.mov', 'song.mp3', 'out.tar.gz', 'Makefile', '.gitignore', 'notes.docx']) {
   assert.equal(planOpen(click(file, `/w/repo/${file}`)), null, `${file} goes to the system opener`);
+}
+for (const file of ['a.ts', 'README.MD', 'x.lua', 'deploy.env']) {
+  assert.ok(planOpen(click(file, `/w/repo/${file}`)), `${file} opens in Neovim`);
 }
 
 // On another machine the mod looks the spellings up there, with that pane's folder.
