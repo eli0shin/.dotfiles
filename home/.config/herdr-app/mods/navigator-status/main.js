@@ -1,8 +1,7 @@
-import { View, div, svg } from "gpui-kit";
-import { h_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, focused, terminals, hc, exec, notify, nextCommand, shared, setShared, checking, home } from "herdr";
+import { View, div } from "gpui-kit";
+import { spaces, agents, run, focused, terminals, hc, exec, notify, nextCommand, shared, setShared, checking, home } from "herdr";
 import { createNavigator } from "./navigation.js";
-import { focusNumberedAgent, agentOrder, ORDER_KEY } from "./agent-order.js";
+import { focusNumberedAgent, agentOrder, ORDER_KEY, HIDDEN_MACHINES_KEY } from "./agent-order.js";
 import { selectTab } from "./tab-order.js";
 import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
@@ -21,7 +20,7 @@ export default class NavigatorStatus extends View {
       for (;;) {
         const command = await nextCommand();
         if (applySharedPreferences(command, { setShared, notify })) continue;
-        const order = (list) => agentOrder(list, { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY) });
+        const order = (list) => agentOrder(list, { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY), hidden: shared(HIDDEN_MACHINES_KEY) });
         if (selectTab(command, { spaces, agents, run, order })) continue;
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
@@ -31,36 +30,17 @@ export default class NavigatorStatus extends View {
   // The Agents list order is read only when a closed tab had an agent: it
   // costs a terminals() read when the sidebar's published order is stale.
   seeSpaces(all, list) {
-    const sort = shared("agents.sort"), published = shared(ORDER_KEY);
-    this.tabCloseFocus.onSpacesChanged(all, list, () => agentOrder(list, { terminals, sort, published }));
+    const sort = shared("agents.sort"), published = shared(ORDER_KEY), hidden = shared(HIDDEN_MACHINES_KEY);
+    this.tabCloseFocus.onSpacesChanged(all, list, () => agentOrder(list, { terminals, sort, published, hidden }));
   }
 
-  // The palette key as actually bound, not a hardcoded one; without a
-  // binding the hint stays useful ("commands") instead of lying.
-  hint(t) {
-    const mac = window()?.platform === "macos";
-    const mod = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
-    const b = keys().find((k) => k.section === "global" && k.action === "app.palette");
-    const parts = b && b.keys.endsWith("--") ? [...b.keys.slice(0, -2).split("-"), "-"] : b?.keys.split("-");
-    const key = parts && parts.map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("");
-    return key ? `${key}  commands` : "commands";
-  }
-
+  // Draws nothing: the layout gives it no height, so the terminal reaches the
+  // window's bottom. It stays in the layout (not the often-hidden sidebar)
+  // because only shown mods get commands. The machine it used to show ends
+  // the tab bar (eli-tabs).
   render() {
     this.navigator.onTerminalsChanged();
-    const all = spaces();
-    const list = agents();
-    this.seeSpaces(all, list);
-    const t = theme();
-    const space = all.find(s => s.active);
-    const needs = list.filter(a => a.status === "blocked").length;
-    const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
-    return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
-      .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
-      .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
-      .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
-        .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} needs you`))))
-      .child(div().flex_1())
-      .child(div().id("palette").text_color(t.dim).on_click(() => run("app.palette")).child(this.hint(t)));
+    this.seeSpaces(spaces(), agents());
+    return div().size_full();
   }
 }

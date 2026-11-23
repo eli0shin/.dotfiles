@@ -98,12 +98,18 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    // 6px above the 29px tabs and 3px below: the terminal's first row already
+    // has room above it (Herdr centers its grid), so the tab gets its own on top.
+    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).pt(6).pb(3).gap(3).items_center().bg(t.chrome)
       .on_mouse_up("left", () => { this.pressed = null; })
       // navigator-status steps over the hidden agent tabs; the app's tab.next/prev would not.
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "navigator-status.tab-prev" : "navigator-status.tab-next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
-      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      // Where the shown space runs, at the bar's end: it belongs to the space, as
+      // its tabs do. No new-tab button (Cmd+T, Ctrl+G T).
+      .child(h_flex().id("tab-machine").flex_none().px(6).gap(6).items_center().text_size(11.8).text_color(t.muted)
+        .child(svg(`mods/workspace-chrome/${space?.machine ? "server" : "monitor"}.svg`).size(13).flex_none())
+        .child(space?.machine ?? "This computer"))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))

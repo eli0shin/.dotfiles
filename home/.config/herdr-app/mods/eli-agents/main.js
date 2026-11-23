@@ -7,10 +7,11 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, closeOverlay, props, window, layout } from "herdr";
 import { tabNames } from "./names.js";
 import { piWatch, watchText, orchestrations } from "./watch.js";
 import { JUMP_KEY, jumpLabels, jumping } from "./jump.js";
+import { SPACE_COLORS_KEY, assignSpaceColors, spaceTextColor } from "./colors.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -70,6 +71,15 @@ const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const ORDER_KEY = "dotfiles.agents.order";
 const orderInputs = (list, sort) => [sort ?? "", list.find((a) => a.focused)?.address ?? "", ...list.map((a) => `${a.address}:${a.status}:${a.pinned ? 1 : 0}`)].join("\n");
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
+// Keep in sync with agent-machines/main.js and navigator-status/agent-order.js:
+// the machines whose agents the list leaves out ("" is this computer), set by
+// the agent-machines popup (Ctrl+G, /), and the machine an agent runs on.
+const HIDDEN_MACHINES_KEY = "dotfiles.agents.hidden-machines";
+const machineOf = (a) => (a.address.includes("/") ? a.address.split("/")[0] : "");
+// Row type, tuned for the Arctic theme: live titles a touch under white, idle
+// ones a step under the theme's text, and the quiet bits (machine, number) under t.dim.
+const LIVE_TITLE = "#F2F2F2";
+const CHIP_BG = "#ffffff0d";
 
 function duration(ms) {
   const m = Math.floor(ms / 60000);
@@ -239,13 +249,18 @@ export default class Agents extends View {
     if (props()?.sortMenu) return this.sortMenu(t);
     const collapsed = narrow();
     const sort = sortOf();
-    let list = agents();
-    this.listed = new Map(list.map((a) => [a.address, a.status]));
+    const everyone = agents();
+    // Agents on machines hidden with the agent-machines popup leave the list,
+    // its numbers and agent-jump; they're still tracked, so their times hold.
+    const hiddenMachines = new Set(shared(HIDDEN_MACHINES_KEY) ?? []);
+    let list = everyone.filter((a) => !hiddenMachines.has(machineOf(a)));
+    const visible = list;
+    this.listed = new Map(everyone.map((a) => [a.address, a.status]));
     const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
-    this.track(list, now);
+    this.track(everyone, now);
     this.hold(list);
     const byPriority = sort.id === "priority";
     const terminal = new Map(all.map((t) => [t.address, t]));
@@ -271,7 +286,7 @@ export default class Agents extends View {
     const shownWorkers = (a) => (open(a) ? workersOf(a) : []);
     const order = list.flatMap((a) => [a, ...shownWorkers(a)]);
     setAgentOrder(list.flatMap((a) => [a, ...workersOf(a)]).map((a) => a.address));
-    const published = { inputs: orderInputs(agents(), shared("agents.sort")), addresses: order.map((a) => a.address) };
+    const published = { inputs: orderInputs(visible, shared("agents.sort")), addresses: order.map((a) => a.address) };
     const previous = shared(ORDER_KEY);
     if (previous?.inputs !== published.inputs || previous?.addresses?.join("\n") !== published.addresses.join("\n")) setShared(ORDER_KEY, published);
     // Every row shows its jump label; brighter while agent-jump runs (Ctrl+;).
@@ -279,8 +294,12 @@ export default class Agents extends View {
     const labelsByRow = jumpLabels(order.length);
     const jumpLabel = new Map(order.map((a, i) => [a.address, labelsByRow[i]]));
     const mark = (a) => jumpLabel.get(a.address) ?? "";
-    const number = (a) => div().w(labelsByRow.at(-1)?.length > 1 ? 16 : 10).flex_none().text_right().text_size(11)
-      .when(jumpOn, (el) => el.font_semibold().text_color(t.working)).when(!jumpOn, (el) => el.text_color(t.dim)).child(mark(a));
+    const number = (a) => div().w(labelsByRow.at(-1)?.length > 1 ? 18 : 11).flex_none().text_right().text_size(12)
+      .when(jumpOn, (el) => el.font_semibold().text_color(t.working)).when(!jumpOn, (el) => el.text_color(t.dim + "B3")).child(mark(a));
+    // Each space's name in its color (as the space tiles have it).
+    const colors = assignSpaceColors(spaces(), shared(SPACE_COLORS_KEY));
+    if (colors.changed) setShared(SPACE_COLORS_KEY, colors.kept);
+    const spaceColor = (a) => spaceTextColor(colors.kept[a.space]) ?? t.dim;
 
     const withKids = (a) => {
       const subs = collapsed ? [] : this.tree(all, a.address);
@@ -342,13 +361,21 @@ export default class Agents extends View {
       if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
     }
 
-    // The PRs a Pi session watches, behind a pull-request icon.
+    // A small filled tag on line 2 (workers, PRs).
+    const chip = (id) => h_flex().id(id).flex_none().h(17).px(5).gap(4).items_center().rounded(4).bg(CHIP_BG).text_size(11.5);
+    // The PRs a Pi session watches, as one chip: the first (as pr-watch names it:
+    // `#N` here, `repo#N` elsewhere, `merge of #N`) and how many more, the whole
+    // list on hover.
     const prs = (a) => {
-      const text = watchText(watchOf(a));
+      const watch = watchOf(a);
+      const text = watchText(watch);
       if (!text) return null;
-      return h_flex().flex_1().min_w(0).gap(5).items_center()
+      const watched = [...(Array.isArray(watch.prs) ? watch.prs : []), watch.sha].filter((x) => typeof x === "string" && x);
+      return chip(`prs-${a.address}`).max_w(150).text_color(t.foreground + "B3").tooltip(text)
+        .when(Boolean(watch.paused), (el) => el.italic())
         .child(svg("mods/eli-agents/git-pull-request.svg").size(11).flex_none())
-        .child(div().flex_1().min_w(0).truncate().when(Boolean(watchOf(a)?.paused), (el) => el.italic()).child(text));
+        .child(div().min_w(0).truncate().child(watched[0]))
+        .when(watched.length > 1, (el) => el.child(div().flex_none().text_color(t.dim).child(`+${watched.length - 1}`)));
     };
     // A worker's tree line: an elbow to its first line, continuing for all but the last.
     const treeLine = (line) => v_flex().w(9).ml(8).mr(4).flex_none().self_stretch()
@@ -376,74 +403,63 @@ export default class Agents extends View {
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
-      // Only the focused row reads bright, as sub-agent rows do; the status says the rest.
-      const idle = !a.focused;
+      // Live rows (working, needs you, done) read brightest, with a left edge and
+      // their time in the status color; idle rows stay readable a step dimmer.
+      // No bold: brightness and the edge carry it.
+      const live = a.status !== "idle";
+      const tone = live ? t[a.status] ?? t.dim : null;
       const isPinned = a.pinned;
-      const pin = div()
-        .id(`pin-${a.address}`)
-        .flex_none()
-        .p(2)
-        .rounded(4)
-        .text_color(t.dim)
-        .cursor_pointer()
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(isPinned ? "Unpin" : "Pin to the top")
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          run("terminal.pin", { terminal: a.address, pinned: !isPinned });
-          // The row moves away from under the pointer, and no hover-out comes.
-          this.hovered = null;
-          cx.notify();
-        })
-        .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
       // Two lines: the tab's title gets the first to itself, up to the status and
-      // number; the space, the machine (when remote) and the time go beneath.
+      // number. The second holds the space (in its color), the orchestration's
+      // ticket, then chips for its workers and watched PRs, the machine (when
+      // remote) and the time.
       // An automatic tab number says nothing, so the program stands in for it.
       // Under a space header the space goes without saying; without one above
-      // (priority, pinned) the second line names it.
+      // (priority, pinned) the second line names it. A worker under its
+      // orchestrator leaves out its space too.
       const full = byPriority || isPinned;
       const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      // Under its orchestrator a worker leaves out its space, so its PRs take
-      // line 2; an orchestrator counts its workers.
       const watch = watchOf(a);
-      const about = line ? null : [full ? a.space_name : null, ws.length ? `${ws.length} worker${ws.length === 1 ? "" : "s"}` : null, ws.length ? watch?.ticket : null].filter(Boolean).join(" · ");
-      // With nothing else to say, line 2 takes the PRs instead of a third line.
-      const prLine = prs(a);
-      const prsOnLine2 = !about && Boolean(prLine);
+      const space = !line && full ? a.space_name : null;
+      const ticket = !line && ws.length ? watch?.ticket : null;
+      const quiet = t.dim + "D9";
       const body = v_flex()
         .flex_1()
         .min_w(0)
-        .child(h_flex().h(20).gap(9).items_center()
+        .child(h_flex().h(22).gap(9).items_center()
           .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
             .when(foldable.length > 0, el => el.on_click((_e, cx) => {
               cx.stop_propagation();
               this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
               cx.notify();
             })).child(pic)))
-          .child(div().flex_1().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(name))
+          .child(div().flex_1().min_w(0).truncate().text_size(14.5).text_color(live || a.focused ? LIVE_TITLE : t.foreground + "E6").child(name))
           .when(foldable.length > 0, el => el.child(fold(a, foldable)))
           .child(this.status(t, a, byPriority && !isPinned))
           .child(number(a)))
-        .child(h_flex().h(17).gap(9).items_center().text_size(11).text_color(t.dim)
-          .child(prsOnLine2 ? prLine : div().flex_1().min_w(0).truncate().child(about || ""))
-          .when(Boolean(machine), el => el.child(div().flex_none().text_size(10).child(machine)))
-          .when(this.hovered === a.address, el => el.child(pin))
-          .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().child(duration(now - when)))))
-        .when(Boolean(prLine) && !prsOnLine2, (el) => el.child(h_flex().h(17).items_center().text_size(11).text_color(t.dim).child(prLine)));
+        .child(h_flex().h(19).gap(6).items_center().text_size(12.5).text_color(t.dim)
+          .child(h_flex().flex_1().min_w(0).items_center()
+            .when(Boolean(space), (el) => el.child(div().min_w(0).truncate().text_color(spaceColor(a)).child(space)))
+            .when(Boolean(ticket), (el) => el.child(div().flex_none().child(`${space ? " · " : ""}${ticket}`))))
+          .when(ws.length > 0, (el) => el.child(chip(`workers-${a.address}`).text_color(t.foreground + "C0").child(`${ws.length} worker${ws.length === 1 ? "" : "s"}`)))
+          .when(Boolean(watch && watchText(watch)), (el) => el.child(prs(a)))
+          .when(Boolean(machine), el => el.child(div().flex_none().text_size(11.5).text_color(quiet).child(machine)))
+          .when(Boolean(when), el => el.child(div().flex_none().text_color(tone ?? quiet).child(duration(now - when)))));
       return h_flex()
         .id(`ag-${a.address}`)
+        .relative()
         .px(8)
         .py(4)
         .flex_none()
         .rounded(8)
-        .when(a.focused, (el) => el.bg(t.selected))
+        // The selected row: a faint wash and a thin outline, not a block, so
+        // reading it is no jump. Every row has the border so none shifts.
+        .border_1()
+        .border_color(a.focused ? t.working + "73" : "#00000000")
+        .when(a.focused, (el) => el.bg(t.working + "12"))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .on_hover((on, cx) => {
-          if (on) this.hovered = a.address;
-          else if (this.hovered === a.address) this.hovered = null;
-          cx.notify();
-        })
+        .when(Boolean(tone), (el) => el.child(div().absolute().left(0).top(8).bottom(8).w(2.5).rounded(2).bg(tone)))
         .on_click(() => run("pane.focus", { pane: a.pane }))
         .when(Boolean(line), (el) => el.child(treeLine(line)))
         .child(body);
@@ -460,15 +476,16 @@ export default class Agents extends View {
     }
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
-    const header = (g) => {
+    // The first one sits right under the sidebar's top row: no padding above it.
+    const header = (g, first) => {
       const open = !this.folded.has(g.id);
       const top = g.members.flatMap((a) => [a.status, ...workersOf(a).map((w) => kidStatus(w, this.listed))])
         .reduce((m, st) => ((RANK[st] ?? 0) > (RANK[m] ?? 0) ? st : m), null);
       return h_flex()
         .id(g.id)
         .px(8)
-        .pt(8)
-        .h(30)
+        .pt(first ? 0 : 8)
+        .h(first ? 20 : 30)
         .flex_none()
         .gap(6)
         .items_center()
@@ -489,40 +506,17 @@ export default class Agents extends View {
     };
     const rows = collapsed
       ? list.flatMap(withKids)
-      : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+      : groups.flatMap((g, i) => [header(g, i === 0), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
 
     return v_flex()
       .size_full()
       .min_h(0)
       .bg(t.chrome)
-      .border_t(1)
-      .border_color(t.border)
       .text_size(13)
-      .when(!collapsed, (el) =>
-        el.child(
-          h_flex()
-            .px(16)
-            .h(41)
-            .pt(14)
-            .pb(5)
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
-            .child(
-              div()
-                .id("ag-sort")
-                .text_size(11)
-                .text_color(t.dim)
-                .hover((s) => s.text_color(t.foreground))
-                .on_click(() => openOverlay({ mod: "eli-agents", kind: "popup", width: 200, height: 140, props: { sortMenu: true } }))
-                .tooltip(`Sort agents: ${sort.label}`)
-                .child(svg(`mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            ),
-        ),
-      )
       .when(list.length === 0 && !collapsed, (el) =>
-        el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
+        el.child(div().px(12).text_size(12).text_color(t.dim).child(everyone.length
+          ? "Every agent is on a hidden machine. Ctrl+G, / chooses which machines show."
+          : "No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always").children(rows))
       .when(collapsed, (el) =>

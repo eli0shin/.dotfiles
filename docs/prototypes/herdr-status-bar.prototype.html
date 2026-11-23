@@ -1,0 +1,181 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Not loaded by Herdr.
+  Question: with every divider gone from the eli layout, the status bar's items
+  (navigator-status: machine, branch, agent count) float at a 14px indent under the
+  terminal, with nothing between the sidebar and the work area. Should the line between
+  the sidebar and the terminal come back, should the items move to the right corner, or
+  both? The line above the status bar stays gone in every variant. And how much space
+  belongs between the sidebar's top row and the first section? Variants via
+  ?variant=A..D, ←/→, or the floating bar;
+  "Tight top" toggles the top gap. Mimics the app's metrics (zoom 0.9) and Arctic theme.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE · Herdr status bar</title>
+<style>
+  @font-face { font-family: "Herdr Operator"; src: url("../../home/.config/herdr-app/fonts/DotfilesOperatorMonoBook-Regular.otf"), local("Operator Mono Book"); font-weight: 400; }
+  @font-face { font-family: "Herdr Operator"; src: url("../../home/.config/herdr-app/fonts/DotfilesOperatorMonoBook-Bold.otf"), local("Operator Mono Bold"); font-weight: 600 700; }
+  :root { --bg: #1e1e1e; --fg: #D4D4D4; --dim: #8F8F8F; --border: #858585; --working: #3794FF; --done: #89D185; --blocked: #CCA700; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+  body { font-family: "Herdr Operator", ui-monospace, monospace; zoom: 0.9; height: calc(100vh / 0.9); display: flex; flex-direction: column; }
+  .window { flex: 1; min-height: 0; display: flex; }
+  .sidebar { width: 400px; flex: none; display: flex; flex-direction: column; min-height: 0; }
+  .top { height: 42px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px 0 84px; position: relative; }
+  .lights { position: absolute; left: 12px; top: 15px; display: flex; gap: 8px; }
+  .lights i { width: 12px; height: 12px; border-radius: 6px; display: block; }
+  .top .label { flex: 1; font-size: 11.5px; font-weight: 500; color: var(--dim); }
+  .top .btn { font-size: 11px; color: var(--working); display: flex; gap: 4px; align-items: center; }
+  .top .btn.dim { color: var(--dim); }
+  .list { padding: 0 8px; overflow: hidden; flex: 1; }
+  .sec { padding: 8px 8px 0; height: 30px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; }
+  .tight .sec.first { padding-top: 0; height: 22px; }
+  .row { padding: 4px 8px; border-radius: 8px; border: 1px solid transparent; position: relative; }
+  .row.focused { background: #3794FF12; border-color: #3794FF73; }
+  .edge { position: absolute; left: 0; top: 8px; bottom: 8px; width: 2.5px; border-radius: 2px; }
+  .l1 { height: 22px; display: flex; align-items: center; gap: 9px; font-size: 14.5px; }
+  .l2 { height: 19px; display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--dim); }
+  .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .num { width: 11px; text-align: right; font-size: 12px; color: #8F8F8FB3; }
+  .ring { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; border: 1.5px solid var(--dim); }
+  .dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; background: var(--done); }
+  .spin { width: 12px; height: 12px; border-radius: 6px; border: 2px solid #3794FF40; border-top-color: var(--working); margin: 0 1px; }
+  .chip { height: 17px; padding: 0 5px; border-radius: 4px; background: #ffffff0d; font-size: 11.5px; color: #D4D4D4B3; display: flex; align-items: center; }
+  .ico { width: 16px; height: 16px; flex: none; }
+
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .tabs { height: 42px; flex: none; display: flex; align-items: center; padding: 0 10px; gap: 8px; font-size: 13px; color: var(--fg); }
+  .term { flex: 1; min-height: 0; font-size: 15.3px; line-height: 24px; overflow: hidden; display: flex; flex-direction: column; }
+  .term .body { flex: 1; padding-top: 8px; }
+  .term b { color: #fff; font-weight: 600; }
+  .term .rule { border-top: 1px solid #8b7cf6; margin: 6px 0; }
+  .term .foot { color: #a8a8a8; }
+  .term .ok { color: var(--done); }
+
+  .status { height: 28px; flex: none; display: flex; align-items: center; gap: 16px; font-size: 11.8px; color: var(--dim); }
+  .status .item { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .status svg { width: 13px; height: 13px; }
+  .status .agents-dot { width: 6px; height: 6px; border-radius: 3px; background: var(--dim); }
+
+  .notes { position: fixed; right: 24px; top: 140px; width: 360px; padding: 14px 16px; border-radius: 10px; background: #ffffff; color: #222; font: 13px/1.5 -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px #0008; zoom: 1.11; }
+  .notes h2 { margin: 0 0 6px; font-size: 14px; }
+  .notes ul { margin: 0; padding-left: 18px; }
+  .switcher { position: fixed; left: 62%; top: 300px; transform: translateX(-50%); z-index: 99; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 999px; background: #fff; color: #111; font: 500 13px -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px #0008; zoom: 1.11; }
+  .switcher button { border: 0; background: #eee; color: #111; height: 30px; min-width: 30px; padding: 0 12px; border-radius: 999px; cursor: pointer; font: inherit; }
+  .switcher button.on { background: #111; color: #fff; }
+  .switcher .label { padding: 0 10px; min-width: 250px; text-align: center; }
+  .switcher .sep { width: 1px; height: 20px; background: #ddd; margin: 0 4px; }
+</style>
+</head>
+<body>
+<div class="window" id="window"></div>
+<div class="notes" id="notes"></div>
+<div class="switcher" id="switcher"></div>
+<script>
+const PI = `<svg class="ico" viewBox="0 0 800 800"><path fill="currentColor" fill-rule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/><path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z"/></svg>`;
+const MONITOR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2.5"/><path d="M8.5 20h7M12 16v4"/></svg>`;
+const BRANCH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-6 4-11 8"/></svg>`;
+const CLOCK = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+
+const ROWS = [
+  ["sec", "Done", 1, "var(--done)"],
+  { name: "Water meter data", space: "proxmox-config", hue: "#7cc9bf", status: "done", age: "1m" },
+  ["sec", "Working", 1, "var(--working)"],
+  { name: "Frameo dashboard tablet", space: "photo-frame", hue: "#ecac8a", status: "working", age: "4m" },
+  ["sec", "Idle", 8, "var(--dim)"],
+  { name: "Herder space picker search", space: ".dotfiles", hue: "#e690b8", status: "idle", age: "1m", focused: true },
+  { name: "Fix herdr half-page scrolling", space: ".dotfiles", hue: "#e690b8", status: "idle", age: "2m", chip: "SHA be84560" },
+  { name: "Replace Datadog with OpenObserve", space: "proxmox-config", hue: "#7cc9bf", status: "idle", age: "1h" },
+  { name: "Vaultwarden secrets for Kubernetes", space: "proxmox-config", hue: "#7cc9bf", status: "idle", age: "10h" },
+  { name: "Split review filters", space: "code-review-tui", hue: "#71c38f", status: "idle", age: "3d" },
+  { name: "Dark theme for mygolinks", space: "my-go-links@dark-theme", hue: "#ecac8a", status: "idle", age: "3d" },
+  { name: "Fix transcript performance", space: "macparakeet@main", hue: "#7cc9bf", status: "idle", age: "4d" },
+  { name: "M900 Tiny Bracket", space: "elioshinsky", hue: "#a69df3", status: "idle", age: "12d" },
+];
+const LABELS = "1234567890";
+
+// divider: the 1px line between the sidebar and the work area (full height, as the
+// layout's root divider drew it). align: where the status bar's items go.
+const VARIANTS = {
+  A: { name: "Now: no sidebar line, items left", divider: false, align: "left",
+       notes: ["As it is: nothing between the sidebar and the terminal, and the status items start 14px in, floating under the text."] },
+  B: { name: "Sidebar line back, items left", divider: true, align: "left",
+       notes: ["The 1px line between the sidebar and the work area returns, top to bottom. The status items stay at the left, now with an edge to sit against."] },
+  C: { name: "No sidebar line, items right", divider: false, align: "right",
+       notes: ["No line; the status items move to the bottom-right corner, away from the open seam between the sidebar and the terminal."] },
+  D: { name: "Sidebar line back + items right", divider: true, align: "right",
+       notes: ["Both: the sidebar line returns and the status items sit in the bottom-right corner."] },
+};
+const KEYS = Object.keys(VARIANTS);
+const params = new URLSearchParams(location.search);
+let variant = KEYS.includes(params.get("variant")) ? params.get("variant") : "A";
+let tight = params.get("tight") !== "off";
+function setParam() { history.replaceState(null, "", "?" + new URLSearchParams({ variant, tight: tight ? "on" : "off" })); render(); }
+addEventListener("keydown", (e) => {
+  const i = KEYS.indexOf(variant);
+  if (e.key === "ArrowRight") { variant = KEYS[(i + 1) % KEYS.length]; setParam(); }
+  if (e.key === "ArrowLeft") { variant = KEYS[(i - 1 + KEYS.length) % KEYS.length]; setParam(); }
+});
+
+function sidebar() {
+  let n = 0, first = true;
+  const rows = ROWS.map((r) => {
+    if (Array.isArray(r)) {
+      const html = `<div class="sec ${first ? "first" : ""}"><span style="color:${r[3]}">${r[1]}</span><span style="color:var(--dim)">${r[2]}</span></div>`;
+      first = false;
+      return html;
+    }
+    const live = r.status !== "idle";
+    const tone = { done: "var(--done)", working: "var(--working)" }[r.status];
+    const status = r.status === "working" ? `<span class="spin"></span>` : r.status === "done" ? `<span class="dot"></span>` : `<span class="ring"></span>`;
+    return `<div class="row ${r.focused ? "focused" : ""}">${live ? `<span class="edge" style="background:${tone}"></span>` : ""}
+      <div class="l1">${PI}<span class="grow" style="color:${live || r.focused ? "#F2F2F2" : "#D4D4D4E6"}">${r.name}</span>${status}<span class="num">${LABELS[n++]}</span></div>
+      <div class="l2"><span class="grow" style="color:${r.hue}">${r.space}</span>${r.chip ? `<span class="chip">${r.chip}</span>` : ""}<span style="color:${tone ?? "#8F8F8FD9"}">${r.age}</span></div></div>`;
+  }).join("");
+  return `<div class="sidebar ${tight ? "tight" : ""}" style="${VARIANTS[variant].divider ? "border-right:1px solid var(--border)" : ""}"><div class="top"><span class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
+    <span class="label">Agents</span><span class="btn">${MONITOR.replace("<svg", '<svg width="14" height="14"')} 3 hidden</span><span class="btn dim">${CLOCK}</span></div>
+    <div class="list">${rows}</div></div>`;
+}
+
+function statusBar(v) {
+  const items = `<span class="item">${MONITOR} This computer</span><span class="item">${BRANCH} main</span><span class="item"><span class="agents-dot"></span> 33 agents</span>`;
+  const style = v.align === "right" ? "justify-content:flex-end;padding-right:14px" : "padding-left:14px";
+  return `<div class="status" style="${style}">${items}</div>`;
+}
+
+function render() {
+  const v = VARIANTS[variant];
+  document.getElementById("window").innerHTML = sidebar() + `<div class="main">
+    <div class="tabs"><span style="color:#89D185">N</span> 1</div>
+    <div class="term"><div class="body">
+      <div><b>Row spacing.</b> The outline I added last round had made every row 2px taller. That's undone, so rows are back to the spacing you liked in the prototype.</div>
+      <div style="margin-top:24px">I didn't change how the space name and the PR chip line up (#9). You said fixing the spacing at the top might make it stop mattering, so check it now and tell me if it still looks off.</div>
+    </div>
+    <div class="rule"></div>
+    <div>&#9608;</div>
+    <div class="rule"></div>
+    <div class="foot">~/.dotfiles (main) • Herder space picker search</div>
+    <div class="foot" style="display:flex"><span style="flex:1">↑292 ↓103k R23M W310k CH99.9% 31.4%/1.0M (auto)</span><span>(claude-bridge) claude-opus-5-5 • high</span></div>
+    <div class="foot"><span class="ok">OK</span> turn 138 complete</div>
+    </div>
+    ${statusBar(v)}
+  </div>`;
+  document.getElementById("notes").innerHTML = `<h2>${variant} — ${v.name}</h2><ul>${v.notes.map((x) => `<li>${x}</li>`).join("")}
+    <li>Top gap: ${tight ? "tight (the first section header loses its 8px top padding and 8px of height)" : "as now (42px row, then an 8px-padded 30px header)"}.</li></ul>`;
+  const sw = document.getElementById("switcher");
+  sw.innerHTML = `<button data-act="prev">←</button><span class="label"><b>${variant}</b> · ${v.name}</span><button data-act="next">→</button>
+    <span class="sep"></span><button data-act="tight" class="${tight ? "on" : ""}">Tight top</button>`;
+  sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    const i = KEYS.indexOf(variant);
+    if (b.dataset.act === "prev") variant = KEYS[(i - 1 + KEYS.length) % KEYS.length];
+    if (b.dataset.act === "next") variant = KEYS[(i + 1) % KEYS.length];
+    if (b.dataset.act === "tight") tight = !tight;
+    setParam();
+  }));
+}
+render();
+</script>
+</body>
+</html>

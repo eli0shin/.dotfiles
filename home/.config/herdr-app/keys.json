@@ -59,6 +59,7 @@
     "ctrl-9": "space.select:9",
     "ctrl-g c": "app.settings",
     "ctrl-g s": "mod.open:space-picker",
+    "ctrl-g /": "mod.open:agent-machines",
     "ctrl-g [": "mod.open:copy-mode",
     "ctrl-g k": "agent.prev",
     "ctrl-g j": "agent.next",

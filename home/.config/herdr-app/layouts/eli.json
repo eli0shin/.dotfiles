@@ -15,10 +15,10 @@
           "id": "brand",
           "type": "block",
           "content": {
-            "mod": "workspace-chrome"
+            "mod": "eli-chrome"
           },
           "size": {
-            "px": 46
+            "px": 38
           },
           "window_drag": true
         },
@@ -26,17 +26,6 @@
           "id": "sidebar-lists",
           "type": "column",
           "children": [
-            {
-              "id": "spaces",
-              "type": "block",
-              "content": {
-                "mod": "eli-spaces"
-              },
-              "size": {
-                "weight": 1
-              },
-              "min": 90
-            },
             {
               "id": "agents",
               "type": "block",
@@ -71,7 +60,7 @@
             "mod": "eli-tabs"
           },
           "size": {
-            "px": 42
+            "px": 38
           },
           "window_drag": true
         },
@@ -86,19 +75,12 @@
                 "tab": "active",
                 "pane": {
                   "background": "background",
-                  "border": {
-                    "width": 1,
-                    "color": "border"
-                  },
-                  "focus": {
-                    "width": 1,
-                    "color": "accent"
-                  },
                   "radius": 0,
-                  "gap": 0,
+                  "gap": 1,
                   "lone": false
                 }
-              }
+              },
+              "background": "border"
             },
             {
               "id": "panel",
@@ -144,7 +126,7 @@
             "mod": "navigator-status"
           },
           "size": {
-            "px": 28
+            "px": 0
           }
         }
       ],
@@ -156,13 +138,9 @@
     0,
     0
   ],
-  "divider": {
-    "width": 1,
-    "color": "border"
-  },
   "titlebar": "none",
   "traffic_lights": [
-    12,
-    16
+    -80,
+    4
   ]
 }

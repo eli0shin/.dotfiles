@@ -1,0 +1,410 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Not loaded by Herdr.
+  Question: how can the eli-agents sidebar rows (home/.config/herdr-app/mods/eli-agents/main.js)
+  use color, size and weight so they stop reading as one block of small gray text,
+  while keeping the current layout? Rows are the real ones from the sidebar (sparse and
+  overloaded mixed). "Now" mirrors main.js today; A–D are the variants.
+  Switch with ?variant=now|A|B|C|D, ←/→, or the floating bar. "Side by side" shows Now next
+  to the variant. Herdr mods are native GPUI; this HTML mimics its metrics (zoom 0.9) and Arctic theme.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE · Herdr agents: readable rows</title>
+<style>
+  @font-face { font-family: "Herdr Operator"; src: url("../../home/.config/herdr-app/fonts/DotfilesOperatorMonoBook-Regular.otf"), local("Operator Mono Book"), local("OperatorMono-Book"); font-weight: 400; }
+  @font-face { font-family: "Herdr Operator"; src: url("../../home/.config/herdr-app/fonts/DotfilesOperatorMonoBook-Bold.otf"), local("Operator Mono Bold"), local("OperatorMono-Bold"); font-weight: 600 700; }
+  :root {
+    --bg: #1e1e1e; --fg: #D4D4D4; --hover: #2D2D2D; --selected: #04395E;
+    --muted: #8F8F8F; --dim: #8F8F8F; --working: #3794FF; --blocked: #CCA700; --done: #89D185;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+  body { font-family: "Herdr Operator", "Operator Mono", ui-monospace, monospace; display: flex; zoom: 0.9; height: calc(100vh / 0.9); }
+  .sidebar { width: 400px; flex: none; display: flex; flex-direction: column; border-right: 1px solid #3a3a3a; min-height: 0; }
+  .sidebar .cap { height: 26px; flex: none; display: flex; align-items: center; justify-content: center; font: 600 10px -apple-system, system-ui, sans-serif; letter-spacing: .6px; color: #fff; background: #333; }
+  .brand { height: 46px; flex: none; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; font-weight: 600; border-bottom: 1px solid #3a3a3a; }
+  .agents-head { padding: 0 16px; height: 41px; flex: none; display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--dim); }
+  .list { padding: 0 8px 90px; overflow-y: auto; flex: 1; min-height: 0; }
+  .sec { padding: 8px 8px 0; height: 30px; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; color: var(--dim); }
+  .row { padding: 4px 8px; border-radius: 8px; cursor: pointer; position: relative; }
+  .row:hover { background: var(--hover); }
+  .row.focused { background: var(--selected); }
+  .l1 { height: 20px; display: flex; align-items: center; gap: 9px; }
+  .l2, .l3 { height: 17px; display: flex; align-items: center; gap: 9px; }
+  .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .none { flex: none; white-space: nowrap; }
+  .num { width: 10px; text-align: right; flex: none; }
+  .ico { width: 16px; height: 16px; flex: none; color: var(--fg); }
+  .ico svg { width: 16px; height: 16px; display: block; }
+  .ring { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; border: 1.5px solid var(--dim); flex: none; }
+  .dot { width: 7px; height: 7px; margin: 0 3px; border-radius: 4px; background: var(--done); flex: none; }
+  .spin { width: 12px; height: 12px; margin: 0 1px; flex: none; color: var(--working); animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .needs { padding: 0 6px; height: 18px; border-radius: 5px; background: #CCA70026; color: var(--blocked); font-size: 10.5px; font-weight: 600; display: flex; align-items: center; flex: none; }
+  .gh { width: 11px; height: 11px; flex: none; }
+  .accent { position: absolute; left: 0; top: 7px; bottom: 7px; width: 2.5px; border-radius: 2px; }
+  .chip { height: 15px; padding: 0 5px; border-radius: 4px; display: inline-flex; align-items: center; gap: 4px; flex: none; white-space: nowrap; }
+
+  /* Right pane: notes + a terminal sample at the real terminal size, to judge against */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .notes { padding: 18px 24px 16px; font: 13px/1.55 -apple-system, system-ui, sans-serif; color: #c8c8c8; border-bottom: 1px solid #3a3a3a; flex: none; }
+  .notes h2 { font-size: 15px; margin: 0 0 6px; color: #fff; font-weight: 600; }
+  .notes ul { margin: 4px 0 0; padding-left: 18px; }
+  .notes code { font-family: "Herdr Operator", ui-monospace, monospace; color: #d7ba7d; font-size: 12px; }
+  .term { padding: 14px 18px; font-size: 15.3px; line-height: 1.6; color: var(--fg); overflow: hidden; flex: 1; }
+  .term b { color: #fff; font-weight: 600; }
+  .term a { color: #6fabdc; }
+  .term .me { background: #2a2a2a; margin: 10px -18px; padding: 10px 18px; }
+
+  /* Prototype switcher (not part of the design) */
+  .switcher { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 99; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 999px; background: #fff; color: #111; font: 500 13px -apple-system, system-ui, sans-serif; box-shadow: 0 6px 24px #0008; }
+  .switcher button { border: 0; background: #eee; color: #111; height: 30px; min-width: 30px; padding: 0 12px; border-radius: 999px; cursor: pointer; font: inherit; }
+  .switcher button:hover { background: #ddd; }
+  .switcher button.on { background: #111; color: #fff; }
+  .switcher .label { padding: 0 10px; min-width: 260px; text-align: center; }
+  .switcher .sep { width: 1px; height: 20px; background: #ddd; margin: 0 4px; }
+</style>
+</head>
+<body>
+<div id="sidebars" style="display:flex"></div>
+<div class="main">
+  <div class="notes" id="notes"></div>
+  <div class="term">
+    <div>Night mode is now a warm charcoal, like the day theme, so it no longer clashes with the frame. The text, calendar pills, light chips and red today badge all stay readable.</div>
+    <div style="margin-top:10px"><b>What changed:</b> the old navy background is gone. Only the colors changed; the layout is the same.</div>
+    <div style="margin-top:10px">- <b>No login:</b> it opens straight to the dashboard.<br>- <b>Direct links:</b> <a>https://dashboard.home.arpa/#calendar</a></div>
+    <div class="me">Okay, cool. I'm gonna dig in and try to make some notes about how I would improve some things while I'm doing that.</div>
+    <div>I'll start by reconnecting to the frame. Its address may have changed again.</div>
+    <div style="margin-top:10px;color:var(--dim)">+ 3 commands</div>
+  </div>
+</div>
+<div class="switcher" id="switcher"></div>
+
+<script>
+// ---------- Mock data: the sidebar as recorded (two working, the rest idle) ----------
+// One Done and one Needs-you row are added so every status is on screen.
+const AGENTS = [
+  { name: "Frameo dashboard tablet", space: "photo-frame", status: "working", age: 2 },
+  { name: "Herdr space picker search", space: ".dotfiles", status: "working", age: 4, machine: "devbox" },
+  { name: "Dark theme for mygolinks", space: "my-go-links@dark-theme", status: "blocked", age: 6 },
+  { name: "Sparky review retro", space: "ffs-mono-repo", status: "done", age: 12, machine: "work-mac" },
+  { name: "Replace Datadog with OpenObserve", space: "proxmox-config", status: "idle", age: 9 },
+  { name: "Herdr app parity gaps", space: ".dotfiles", status: "idle", age: 8 * 60, machine: "work-mac" },
+  { name: "Vaultwarden secrets for Kubernetes", space: "proxmox-config", status: "idle", age: 9 * 60 },
+  { name: "Partner API client design", space: "ffs-mono-repo", status: "idle", age: 1440, machine: "work-mac", workers: 1, prs: ["#1960", "#2071"] },
+  { name: "Card slugs briefing", space: "ffs-mono-repo", status: "idle", age: 2 * 1440, machine: "work-mac", workers: 8, prs: ["#2032", "#2034", "#2035", "#2036", "#2053", "#2054", "#2065", "#2066"] },
+  { name: "Open Accounts from APPLICATION", space: "ffs-mono-repo", status: "idle", age: 2 * 1440, machine: "work-mac", prs: ["#1782", "#2013"] },
+  { name: "Account-centric fan relinking", space: ".dotfiles", status: "idle", age: 2 * 1440, machine: "work-mac", workers: 3, prs: ["ffs-mono-repo#2031", "ffs-mono-repo#2033", "ffs-mono-repo#2040"], focused: true },
+  { name: "Domain Model Imprint Migration", space: "ffs-mono-repo", status: "idle", age: 2 * 1440, machine: "work-mac" },
+  { name: "Daily update", space: "workbench", status: "idle", age: 2 * 1440, machine: "work-mac" },
+  { name: "Split review filters", space: "code-review-tui", status: "idle", age: 3 * 1440 },
+  { name: "Water meter data", space: "proxmox-config", status: "idle", age: 4 * 1440, machine: "omarchy" },
+  { name: "Fix transcript performance", space: "macparakeet@main", status: "idle", age: 4 * 1440 },
+  { name: "Remote dev boxes", space: "ffs-mono-repo", status: "idle", age: 6 * 1440, machine: "devbox" },
+  { name: "Account cache design", space: "ffs-mono-repo@cache-playwright-fixture-accounts", status: "idle", age: 6 * 1440, machine: "work-mac" },
+  { name: "Imprint integration testing strategy", space: "ffs-mono-repo", status: "idle", age: 7 * 1440, machine: "work-mac", prs: ["#1999"] },
+];
+const LABELS = "1234567890asdfghjkl".split("");
+const SECTIONS = [["blocked", "Needs you"], ["done", "Done"], ["working", "Working"], ["idle", "Idle"]];
+
+// Space colors as Herdr hands them out (picker's MARK palette, shared "space.colors").
+// The real build would read shared("space.colors") by space id; a worktree takes its repo's.
+const SPACE_COLOR = {
+  ".dotfiles": "#d9649a", "proxmox-config": "#22a99a", "ffs-mono-repo": "#5b8def", "photo-frame": "#e3814f",
+  workbench: "#8b7cf6", "code-review-tui": "#3fae6a", "my-go-links": "#e3814f", macparakeet: "#22a99a",
+};
+const spaceHue = (s) => SPACE_COLOR[s.split("@")[0]] ?? "#8F8F8F";
+// Space colors are tile fills; as text they're lifted toward white to stay calm and legible.
+const soft = (hex, amt = 72) => `color-mix(in srgb, ${hex} ${amt}%, #e8e8e8)`;
+
+// ---------- Prototype controls ----------
+const params = new URLSearchParams(location.search);
+const VARIANTS = {
+  now: "Now (main.js today)",
+  A: "Brighter type",
+  B: "Colored spaces",
+  C: "Fresh rows stand out",
+  D: "Two lines, colored",
+  E: "C + D, one size up",
+  F: "E, color only on live rows",
+  G: "E, faint selection",
+  H: "G + outline",
+  I: "G, stronger wash",
+  J: "H + colored machine name",
+  K: "H + colored machine tag",
+};
+const KEYS = Object.keys(VARIANTS);
+let variant = KEYS.includes(params.get("variant")) ? params.get("variant") : "J";
+let compare = params.get("compare") === "on";
+let focusedName = AGENTS.find((a) => a.focused).name;
+function setParam() {
+  history.replaceState(null, "", "?" + new URLSearchParams({ variant, compare: compare ? "on" : "off" }));
+  render();
+}
+addEventListener("keydown", (e) => {
+  const i = KEYS.indexOf(variant);
+  if (e.key === "ArrowRight") { variant = KEYS[(i + 1) % KEYS.length]; setParam(); }
+  if (e.key === "ArrowLeft") { variant = KEYS[(i - 1 + KEYS.length) % KEYS.length]; setParam(); }
+});
+
+// ---------- Shared bits that mirror main.js ----------
+const PI = `<svg viewBox="0 0 800 800"><path fill="currentColor" fill-rule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/><path fill="currentColor" d="M517.36 400H634.72V634.72H517.36Z"/></svg>`;
+const SPIN = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><circle cx="12" cy="12" r="9.4" stroke-opacity=".24"/><path d="M12 2.6a9.4 9.4 0 0 1 9.4 9.4"/></svg>`;
+const PRICON = `<svg class="gh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4m0 0 2.5-2.5M11 6l2.5 2.5"/></svg>`;
+const dur = (m) => (m < 1 ? "<1m" : m < 60 ? `${Math.floor(m)}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`);
+const statusEl = (a) =>
+  a.status === "working" ? SPIN :
+  a.status === "blocked" ? `<span class="needs">Needs you</span>` :
+  a.status === "idle" ? `<span class="ring"></span>` : `<span class="dot"></span>`;
+const isFocused = (a) => a.name === focusedName;
+const active = (a) => a.status !== "idle";
+const STATUS_COLOR = { working: "var(--working)", blocked: "var(--blocked)", done: "var(--done)" };
+
+// ---------- Variants: one style table each, same row skeleton as main.js ----------
+// title(a) / meta(a): { size, color, weight }. Line 2 = space · N workers, machine, age.
+// Line 3 = watched PRs. Each field can be recolored; D folds line 3 into line 2.
+const STYLES = {
+  // main.js today: unfocused titles are t.muted, which is the same #8F8F8F as t.dim below them.
+  now: {
+    title: (a) => ({ size: 13, color: isFocused(a) ? "var(--fg)" : "var(--muted)" }),
+    meta: { size: 11, color: "var(--dim)" },
+    machine: { size: 10 },
+    num: { size: 11, color: "var(--dim)" },
+    pr: { size: 11, color: "var(--dim)" },
+    pad: 4,
+  },
+  // Just more contrast and a little more size: titles near (not at) terminal white,
+  // metadata a step lighter, PRs the quietest line.
+  A: {
+    title: (a) => ({ size: 13.5, color: isFocused(a) ? "#FFFFFF" : "#C4C4C4" }),
+    meta: { size: 11.5, color: "#9C9C9C" },
+    machine: { size: 10.5, color: "#7E7E7E" },
+    age: () => "#7E7E7E",
+    num: { size: 11, color: "#6E6E6E" },
+    pr: { size: 11, color: "#7E7E7E" },
+    pad: 5,
+  },
+  // A's type, plus each space in its Herdr color (the old spaces sidebar tiles), so you can
+  // scan for "the ffs-mono-repo one" by color. Worker counts read a step brighter.
+  B: {
+    title: (a) => ({ size: 13.5, color: isFocused(a) ? "#FFFFFF" : "#C4C4C4" }),
+    meta: { size: 11.5, color: "#8A8A8A" },
+    space: (a) => soft(spaceHue(a.space)),
+    workers: "#B4B4B4",
+    machine: { size: 10.5, color: "#767676" },
+    age: () => "#767676",
+    num: { size: 11, color: "#6E6E6E" },
+    pr: { size: 11, color: "#767676" },
+    pad: 5,
+  },
+  // Weight by what's live: working / done / needs-you rows get a status-colored edge, the
+  // brightest titles and a status-colored age; idle rows dim as they age, so the
+  // running agent is the first thing the eye lands on.
+  C: {
+    title: (a) => ({
+      size: active(a) ? 14 : 13.5,
+      weight: active(a) ? 600 : 400,
+      color: isFocused(a) ? "#FFFFFF" : active(a) ? "#DADADA" : a.age < 60 ? "#C4C4C4" : a.age < 1440 ? "#AEAEAE" : "#949494",
+    }),
+    meta: (a) => ({ size: 11.5, color: active(a) || a.age < 60 ? "#A2A2A2" : a.age < 1440 ? "#8A8A8A" : "#747474" }),
+    space: (a) => (active(a) ? soft(spaceHue(a.space)) : null),
+    machine: { size: 10.5, color: "#6E6E6E" },
+    age: (a) => (active(a) ? STATUS_COLOR[a.status] : "#6E6E6E"),
+    accent: (a) => (active(a) ? STATUS_COLOR[a.status] : null),
+    num: { size: 11, color: "#6E6E6E" },
+    pr: { size: 11, color: "#6E6E6E" },
+    pad: 5,
+  },
+  // Fewer lines: line 3 folds into line 2 as a PR chip ("#2032 +7"; the full list on hover),
+  // the space is colored, workers and machine become small chips. Every row is two lines.
+  D: {
+    title: (a) => ({ size: 13.5, color: isFocused(a) ? "#FFFFFF" : "#C8C8C8" }),
+    meta: { size: 11.5, color: "#8A8A8A" },
+    space: (a) => soft(spaceHue(a.space)),
+    machine: { size: 10.5, color: "#7E7E7E" },
+    age: () => "#7E7E7E",
+    num: { size: 11, color: "#6E6E6E" },
+    merge: true,
+    pad: 5,
+  },
+  // D's two lines and chips, C's status edge, no bold; everything one size up (title 14.5,
+  // line 2 12.5, chips 11.5) toward the terminal's 15.3px. Live rows pop by brightness and
+  // the edge; idle rows keep D's legibility instead of fading.
+  E: {
+    title: (a) => ({ size: 14.5, color: isFocused(a) || active(a) ? "#F2F2F2" : "#C8C8C8" }),
+    meta: { size: 12.5, color: "#8E8E8E" },
+    space: (a) => soft(spaceHue(a.space)),
+    machine: { size: 11.5, color: "#7E7E7E" },
+    age: (a) => (active(a) ? STATUS_COLOR[a.status] : "#7E7E7E"),
+    accent: (a) => (active(a) ? STATUS_COLOR[a.status] : null),
+    num: { size: 12, color: "#6E6E6E" },
+    chip: 11.5,
+    merge: true,
+    lines: [22, 19],
+    pad: 5,
+  },
+  // E, but only live rows color their space (idle spaces stay gray, so their titles lead),
+  // and live rows get a faint wash of their status color behind them.
+  F: {
+    title: (a) => ({ size: 14.5, color: isFocused(a) || active(a) ? "#F2F2F2" : "#C8C8C8" }),
+    meta: { size: 12.5, color: "#8E8E8E" },
+    space: (a) => (active(a) ? soft(spaceHue(a.space)) : "#A4A4A4"),
+    machine: { size: 11.5, color: "#7E7E7E" },
+    age: (a) => (active(a) ? STATUS_COLOR[a.status] : "#7E7E7E"),
+    accent: (a) => (active(a) ? STATUS_COLOR[a.status] : null),
+    tint: (a) => (active(a) && !isFocused(a) ? `color-mix(in srgb, ${STATUS_COLOR[a.status]} 7%, transparent)` : null),
+    num: { size: 12, color: "#6E6E6E" },
+    chip: 11.5,
+    merge: true,
+    lines: [22, 19],
+    pad: 5,
+  },
+};
+// E, but the selected row trades the solid #04395E for F's faint wash of the working blue,
+// so reading it is no jump from reading the rows around it.
+STYLES.G = { ...STYLES.E, focusBg: "color-mix(in srgb, var(--working) 7%, transparent)" };
+// G's wash plus a thin blue outline (inset, so nothing shifts), for idle rows that have no edge.
+STYLES.H = { ...STYLES.G, focusRing: "color-mix(in srgb, var(--working) 45%, transparent)" };
+// No outline: the wash alone, roughly twice as strong.
+STYLES.I = { ...STYLES.E, focusBg: "color-mix(in srgb, var(--working) 14%, transparent)" };
+// Machines get a color each, picked away from the status colors (blue, yellow, green).
+// The real build would hash the machine name into a small palette, or let you set one.
+const MACHINE_COLOR = { "work-mac": "#c586c0", devbox: "#4dc9b0", omarchy: "#e3814f" };
+const machineHue = (m) => MACHINE_COLOR[m] ?? "#8F8F8F";
+// J: the machine name in its color, one step bigger than today's 10px. Rows on this computer stay bare.
+STYLES.J = { ...STYLES.H, machine: { size: 11.5 }, machineColor: (m) => soft(machineHue(m), 80) };
+// K: the machine as a tag: its color on a faint wash of itself, shaped like the PR chips.
+STYLES.K = { ...STYLES.H, machine: { size: 11 }, machineChip: true };
+
+const css = (o) => [o.size && `font-size:${o.size}px`, o.color && `color:${o.color}`, o.weight && `font-weight:${o.weight}`].filter(Boolean).join(";");
+
+function row(a, n, s) {
+  const meta = typeof s.meta === "function" ? s.meta(a) : s.meta;
+  const space = s.space?.(a);
+  const spaceHtml = `<span ${space ? `style="color:${space}"` : ""}>${a.space}</span>`;
+  const machine = !a.machine ? ""
+    : s.machineChip ? `<span class="chip" style="font-size:${s.machine.size}px;height:${s.machine.size + 5}px;color:${soft(machineHue(a.machine), 82)};background:color-mix(in srgb, ${machineHue(a.machine)} 16%, transparent)">${a.machine}</span>`
+    : `<span class="none" style="${css({ ...s.machine, color: s.machineColor ? s.machineColor(a.machine) : s.machine.color })}">${a.machine}</span>`;
+  const age = `<span class="none" ${s.age ? `style="color:${s.age(a)}"` : ""}>${dur(a.age)}</span>`;
+  const [h1, h2] = s.lines ?? [20, 17];
+  const l1 = `<div class="l1" style="height:${h1}px"><span class="ico">${PI}</span><span class="grow" style="${css(s.title(a))}">${a.name}</span>${statusEl(a)}<span class="num" style="${css(s.num)}">${LABELS[n] ?? ""}</span></div>`;
+
+  let l2, l3 = "";
+  if (s.merge) {
+    // D: workers as a chip, PRs as one chip (first + count).
+    const chipSize = s.chip ? `font-size:${s.chip}px;height:${s.chip + 5}px;` : "";
+    const workers = a.workers ? `<span class="chip" style="${chipSize}background:#ffffff0d;color:#B4B4B4">${a.workers} worker${a.workers === 1 ? "" : "s"}</span>` : "";
+    const prs = a.prs?.length
+      ? `<span class="chip" title="${a.prs.join(", ")}" style="${chipSize}background:#ffffff0d;color:#A8A8A8">${PRICON}${a.prs[0].replace(/^.*#/, "#")}${a.prs.length > 1 ? `<span style="color:#7E7E7E">+${a.prs.length - 1}</span>` : ""}</span>`
+      : "";
+    l2 = `<div class="l2" style="${css(meta)};gap:6px;height:${h2}px"><span class="grow">${spaceHtml}</span>${workers}${prs}${machine}${age}</div>`;
+  } else {
+    const workers = a.workers ? `<span style="color:${s.workers ?? "inherit"}">${a.workers} worker${a.workers === 1 ? "" : "s"}</span>` : "";
+    const about = [spaceHtml, workers].filter(Boolean).join(" · ");
+    l2 = `<div class="l2" style="${css(meta)}"><span class="grow">${about}</span>${machine}${age}</div>`;
+    if (a.prs?.length) l3 = `<div class="l3" style="${css(s.pr)};gap:5px">${PRICON}<span class="grow">${a.prs.join(", ")}</span></div>`;
+  }
+  const accent = s.accent?.(a);
+  const tint = (isFocused(a) && s.focusBg) || s.tint?.(a);
+  const ring = isFocused(a) && s.focusRing ? `;box-shadow:inset 0 0 0 1px ${s.focusRing}` : "";
+  return `<div class="row ${isFocused(a) ? "focused" : ""}" data-name="${a.name}" style="padding-top:${s.pad}px;padding-bottom:${s.pad}px${tint ? `;background:${tint}` : ""}${ring}">${accent ? `<span class="accent" style="background:${accent}"></span>` : ""}${l1}${l2}${l3}</div>`;
+}
+
+function sidebar(key, caption) {
+  const s = STYLES[key];
+  let html = "", n = 0;
+  for (const [st, label] of SECTIONS) {
+    const members = AGENTS.filter((a) => a.status === st);
+    if (!members.length) continue;
+    html += `<div class="sec"><span style="color:${STATUS_COLOR[st] ?? "var(--dim)"}">${label}</span><span>${members.length}</span></div>`;
+    for (const a of members) html += row(a, n++, s);
+  }
+  return `<div class="sidebar">${caption ? `<div class="cap">${caption}</div>` : ""}<div class="brand">Herdr</div><div class="agents-head"><span>Agents</span><span>◷</span></div><div class="list">${html}</div></div>`;
+}
+
+const NOTES = {
+  now: [
+    "Unfocused titles are <code>t.muted</code> and line 2/3 are <code>t.dim</code>: both <code>#8F8F8F</code>. Only size (13 vs 11px) separates them.",
+    "Machine is 10px, number 11px, all the same gray.",
+  ],
+  A: [
+    "Titles <code>#C4C4C4</code> at 13.5px, a step under the terminal's <code>#D4D4D4</code>; focused title white.",
+    "Line 2 <code>#9C9C9C</code> at 11.5px; machine, age and PRs drop to <code>#7E7E7E</code> so the space reads first.",
+    "Rows get 1px more padding. No new colors.",
+  ],
+  B: [
+    "A's type, plus the space name in its Herdr space color (lifted toward white so it's text, not a tile).",
+    "Worker count a step brighter than the rest of line 2; PRs, machine and age quiet at <code>#767676</code>.",
+    "Needs <code>space.colors</code> from shared state (the picker already writes it).",
+  ],
+  C: [
+    "Working / Done / Needs-you rows: a status-colored edge, 14px semibold titles, space colored, age in the status color.",
+    "Idle titles dim by age: &lt;1h <code>#C4C4C4</code>, &lt;1d <code>#AEAEAE</code>, older <code>#949494</code>; their metadata dims with them.",
+    "The running agent is the first thing you see; a 6-day-old idle row recedes.",
+  ],
+  D: [
+    "Every row is two lines: line 3's PR list becomes one chip, <code>#2032 +7</code> (full list on hover); worker count is a chip too.",
+    "Space colored as in B; titles <code>#C8C8C8</code> at 13.5px.",
+    "Overloaded rows (Card slugs, Account-centric) shrink to the height of sparse ones, so the list scans evenly.",
+  ],
+  E: [
+    "D's rows (two lines, PR and worker chips, colored space) with C's status-colored left edge and status-colored age on live rows.",
+    "No bold: live titles pop by brightness alone, <code>#F2F2F2</code> against idle <code>#C8C8C8</code>.",
+    "One size up: title 14.5px (was 13), line 2 12.5px (was 11), chips 11.5px; rows 22 + 19px tall.",
+    "Idle rows don't fade with age, so the bottom of the list stays as readable as D.",
+  ],
+  F: [
+    "E, plus two ways to push live rows further forward without bold:",
+    "Only live rows color their space; idle spaces are plain <code>#A4A4A4</code>, so color itself means \"running\" and idle titles lead their rows (B's color competed with them).",
+    "Live rows get a 7% wash of their status color behind the edge.",
+  ],
+  G: [
+    "E, with one change: the selected row's solid <code>#04395E</code> becomes F's faint wash, 7% of the working blue.",
+    "The selected title is still white and live rows keep their edge, so the selection shows without a block of navy.",
+  ],
+  H: [
+    "G's 7% wash plus a 1px outline in the working blue at 45%, drawn inside the row so nothing moves.",
+    "Click an idle row (Account-centric, Card slugs): that's the case G made too faint.",
+  ],
+  I: [
+    "No outline; the wash doubles to 14% of the working blue. Still well short of the solid <code>#04395E</code>.",
+    "Click an idle row to compare with H.",
+  ],
+  J: [
+    "H, with the machine name in its own color at 11.5px (was 10px gray): work-mac magenta, devbox cyan, omarchy orange.",
+    "Rows on this computer show no machine, so anything colored on the right is running elsewhere.",
+    "Mock data: two rows moved to devbox and omarchy to show more than one machine.",
+  ],
+  K: [
+    "H, with the machine as a tag: its color on a faint wash of itself, shaped like the PR and worker chips.",
+    "Stronger than J; it reads as a label, at the cost of one more filled shape on busy rows.",
+  ],
+};
+
+function render() {
+  document.getElementById("sidebars").innerHTML = compare && variant !== "now"
+    ? sidebar("now", "NOW") + sidebar(variant, variant + " · " + VARIANTS[variant].toUpperCase())
+    : sidebar(variant);
+  document.querySelectorAll(".row").forEach((el) => el.addEventListener("click", () => { focusedName = el.dataset.name; render(); }));
+  document.getElementById("notes").innerHTML = `<h2>${variant === "now" ? "Now" : variant} — ${VARIANTS[variant]}</h2><ul>${NOTES[variant].map((x) => `<li>${x}</li>`).join("")}</ul>`;
+  const sw = document.getElementById("switcher");
+  sw.innerHTML = `
+    <button data-act="prev">←</button>
+    <span class="label"><b>${variant === "now" ? "Now" : variant}</b> · ${VARIANTS[variant]}</span>
+    <button data-act="next">→</button>
+    <span class="sep"></span>
+    <button data-act="compare" class="${compare ? "on" : ""}">Side by side with Now</button>`;
+  sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    const i = KEYS.indexOf(variant);
+    if (b.dataset.act === "prev") variant = KEYS[(i - 1 + KEYS.length) % KEYS.length];
+    if (b.dataset.act === "next") variant = KEYS[(i + 1) % KEYS.length];
+    if (b.dataset.act === "compare") compare = !compare;
+    setParam();
+  }));
+}
+render();
+</script>
+</body>
+</html>

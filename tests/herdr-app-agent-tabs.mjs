@@ -54,7 +54,7 @@ function render(next) {
   const tree = view.render();
   return { ...collect(tree), scroll: tree.scroll };
 }
-const tabIds = ids => ids.filter(id => id.startsWith('tab-') && id !== 'tab-new' && id !== 'tab-scroll');
+const tabIds = ids => ids.filter(id => id.startsWith('tab-') && id !== 'tab-machine' && id !== 'tab-scroll');
 const program = key => ({ key, name: key, icon: null, agent: key === 'pi' });
 
 const tabs = [
@@ -89,10 +89,11 @@ assert.ok(!out.ids.includes('close-a'), 'A hidden active tab must not draw its c
 out = render({ tabs, panes, agents: [] });
 assert.deepEqual(tabIds(out.ids), ['tab-a', 'tab-b', 'tab-c', 'tab-d']);
 
-// The new-tab button stays when every tab is an agent's.
+// The bar ends with where the space runs, even when every tab is an agent's; no new-tab button.
 out = render({ tabs: tabs.slice(0, 1), panes, agents });
 assert.deepEqual(tabIds(out.ids), []);
-assert.ok(out.ids.includes('tab-new'));
+assert.ok(out.ids.includes('tab-machine') && out.text.includes('This computer'));
+assert.ok(!out.ids.includes('tab-new'));
 
 // Cmd+1–9 and Ctrl+G 1–9 number the shown tabs, skipping agents' tabs.
 const select = (command, next) => {

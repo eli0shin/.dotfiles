@@ -32,12 +32,36 @@ this to `shared.base.json`: the regular merger would erase local state.
 `eli` is a layout, not a color theme; the color theme is `arctic`, tracked in
 `settings.json`. `eli` is a personal clone of the shipped `main` layout;
 shipped files are never edited.
-It uses a hidden sidebar (toggle with Ctrl+G, B), top tabs even for a single
-tab, and square, gapless panes without individual pane headers. Borders appear
-only when split. The old 48/24/72-character sidebar sizes are approximated as
-400/200/600 logical pixels. Agent sorting defaults to priority in the shipped
-Agents mod. The new app does not offer the old exact inner-border-only or
-tab-bar hostname options; its stock status bar identifies the machine.
+It uses a hidden sidebar (toggle with Ctrl+G, B) that lists agents only (spaces
+are in the Ctrl+G, S picker), top tabs even for a single
+tab, and square panes without individual pane headers. The only line in the
+layout is the one between split panes: panes have no frame, and a 1px gap
+shows the tab block's `border` background between them, so a lone pane and a
+split's outer edges are bare. The sidebar and tab bar draw no dividers
+either, and the focused split has no outline (its cursor shows it). There is
+no status bar row: terminals reach the window's bottom. Where the shown space
+runs ("This computer" or its machine) ends the tab bar, in place of a new-tab
+button (Cmd+T, Ctrl+G T), since it belongs to the space as its tabs do. No
+branch (the prompt shows it) and no agent count.
+The sidebar's top row (`eli-chrome`, a clone of `workspace-chrome`) and the
+tab bar are both 38px: 6px above the 29px tabs and 3px below, with the
+"Agents" label level with the tabs. No macOS traffic lights: Herdr has no
+setting to hide them (`false` is rejected, `null` means the default spot, a
+negative y drops them lower), but `"traffic_lights": [-80, 4]` parks them
+past the window's left edge. Close and quit with Cmd+W / Cmd+Q / Ctrl+G D;
+the tab bar's traffic-light inset follows the x, so it shrinks to its 10px
+minimum. The blank
+strip between a tab and the terminal's first row isn't the tab bar's: Herdr
+centers the terminal grid in its pane, so the part of a row that doesn't fit
+splits above and below it (0 to half a row, by window height), and no layout
+or setting pins it to the top. The first
+Agents section header sits right under the row. The row doubles as the Agents
+list's header: the label, the machine filter and the sort, without the
+brand, search or sidebar buttons (Cmd+P, Ctrl+G B). The old
+48/24/72-character sidebar sizes are approximated as 400/200/600 logical
+pixels. Agent sorting defaults to priority in the shipped Agents mod. The new
+app does not offer the old tab-bar hostname option; the tab bar's machine
+label stands in for it.
 
 `eli-tabs` clones the stock tab bar but draws tinted glyphs in their program's
 color instead of muted gray. `programs.json` makes Pi purple and replaces the
@@ -176,6 +200,7 @@ sequences: `ctrl-g c` means press Ctrl+G, release, then C (not Ctrl+G+C).
 | T / R | New / rename tab |
 | P / N / 1–9 | Previous / next / numbered tab (skipping agents' tabs in `eli`) |
 | Shift+1–9 / Shift+0 | Focus agent N / the tenth, in the Agents list order (`eli` layout) |
+| / | Choose which machines' agents the Agents list shows (`agent-machines`) |
 | Shift+Q | Close tab |
 | V / H | Split right / down |
 | Q | Close pane |
@@ -196,7 +221,8 @@ labels in both mods (sandboxing needs two identical copies). Check with
 ### Neovim-aware Ctrl+H/J/K/L
 
 This follows vim-tmux-navigator. In the `eli` layout, `navigator-status` (a
-personal clone of the status bar) owns the chords. When Neovim is in front
+personal clone of the status bar, kept in the layout at zero height because
+only shown mods get commands; it draws nothing) owns the chords. When Neovim is in front
 of the focused terminal, it hands Neovim the key directly:
 `nvim --server <its server> --remote-send <C-h>`, using `nvim` from PATH.
 Neovim treats that exactly like a typed key. Neovim's local
@@ -293,9 +319,12 @@ its space. A failed folder check closes nothing. Check with
 ### Spaces picker and numbered agents
 
 `space-picker` restores the legacy workspace picker on Ctrl+G, S: it lists
-spaces only, numbered in sidebar order. J/K or arrows move, Enter switches,
-1–9 jumps straight to that space, Esc or Q closes. The shipped tab/agent
-picker stays on Cmd+P. Ctrl+1–9 also switch spaces directly.
+spaces only, numbered in space order. Type to fuzzy-find a space: every
+word must match, in any order, with the name ranked above the branch, folder
+and machine (`mods/space-picker/match.js`). Arrows or Ctrl+N/P move, Enter
+switches, Esc closes. The numbers are the Ctrl+1–9 that switch spaces
+directly. The shipped tab/agent picker stays on Cmd+P. Check with
+`node tests/herdr-app-space-picker.mjs`.
 
 `eli-agents` is a personal clone of the shipped Agents list that ends each
 row with its label (1–9, 0, then letters for Ctrl+;), so there's no counting.
@@ -310,37 +339,54 @@ grouped. That fallback can differ from the list for an agent you're viewing
 that just finished, for ties within a section, or for Pi workers (it doesn't
 nest them); open the sidebar once (Ctrl+G, B) to use the exact order.
 
-`eli-spaces` is a personal clone of the shipped Spaces sidebar. Nested worktrees
-show one name without the `repos` `<repo>@` prefix or a second branch suffix.
-Automatic names use the branch; custom space names remain renamable and saved
-names are unchanged. The label uses the available sidebar width and keeps
-ahead/behind counters. Standalone rows keep their original git context.
-Check with `node tests/herdr-app-spaces.mjs` and
-`herdr-app check ~/.config/herdr-app/mods/eli-spaces`.
-
 Each `eli-agents` row takes two lines. The first holds the tab title, which
 can use the whole width up to the status and number. The second holds the
-space, then, right-aligned, the machine (remote agents only) and the idle
+space in its space color (`colors.js`, the colors the shipped picker keeps in
+shared `space.colors`), then, right-aligned, chips for an orchestrator's
+workers and the PRs it watches, the machine (remote agents only) and the idle
 time. Under a space header (grouped view) the second line leaves out the
 space.
+
+The type was picked in `docs/prototypes/herdr-agents-readability.prototype.html`
+(variant H) to stop the rows reading as one block of small gray text, at a
+size closer to the terminal's. Titles are 14.5px with no bold: live rows
+(working, needs you, done) read near white with a left edge and their time in
+the status color; idle titles sit a step under the theme's text. The selected
+row has a faint wash and a thin outline of the working blue instead of a solid
+block, so reading it is no jump from the rows around it. Rows have no pin
+button: hovering never swaps the time for one. Agents pinned before keep
+their Pinned section.
 
 Pi's `pr-watch.ts` labels its terminal `dotfiles.pi_pr_watch` with its
 orchestration role and the PRs it watches, named as in Pi's status line
 (`#1901` in the current repo, `tool#7` elsewhere); `watch.js` reads it only
-while the terminal runs Pi, and the fish hook clears it when Pi exits. A
-third line lists those PRs (italic with `· paused` when the watch is
-paused), or the second line does when it would otherwise be empty. Workers
-nest under their orchestrator with tree lines and take labels right after
+while the terminal runs Pi, and the fish hook clears it when Pi exits. The
+second line shows those PRs as one chip: the first PR and how many more, the
+whole list (with `· paused` when the watch is paused, and the chip italic) on
+hover. Workers nest under their orchestrator with tree lines and take labels right after
 it, shown only while the orchestrator or one of its workers is focused (no
-fold button; the narrow rail shows them all). Workers leave out the space,
-so their PRs go on the second line. Every row's title reads muted unless it is
-the focused agent; its status icon says the rest. The orchestrator's second line counts its workers and names the Jira
-ticket its worker branches share, and its PR line lists every PR it watches,
-even ones a worker also shows. A worker whose orchestrator isn't listed is
+fold button; the narrow rail shows them all). Workers leave out the space.
+The orchestrator's second line names the Jira ticket its worker branches
+share and counts its workers in a chip, and its PR chip covers every PR it
+watches, even ones a worker also shows. A worker whose orchestrator isn't listed is
 an ordinary row. The group's place follows the orchestrator's status, except
 that any worker needing you moves it to Needs you and a working worker lifts
 an idle orchestrator to Working; a done worker doesn't move it, since it
 reports to the orchestrator. Check with `node tests/herdr-app-agent-watch.mjs`.
+
+### Filtering agents by machine
+
+On a computer connected to others, the Agents list can leave out machines:
+Ctrl+G, / (or the screen button in the sidebar's top row) opens `agent-machines`.
+↑/↓ or J/K move, Space shows or hides the machine under the cursor, Enter
+shows only it and closes, Esc or Q closes; "All machines" shows every one.
+The header button reads "N hidden" in blue while any are. The choice persists
+in shared `dotfiles.agents.hidden-machines` (the hidden machines, `""` for
+this computer, so a newly connected machine shows until hidden). Hidden
+agents leave the list, its numbers, agent-jump, Ctrl+G Shift+1–0 and
+tab-close focus; `agent.next`/`agent.prev` (Cmd+[ / ]) still reach them, since
+the app appends agents the list leaves out. Check with
+`node tests/herdr-app-agent-machines.mjs`.
 
 ### Copy mode
 

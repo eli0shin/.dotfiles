@@ -10,6 +10,10 @@ const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 const COMMAND = /^agent-([1-9]|10)$/;
 // Keep in sync with eli-agents/main.js.
 export const ORDER_KEY = "dotfiles.agents.order";
+// Keep in sync with eli-agents/main.js and agent-machines/main.js: agents on
+// these machines ("" is this computer) are left out of the list and its order.
+export const HIDDEN_MACHINES_KEY = "dotfiles.agents.hidden-machines";
+const machineOf = (a) => (a.address.includes("/") ? a.address.split("/")[0] : "");
 export const orderInputs = (list, sort) => [sort ?? "", list.find((a) => a.focused)?.address ?? "", ...list.map((a) => `${a.address}:${a.status}:${a.pinned ? 1 : 0}`)].join("\n");
 
 function subAgentRank(all, listed, address) {
@@ -39,16 +43,19 @@ function sidebarOrder(list, sort, published) {
   return published.addresses.map((address) => byAddress.get(address)).filter(Boolean);
 }
 
-// The Agents list's order for `list`, given the sort and published order read with it.
-export function agentOrder(list, { terminals, sort, published }) {
-  return sidebarOrder(list, sort, published) ?? orderAgents(list, terminals(), sort);
+// The Agents list's order for `list`, given the sort, published order and hidden
+// machines read with it. Agents on hidden machines aren't in it, as in the list.
+export function agentOrder(list, { terminals, sort, published, hidden }) {
+  const off = new Set(hidden ?? []);
+  const shown = off.size ? list.filter((a) => !off.has(machineOf(a))) : list;
+  return sidebarOrder(shown, sort, published) ?? orderAgents(shown, terminals(), sort);
 }
 
 // Returns true when it handled the command.
 export function focusNumberedAgent(command, { agents, terminals, shared, run }) {
   const n = COMMAND.exec(command)?.[1];
   if (!n) return false;
-  const ordered = agentOrder(agents(), { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY) });
+  const ordered = agentOrder(agents(), { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY), hidden: shared(HIDDEN_MACHINES_KEY) });
   const agent = ordered[Number(n) - 1];
   if (agent) run("agent.focus", { terminal: agent.address });
   return true;
