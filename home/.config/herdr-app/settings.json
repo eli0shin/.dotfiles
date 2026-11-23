@@ -1,11 +1,14 @@
 {
-  "zoom": 0.9,
+  "zoom": 1.100000023841858,
   "sounds": {
     "enabled": false
   },
   "font": "Operator Mono Book Herdr",
   "font_size": 17.0,
   "font_ligatures": false,
+  "terminal_line_height": 1.0,
+  "terminal_cell_width": 1.0,
+  "terminal_scroll_speed": 1.0,
   "ui_font": "Operator Mono Book Herdr",
   "telemetry": false,
   "pane_scrollbars": false,
