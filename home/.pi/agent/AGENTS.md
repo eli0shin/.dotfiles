@@ -1,5 +1,6 @@
 - Follow existing repo conventions and use existing patterns before inventing new ones.
 - Keep changes scoped to the request; do not refactor unrelated code.
+- Resolve merge and rebase conflicts by hand: read both sides of each conflict, edit the file, and check the result before continuing. Never write a script to resolve conflicts.
 - Prefer `rg` over `find`.
 - Never run `find ..` or recursively search the user’s home directory.
 - After completing non-trivial code changes, call the `run_code_review` tool before your final response to self-review. Skip it for documentation-only, trivial, or non-production changes.
