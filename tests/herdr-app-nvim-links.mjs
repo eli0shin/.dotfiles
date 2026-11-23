@@ -44,10 +44,10 @@ assert.deepEqual(argv('-weird.md', '/w/repo/-weird.md'), ['nvim', '--', '/w/repo
 assert.equal(planOpen(click('src/gone.ts', null)), null);
 assert.equal(planOpen(click('/srv/app.ts', null, { machine: 'vps' })), null, 'a remote click is looked up there instead');
 assert.equal(planOpen({ link: { kind: 'url', raw: 'https://x.dev', url: 'https://x.dev' }, source }), null);
-for (const file of ['shot.png', 'a.JPG', 'doc.pdf', 'clip.mov', 'song.mp3', 'out.tar.gz', 'Makefile', '.gitignore', 'notes.docx']) {
+for (const file of ['shot.png', 'a.JPG', 'doc.pdf', 'clip.mov', 'song.mp3', 'out.tar.gz', 'notes.docx', '.env.local']) {
   assert.equal(planOpen(click(file, `/w/repo/${file}`)), null, `${file} goes to the system opener`);
 }
-for (const file of ['a.ts', 'README.MD', 'x.lua', 'deploy.env']) {
+for (const file of ['a.ts', 'README.MD', 'x.lua', 'deploy.env', 'Makefile', 'Dockerfile', 'LICENSE', '.gitignore', '.zshrc', '.env']) {
   assert.ok(planOpen(click(file, `/w/repo/${file}`)), `${file} opens in Neovim`);
 }
 

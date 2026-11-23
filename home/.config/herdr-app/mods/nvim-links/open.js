@@ -10,9 +10,10 @@
 // same spellings there itself (remoteLookup), against the folder the core
 // reports for that pane.
 
-// The files Neovim edits: the document types ~/.local/bin/install-neovim-app
-// gives the Neovim app (CFBundleTypeExtensions). Everything else keeps the
-// system's opener. tests/herdr-app-nvim-links.mjs keeps the two lists equal.
+// The files Neovim edits: ones without an extension (Makefile, Dockerfile,
+// .gitignore), and the document types ~/.local/bin/install-neovim-app gives
+// the Neovim app (CFBundleTypeExtensions). Everything else keeps the system's
+// opener. tests/herdr-app-nvim-links.mjs keeps the two lists equal.
 export const NEOVIM_EXTENSIONS = new Set([
   "txt", "text", "md", "markdown", "json", "jsonc", "yaml", "yml", "toml", "xml", "csv", "log",
   "conf", "config", "ini", "env", "c", "h", "cc", "cpp", "hpp", "m", "mm", "swift", "go", "rs",
@@ -20,11 +21,12 @@ export const NEOVIM_EXTENSIONS = new Set([
   "sh", "bash", "zsh", "fish", "lua", "vim", "sql", "html", "htm", "css", "scss", "sass", "less",
 ]);
 
-/** Whether Neovim is the editor for the file at `path`, by its extension. */
+/** Whether Neovim is the editor for the file at `path`: no extension, or one on the list. */
 export function isNeovimFile(path) {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  // A leading dot starts a name (.gitignore), not an extension.
+  const name = path.slice(path.lastIndexOf("/") + 1).replace(/^\.+/, "");
   const dot = name.lastIndexOf(".");
-  return dot > 0 && NEOVIM_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  return dot < 0 || NEOVIM_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
 /** `raw` without a sentence's period and a `:42` or `:42:7` place, and that place (or null). */

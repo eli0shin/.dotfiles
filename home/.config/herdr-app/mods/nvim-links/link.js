@@ -1,8 +1,8 @@
 // Cmd-click on a file path in a terminal: open it in Neovim in a new split to
 // the right of the pane you clicked in, at the line it names (file.rs:42).
-// The split runs on the clicked pane's machine. Only the file types the Neovim
-// app is the editor for (install-neovim-app); folders, other files and paths
-// that don't exist there go to Herdr's usual opener.
+// The split runs on the clicked pane's machine. Files without an extension
+// and the types the Neovim app edits (install-neovim-app) open there; folders,
+// other files and paths that don't exist there go to Herdr's usual opener.
 
 import { exec, run } from "herdr";
 import { planOpen, planRemote, remoteLookup } from "./open.js";
