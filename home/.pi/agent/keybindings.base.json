@@ -11,10 +11,10 @@
     "end",
     "ctrl+shift+g"
   ],
-  "tui.altScreen.pageUp": [
+  "tui.altScreen.halfPageUp": [
     "ctrl+u"
   ],
-  "tui.altScreen.pageDown": [
+  "tui.altScreen.halfPageDown": [
     "ctrl+d"
   ]
 }
