@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 const root = new URL('../home/.config/herdr-app/', import.meta.url);
-const { displayPath, rankSpaces } = await import(new URL('mods/space-picker/match.js', root));
+const { displayPath, rankSpaces, terminalTab } = await import(new URL('mods/space-picker/match.js', root));
 const home = '/Users/eli';
 const space = (name, extra = {}) => ({ name, folder: '', branch: null, machine: null, ...extra });
 const names = (spaces) => spaces.map((s) => s.name);
@@ -49,4 +49,13 @@ test('home shows as ~, and the query matches what is shown', () => {
   assert.equal(displayPath('/Users/elise', home), '/Users/elise');
   const spaces = [space('x', { folder: '/Users/eli/code/x' }), space('y', { folder: '/opt/users/eli' })];
   assert.deepEqual(names(rankSpaces('~/c', spaces, home)), ['x']);
+});
+
+test('going to a space shows a terminal tab rather than an agent\'s', () => {
+  const hidden = new Set(['agent', 'review']);
+  const tab = (id, active = false) => ({ id, active });
+  assert.equal(terminalTab({ tabs: [tab('agent', true), tab('review'), tab('shell')] }, hidden).id, 'shell');
+  assert.equal(terminalTab({ tabs: [tab('shell'), tab('editor', true)] }, hidden).id, 'editor');
+  assert.equal(terminalTab({ tabs: [tab('agent', true), tab('review')] }, hidden), null);
+  assert.equal(terminalTab({ tabs: [tab('agent'), tab('shell')] }, hidden).id, 'shell');
 });

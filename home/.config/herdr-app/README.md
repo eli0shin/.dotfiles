@@ -331,7 +331,10 @@ spaces only, numbered in space order. Type to fuzzy-find a space: every
 word must match, in any order, with the name ranked above the branch, folder
 and machine (`mods/space-picker/match.js`). Arrows or Ctrl+N/P move, Enter
 switches, Esc closes. The numbers are the Ctrl+1–9 that switch spaces
-directly. The shipped tab/agent picker stays on Cmd+P. Check with
+directly. Spaces are for their terminals (agents have the Agents list), so
+when the chosen space's selected tab is an agent's (or the review's), the
+picker shows its first terminal tab instead; Ctrl+1–9 and other ways in
+leave the selected tab alone. The shipped tab/agent picker stays on Cmd+P. Check with
 `node tests/herdr-app-space-picker.mjs`.
 
 `eli-agents` is a personal clone of the shipped Agents list that ends each
@@ -393,7 +396,10 @@ in shared `dotfiles.agents.hidden-machines` (the hidden machines, `""` for
 this computer, so a newly connected machine shows until hidden). Hidden
 agents leave the list, its numbers, agent-jump, Ctrl+G Shift+1–0 and
 tab-close focus; `agent.next`/`agent.prev` (Cmd+[ / ]) still reach them, since
-the app appends agents the list leaves out. Check with
+the app appends agents the list leaves out. Herdr's notes about them (an
+agent finished or needs you) don't show either: the layout's toast is
+`eli-toast`, a clone of `toast` that closes a note at once when its click
+action focuses a terminal on a hidden machine (`filter.js`). Check with
 `node tests/herdr-app-agent-machines.mjs`.
 
 ### Finding a PR's agent (Ctrl+G, F)

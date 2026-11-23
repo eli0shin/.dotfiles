@@ -67,3 +67,13 @@ function scoreField(term, field) {
 function wordStart(text, at) {
   return at === 0 || /[^a-z0-9]/.test(text[at - 1]);
 }
+
+// The tab to show when going to a space: its selected tab unless that's an
+// agent's (or another `hidden` one), else its first terminal tab; null when
+// it has none, so the space opens as it was.
+export function terminalTab(space, hidden) {
+  const tabs = space?.tabs ?? [];
+  const active = tabs.find((tab) => tab.active);
+  if (active && !hidden.has(active.id)) return active;
+  return tabs.find((tab) => !hidden.has(tab.id)) ?? null;
+}

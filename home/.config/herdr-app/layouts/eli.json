@@ -144,5 +144,6 @@
   "preview": "layouts/eli.svg",
   "link_handlers": [
     "nvim-links"
-  ]
+  ],
+  "toast": "eli-toast"
 }

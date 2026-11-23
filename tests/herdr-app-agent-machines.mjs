@@ -10,6 +10,7 @@ const root = new URL('../home/.config/herdr-app/', import.meta.url);
 const { machineRows, toggleMachine, onlyMachine } = await import(new URL('mods/agent-machines/filter.js', root));
 const { agentOrder, orderInputs } = await import(new URL('mods/navigator-status/agent-order.js', root));
 const read = (path) => readFileSync(new URL(path, root), 'utf8');
+const { hiddenAgentNote } = await import(new URL('mods/eli-toast/filter.js', root));
 
 test('rows: this computer, connected machines, then machines known only from agents or the filter', () => {
   const known = [{ name: null, layout: 'ready' }, { name: 'work-mac', layout: 'ready' }, { name: 'devbox', layout: 'unavailable' }];
@@ -58,7 +59,19 @@ test('the copies of the filter key and machineOf agree, and Ctrl+G, / opens the 
     for (const other of rest) assert.equal(other, first);
   };
   const filtering = ['mods/eli-agents/main.js', 'mods/agent-machines/main.js', 'mods/navigator-status/agent-order.js', 'mods/pr-finder/main.js'];
-  agree([...filtering, 'mods/eli-chrome/main.js'], /const HIDDEN_MACHINES_KEY = .*$/m);
+  agree([...filtering, 'mods/eli-chrome/main.js', 'mods/eli-toast/main.js'], /const HIDDEN_MACHINES_KEY = .*$/m);
   agree(filtering, /const machineOf = .*$/m);
   assert.equal(JSON.parse(read('keys.json')).global['ctrl-g /'], 'mod.open:agent-machines');
+});
+
+test('notifications about agents on hidden machines are dropped; others show', () => {
+  const focus = (args) => ({ name: 'agent.focus', args });
+  assert.equal(hiddenAgentNote(focus({ terminal: 'work-mac/t3x' }), ['work-mac']), true);
+  assert.equal(hiddenAgentNote(focus({ terminal: 't4' }), ['work-mac']), false);
+  assert.equal(hiddenAgentNote(focus({ terminal: 't4' }), ['']), true);
+  assert.equal(hiddenAgentNote(focus({ pane: 'p1' }), ['devbox'], [{ pane: 'p1', terminal: 'devbox/t2' }]), true);
+  assert.equal(hiddenAgentNote(focus({ terminal: 'work-mac/t3x' }), []), false);
+  assert.equal(hiddenAgentNote({ name: 'app.settings' }, ['']), false);
+  assert.equal(hiddenAgentNote(undefined, ['']), false);
+  assert.equal(JSON.parse(read('layouts/eli.json')).toast, 'eli-toast');
 });

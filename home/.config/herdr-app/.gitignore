@@ -51,6 +51,11 @@
 !/mods/pr-finder/names.js
 !/mods/pr-finder/watch.js
 !/mods/pr-finder/colors.js
+!/mods/eli-toast/
+/mods/eli-toast/*
+!/mods/eli-toast/main.js
+!/mods/eli-toast/mod.json
+!/mods/eli-toast/filter.js
 !/mods/agent-machines/
 /mods/agent-machines/*
 !/mods/agent-machines/main.js

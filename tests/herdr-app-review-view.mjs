@@ -60,6 +60,7 @@ test('its tab is left out of the tab keys', () => {
 
 test('Cmd+R runs it, and the bar uses the same label', () => {
   assert.equal(JSON.parse(readFileSync(new URL('keys.json', root), 'utf8')).global['cmd-r'], 'navigator-status.review');
-  const tabsSource = readFileSync(new URL('mods/eli-tabs/main.js', root), 'utf8');
-  assert.ok(tabsSource.includes(`const REVIEW_LABEL = "${REVIEW_LABEL}";`));
+  for (const mod of ['eli-tabs', 'space-picker']) {
+    assert.ok(readFileSync(new URL(`mods/${mod}/main.js`, root), 'utf8').includes(`const REVIEW_LABEL = "${REVIEW_LABEL}";`), mod);
+  }
 });

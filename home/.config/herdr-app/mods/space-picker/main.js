@@ -1,13 +1,19 @@
 // Space switcher, like the legacy Herdr workspace picker: type to fuzzy-find a
 // space by name (or branch, folder, machine; see match.js), ↑/↓ (or
-// ctrl-p/ctrl-n) to move, Enter to go, Esc to close. Rows keep their space
+// ctrl-p/ctrl-n) to move, Enter to go, Esc to close. Spaces are for their
+// terminals (agents have the Agents list), so going to one shows a terminal
+// tab when its selected tab is an agent's. Rows keep their space
 // number, the Ctrl+1–9 that switches to them. The shipped picker lists tabs
 // and agents; this lists spaces only.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, home, run, theme, props, closeOverlay } from "herdr";
-import { rankSpaces } from "./match.js";
+import { spaces, agents, panes, terminals, home, run, theme, props, closeOverlay } from "herdr";
+import { rankSpaces, terminalTab } from "./match.js";
+
+// Keep in sync with navigator-status/review-view.js: the review's tab, like
+// agents' tabs, isn't one of a space's terminals.
+const REVIEW_LABEL = "dotfiles.review";
 
 // Rows shown at once; the window follows the selection, so it never leaves the screen.
 const ROWS = 12;
@@ -44,7 +50,12 @@ export default class SpacePicker extends View {
 
   go(space) {
     this.close();
-    if (space) run("space.select", { id: space.id });
+    if (!space) return;
+    run("space.select", { id: space.id });
+    const review = new Set(terminals().filter((t) => t.state === "live" && t.labels?.[REVIEW_LABEL]).map((t) => t.address));
+    const hidden = new Set([...agents().map((a) => a.tab), ...panes().filter((p) => p.terminal && review.has(p.terminal)).map((p) => p.tab)]);
+    const tab = terminalTab(spaces().find((s) => s.id === space.id) ?? space, hidden);
+    if (tab && !tab.active) run("tab.select", { id: tab.id });
   }
 
   render() {
