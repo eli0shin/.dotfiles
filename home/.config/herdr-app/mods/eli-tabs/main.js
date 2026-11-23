@@ -1,7 +1,10 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, agents, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, agents, terminals, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
 import { tabNames } from "./names.js";
+
+// Keep in sync with navigator-status/review-view.js.
+const REVIEW_LABEL = "dotfiles.review";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -49,10 +52,12 @@ export default class Tabs extends View {
   render() {
     const t = theme();
     const space = spaces().find(p => p.active);
-    // Agents are reached through the Agents list, so their tabs stay out of the bar.
-    // Keep in sync with navigator-status/tab-order.js, which numbers and steps through these.
-    const agentTabs = new Set(agents().map(a => a.tab));
-    const shown = (space?.tabs ?? []).filter(c => !agentTabs.has(c.id));
+    // Agents are reached through the Agents list and the review through its key
+    // (Cmd+R), so their tabs stay out of the bar. Keep in sync with
+    // navigator-status/tab-order.js and review-view.js, which number and step through these.
+    const review = new Set(terminals().filter(t => t.state === "live" && t.labels?.[REVIEW_LABEL]).map(t => t.address));
+    const hiddenTabs = new Set([...agents().map(a => a.tab), ...panes().filter(p => p.terminal && review.has(p.terminal)).map(p => p.tab)]);
+    const shown = (space?.tabs ?? []).filter(c => !hiddenTabs.has(c.id));
     // Name against every tab so duplicate suffixes match the Agents list.
     const names = tabNames(space?.tabs ?? [], panes());
     const stop = (_e, cx) => cx.stop_propagation();

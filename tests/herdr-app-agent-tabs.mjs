@@ -43,6 +43,7 @@ const Tabs = vm.runInNewContext(source.replace(/^import .*;\n/gm, '').replace('e
   spaces: () => [{ id: 'space', active: true, tabs: state.tabs }],
   panes: () => state.panes,
   agents: () => state.agents,
+  terminals: () => state.terminals ?? [],
   theme: () => ({}), layout: () => ({}), window: () => ({}), settings: () => ({ zoom: 1 }),
   shared: () => null, run: (...call) => ran.push(call), openOverlay: () => {},
   localStorage: { getItem: () => null, setItem: () => {} },
@@ -94,6 +95,11 @@ out = render({ tabs: tabs.slice(0, 1), panes, agents });
 assert.deepEqual(tabIds(out.ids), []);
 assert.ok(out.ids.includes('tab-machine') && out.text.includes('This computer'));
 assert.ok(!out.ids.includes('tab-new'));
+
+// The review's tab (its terminal labelled dotfiles.review) stays out of the bar too.
+out = render({ tabs, panes: [...panes.slice(0, 4), { tab: 'd', program: program('shell'), terminal: 't9' }], agents,
+  terminals: [{ address: 't9', state: 'live', labels: { 'dotfiles.review': '1' } }] });
+assert.deepEqual(tabIds(out.ids), ['tab-b'], 'The review tab must be hidden');
 
 // Cmd+1–9 and Ctrl+G 1–9 number the shown tabs, skipping agents' tabs.
 const select = (command, next) => {

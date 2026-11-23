@@ -1,5 +1,5 @@
-// Agents are reached through the Agents list only, so tab keys never land on
-// an agent's tab: numbered tabs (Cmd+1–9, Ctrl+G 1–9) count only the tabs the
+// Agents are reached through the Agents list only, and the review through its
+// own key (review-view.js), so tab keys never land on their tabs: numbered tabs (Cmd+1–9, Ctrl+G 1–9) count only the tabs the
 // `eli-tabs` bar shows, and next/prev (Ctrl+G N/P, Ctrl+Tab, Cmd+Shift+]/[,
 // scrolling the bar) step over hidden ones. On an agent's tab, next/prev move
 // down/up the Agents list instead, wrapping. The app's tab.select {index} and
@@ -12,16 +12,17 @@ export function agentTabIds(agents) {
   return new Set(agents.map(a => a.tab));
 }
 
-export function visibleTabs(space, agents) {
-  const hidden = agentTabIds(agents);
+// extra: other tab ids to leave out (the review's).
+export function visibleTabs(space, agents, extra = new Set()) {
+  const hidden = new Set([...agentTabIds(agents), ...extra]);
   return (space?.tabs ?? []).filter(tab => !hidden.has(tab.id));
 }
 
 // The next shown tab after the active one, wrapping. Settled tabs are skipped,
 // as the app's tab.next/prev skip them.
-function stepTab(space, agents, by) {
+function stepTab(space, agents, by, extra = new Set()) {
   const tabs = space?.tabs ?? [];
-  const hidden = agentTabIds(agents);
+  const hidden = new Set([...agentTabIds(agents), ...extra]);
   const active = tabs.findIndex(tab => tab.active);
   // No active tab: next starts at the first tab, prev at the last.
   const from = active >= 0 ? active : by > 0 ? -1 : tabs.length;
@@ -45,9 +46,10 @@ function stepAgent(tab, order, by) {
   return order[((from + by) % order.length + order.length) % order.length];
 }
 
-// order: a function giving agents() in the Agents list order.
+// order: a function giving agents() in the Agents list order; hidden: a
+// function giving other tab ids the bar leaves out (read only when needed).
 // Returns true when it handled the command.
-export function selectTab(command, { spaces, agents, run, order }) {
+export function selectTab(command, { spaces, agents, run, order, hidden = () => new Set() }) {
   const n = NUMBERED.exec(command)?.[1];
   if (!n && !(command in STEP)) return false;
   const space = spaces().find(s => s.active);
@@ -58,7 +60,8 @@ export function selectTab(command, { spaces, agents, run, order }) {
     if (agent) run("agent.focus", { terminal: agent.address });
     return true;
   }
-  const tab = n ? visibleTabs(space, list)[Number(n) - 1] : stepTab(space, list, STEP[command]);
+  const extra = hidden();
+  const tab = n ? visibleTabs(space, list, extra)[Number(n) - 1] : stepTab(space, list, STEP[command], extra);
   if (tab) run("tab.select", { id: tab.id });
   return true;
 }

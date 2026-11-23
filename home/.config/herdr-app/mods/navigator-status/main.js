@@ -1,16 +1,18 @@
 import { View, div } from "gpui-kit";
-import { spaces, agents, run, focused, terminals, hc, exec, notify, nextCommand, shared, setShared, checking, home } from "herdr";
+import { spaces, agents, panes, run, focused, terminals, hc, exec, notify, nextCommand, shared, setShared, checking, home } from "herdr";
 import { createNavigator } from "./navigation.js";
 import { focusNumberedAgent, agentOrder, ORDER_KEY, HIDDEN_MACHINES_KEY } from "./agent-order.js";
 import { selectTab } from "./tab-order.js";
 import { applySharedPreferences } from "./preferences.js";
 import { createTabCloseFocus } from "./tab-close-focus.js";
 import { createDeadSpaces } from "./dead-spaces.js";
+import { createReviewView, reviewTabIds } from "./review-view.js";
 
 export default class NavigatorStatus extends View {
   init(_props, cx) {
     this.navigator = createNavigator({ focused, terminals, hc, exec, run, notify });
     this.tabCloseFocus = createTabCloseFocus({ run });
+    this.review = createReviewView({ spaces, focused, terminals, run });
     this.seeSpaces(spaces(), agents());
     if (!checking()) {
       const deadSpaces = createDeadSpaces({ spaces, terminals, exec, run, notify, home });
@@ -21,7 +23,10 @@ export default class NavigatorStatus extends View {
         const command = await nextCommand();
         if (applySharedPreferences(command, { setShared, notify })) continue;
         const order = (list) => agentOrder(list, { terminals, sort: shared("agents.sort"), published: shared(ORDER_KEY), hidden: shared(HIDDEN_MACHINES_KEY) });
-        if (selectTab(command, { spaces, agents, run, order })) continue;
+        if (this.review.handle(command)) continue;
+        // The review's tab is left out of the tab keys, as agents' tabs are.
+        const hidden = () => reviewTabIds(panes(), terminals());
+        if (selectTab(command, { spaces, agents, run, order, hidden })) continue;
         if (!focusNumberedAgent(command, { agents, terminals, shared, run })) await this.navigator.navigate(command);
       }
     });

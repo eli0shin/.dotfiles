@@ -35,7 +35,7 @@ const Tabs = vm.runInNewContext(source.replace(/^import .*;\n/gm, '').replace('e
   div: () => element('div'), h_flex: () => element('flex'),
   svg: path => element('svg', path), image: path => element('image', path),
   spaces: () => [{ id: 'space', active: true, tabs: [{ id: 'tab', name: '1', active: true }] }],
-  panes: () => [{ tab: 'tab', program }], agents: () => [],
+  panes: () => [{ tab: 'tab', program }], agents: () => [], terminals: () => [],
   theme: () => ({ muted: '#aaaaaa', accent: '#61afef' }),
   layout: () => ({}), window: () => ({}), settings: () => ({ zoom: 1 }),
   shared: () => [], run: () => {}, openOverlay: () => {},

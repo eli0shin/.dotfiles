@@ -388,6 +388,21 @@ tab-close focus; `agent.next`/`agent.prev` (Cmd+[ / ]) still reach them, since
 the app appends agents the list leaves out. Check with
 `node tests/herdr-app-agent-machines.mjs`.
 
+### Review view (Cmd+R)
+
+The review TUI (`review`, `~/code/code-review-tui`) is a view of Herdr rather
+than a tab to hunt for. Cmd+R (`navigator-status.review`, in
+`navigator-status/review-view.js`) shows this machine's review; on the review,
+it goes back to the terminal you came from. With none running on the focused
+space's machine, it starts one in the current space: review opens its Review
+and Diff tabs in the space and folder it runs in, so press it first from the
+space you review from. Its tab stays out of the tab bar and the tab keys, as
+agents' tabs do. The terminal labels itself `dotfiles.review` (that's how
+it's found, on any machine) and ends when review quits, so the next Cmd+R
+starts a fresh one; Herdr core keeps it running across app restarts. A review
+started by hand in a shell isn't labelled, so it stays an ordinary tab. Check
+with `node tests/herdr-app-review-view.mjs`.
+
 ### Copy mode
 
 `copy-mode` brings back the TUI's Ctrl+G, [ on the selection commands added in
