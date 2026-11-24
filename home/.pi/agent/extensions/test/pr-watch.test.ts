@@ -3434,7 +3434,7 @@ test("a merge commit waits for chained runs before reporting", async () => {
     await harness.runPoll();
     assert.equal(harness.sentMessages.length, 0, "a just-finished run may still start a workflow_run");
 
-    deploy.updatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    deploy.updatedAt = new Date(Date.now() - 31_000).toISOString();
     harness.runs.push({ ...completedRun(141, "Post-deploy verify"), event: "workflow_run", updatedAt: deploy.updatedAt });
     await harness.runPoll();
     assert.equal(harness.sentMessages.length, 1);

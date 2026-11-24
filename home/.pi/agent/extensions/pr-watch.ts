@@ -266,10 +266,10 @@ const MAX_RECENT_GH_OUTPUTS = 3;
 const MAX_DELIVERED_MESSAGE_IDS = 100;
 const MAX_WORKER_MESSAGE_LENGTH = 16_000;
 const MAX_MERGED_BRANCHES = 20;
-// Chained workflow_run runs (e.g. post-deploy verification) start shortly after
-// the run they follow, so a merge commit waits this long after its last run
-// update before reporting. Direct default-branch pushes use the same policy.
-const FIXED_SHA_SETTLE_MS = 3 * 60_000;
+// Chained workflow_run runs (e.g. post-deploy verification) start within
+// seconds of the run they follow, so a merge commit waits this long after its
+// last run update before reporting. Direct default-branch pushes use the same policy.
+const FIXED_SHA_SETTLE_MS = 30_000;
 const FIXED_SHA_WATCH_TIMEOUT_MS = 30 * 60_000;
 const FIXED_SHA_RUN_EVENTS = ["push", "workflow_run"];
 // gh pr create takes no PR argument; its output URL identifies the new PR.
