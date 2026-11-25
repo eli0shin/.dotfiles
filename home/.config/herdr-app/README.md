@@ -166,14 +166,17 @@ Two pieces use that to bring Pi back:
 
 - Pi's `hc-session-label.ts` labels the terminal with `dotfiles.pi_session`
   (the session file) and `dotfiles.pi_shell` (a token for the fish shell Pi
-  runs under), and leaves a marker named after the token in
-  `$XDG_STATE_HOME/dotfiles/hc-pi/`.
+  runs under) on every session start and turn.
 - `~/.config/fish/conf.d/hc-pi-resume.fish` gives each terminal's first shell
   a new token. On that shell's first prompt, a session labelled under another
-  token is one the terminal was running when it was lost, so the shell runs
-  `pi --session <file>` from its command line, as if typed. When Pi returns to
-  the shell that ran it, the shell clears the labels, so a Pi you quit stays
-  quit.
+  token is the one the terminal last ran before it was lost, so the shell runs
+  `pi --session <file>` from its command line, as if typed.
+
+Nothing clears the labels. A macOS restart sends Pi SIGTERM, Pi exits
+cleanly and fish draws a prompt before it dies, which looks exactly like
+quitting Pi. Clearing the labels when Pi returned to the shell wiped every
+agent on the Nov 25 Software Update restart. A Pi you quit therefore comes
+back after the next reboot too.
 
 The Herdr app treats a terminal as an agent once Pi reports its status with
 OSC 7501. Pi only reports after the terminal answers its 7501 query before the
@@ -183,8 +186,7 @@ startup DA query reaches Pi first, so the hook runs Pi with
 handler, because fish never hands the terminal to a command run from an event
 handler.
 
-It only looks at the labels once, when a terminal starts, and checks for a
-marker file at each prompt. Check with `bash tests/hc-pi-resume.sh`.
+It only looks at the labels once, at a terminal's first prompt.
 
 ## Keys
 
@@ -286,7 +288,6 @@ node tests/herdr-app-jump-list.mjs
 node tests/herdr-app-tab-icons.mjs
 node tests/herdr-app-agent-tabs.mjs
 node tests/herdr-app-session-names.mjs
-bash tests/hc-pi-resume.sh
 nvim --headless -u NONE -l tests/herdr-app-navigation.lua
 herdr-app check ~/.config/herdr-app/mods/navigator-status
 herdr-app check ~/.config/herdr-app/mods/eli-tabs
