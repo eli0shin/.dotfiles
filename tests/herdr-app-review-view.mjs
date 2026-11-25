@@ -35,6 +35,20 @@ test('jumps to this machine\'s review, then back to where you were', () => {
   assert.deepEqual(calls.at(-1), ['pane.focus', { terminal: 't1' }]);
 });
 
+test('review-show shows the review but never goes back from it', () => {
+  const { view, calls, state } = setup({
+    focused: { space: 's1', terminal: 't1' },
+    terminals: [{ address: 't1', state: 'live' }, review('t7')],
+  });
+  assert.equal(view.handle('review-show'), true);
+  assert.deepEqual(calls, [['pane.focus', { terminal: 't7' }]]);
+  state.focused = { space: 's1', terminal: 't7' };
+  view.handle('review-show');
+  assert.equal(calls.length, 1);
+  view.handle('review');
+  assert.deepEqual(calls.at(-1), ['pane.focus', { terminal: 't1' }]);
+});
+
 test('a remote space uses its machine\'s review', () => {
   const { view, calls } = setup({ focused: { space: 'work-mac/s2', terminal: 'work-mac/t2' }, terminals: [review('t7'), review('work-mac/t5')] });
   view.handle('review');

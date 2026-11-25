@@ -17,6 +17,8 @@ export const REVIEW_ARGV = [
   `hc label "$HC_TERMINAL_ID" ${REVIEW_LABEL}=1 >/dev/null 2>&1; review; hc kill "$HC_TERMINAL_ID"`,
 ];
 const COMMAND = "review";
+// Shows the review without toggling back (the PR review notification's click).
+const SHOW_COMMAND = "review-show";
 
 const machineOf = (address) => (address.includes("/") ? address.split("/")[0] : "");
 export const isReview = (terminal) => terminal?.state === "live" && Boolean(terminal.labels?.[REVIEW_LABEL]);
@@ -33,7 +35,7 @@ export function createReviewView({ spaces, focused, terminals, run }) {
   return {
     // Returns true when it handled the command.
     handle(command) {
-      if (command !== COMMAND) return false;
+      if (command !== COMMAND && command !== SHOW_COMMAND) return false;
       const here = focused();
       const all = spaces();
       const space = all.find((s) => s.id === here?.space) ?? all.find((s) => s.active);
@@ -41,6 +43,7 @@ export function createReviewView({ spaces, focused, terminals, run }) {
       const listed = terminals();
       const review = listed.find((t) => isReview(t) && machineOf(t.address) === machine);
       if (review && here?.terminal === review.address) {
+        if (command === SHOW_COMMAND) return true;
         if (back && listed.some((t) => t.address === back && t.state === "live")) run("pane.focus", { terminal: back });
         return true;
       }
