@@ -14,6 +14,10 @@ for (const [key, direction] of Object.entries({ h: 'left', j: 'down', k: 'up', l
   assert.equal(keys.global[`alt-shift-${key}`], `pane.resize:${direction}`, `Alt+Shift+${key} resizes panes, like the TUI`);
 }
 
+// The command palette lists the spaces picker.
+const pickerManifest = JSON.parse(readFileSync(new URL('mods/space-picker/mod.json', root)));
+assert.deepEqual(pickerManifest.palette.map((e) => [e.title, e.command, e.args]), [['Spaces picker', 'mod.open', { name: 'space-picker' }]]);
+
 const { createNavigator } = await import(new URL('mods/navigator-status/navigation.js', root));
 let focus = { terminal: 't1', pane: 'p1', tab: 'tab1' };
 let records = [{ address: 't1', labels: {} }];

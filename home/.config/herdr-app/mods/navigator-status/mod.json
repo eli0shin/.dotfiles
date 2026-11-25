@@ -3,5 +3,17 @@
   "cloned_from": {
     "name": "workspace-status",
     "version": "0.1.13"
-  }
+  },
+  "palette": [
+    {
+      "title": "Jump list: back",
+      "command": "navigator-status.jump-list-back",
+      "words": "previous tab jumplist ctrl-o"
+    },
+    {
+      "title": "Jump list: forward",
+      "command": "navigator-status.jump-list-forward",
+      "words": "next tab jumplist ctrl-i"
+    }
+  ]
 }

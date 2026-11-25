@@ -8,6 +8,12 @@ const root = new URL('../home/.config/herdr-app/', import.meta.url);
 const keys = JSON.parse(readFileSync(new URL('keys.json', root)));
 assert.equal(keys['layout:eli']['ctrl-g o'], 'navigator-status.jump-list-back');
 assert.equal(keys['layout:eli']['ctrl-g i'], 'navigator-status.jump-list-forward');
+// The command palette lists both; a mod's own palette commands are named after it and take no arguments.
+const navigatorManifest = JSON.parse(readFileSync(new URL('mods/navigator-status/mod.json', root)));
+assert.deepEqual(navigatorManifest.palette.map((e) => [e.title, e.command, e.args]), [
+  ['Jump list: back', 'navigator-status.jump-list-back', undefined],
+  ['Jump list: forward', 'navigator-status.jump-list-forward', undefined],
+]);
 const { createJumpList, MAX_ENTRIES } = await import(new URL('mods/navigator-status/jump-list.js', root));
 
 // A window: tabs come on screen at a time, and the jump list's jumps show their tab.

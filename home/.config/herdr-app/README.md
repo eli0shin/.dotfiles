@@ -235,7 +235,8 @@ count, and a tab you come back to shows the pane you left focused. It behaves
 like Neovim's default list, not `jumpoptions=stack`: a tab is in it once, where
 you last left it, and going somewhere new after jumping back drops nothing.
 Closed tabs are skipped; the list keeps the last 100 and starts empty when
-Herdr starts. `navigator-status` keeps it (`jump-list.js`); check with
+Herdr starts. The command palette has Jump list: back and Jump list: forward.
+`navigator-status` keeps it (`jump-list.js`); check with
 `node tests/herdr-app-jump-list.mjs`.
 
 ### Neovim-aware Ctrl+H/J/K/L
@@ -341,7 +342,8 @@ its space. A failed folder check closes nothing. Check with
 
 ### Spaces picker and numbered agents
 
-`space-picker` restores the legacy workspace picker on Ctrl+G, S: it lists
+`space-picker` (also Spaces picker in the command palette) restores the legacy
+workspace picker on Ctrl+G, S: it lists
 spaces only, numbered in space order. Type to fuzzy-find a space: every
 word must match, in any order, with the name ranked above the branch, folder
 and machine (`mods/space-picker/match.js`). Arrows or Ctrl+N/P move, Enter
@@ -451,7 +453,8 @@ with `node tests/herdr-app-review-view.mjs`.
 Cmd-click a file path in a terminal and `nvim-links` opens it in Neovim, in a
 new split to the right of the pane you clicked in. A relative path is taken
 from the folder of what runs in that pane; Herdr resolves it, along with `~/`.
-`file.rs:42` and `file.rs:42:7` put the cursor there. Files without an
+`file.rs:42`, `file.rs:42:7`, `file.rs:10-20` and `file.rs#L42` put the cursor
+there (Herdr 0.1.18 sends the line and column; a range opens at its first line). Files without an
 extension (Makefile, Dockerfile, .gitignore) and the file types
 `~/.local/bin/install-neovim-app` makes Neovim the editor for open this way;
 everything else (images, PDFs, media), folders, and paths that don't exist
@@ -481,7 +484,8 @@ selection show in the focused terminal:
 - y, Enter or Cmd+C copies the selection and leaves. q, Ctrl+C, a click
   outside the bar, or Esc with nothing selected leaves without copying.
 
-Leaving clears the selection and scrolls back to the bottom. Word motions
+Leaving clears the selection and scrolls back to the bottom. The command palette
+(Cmd+Shift+P) has it as Copy mode. Word motions
 (w/b/e) and search (/ ? n N) aren't there: the mod API doesn't expose
 terminal text. Esc reaches the mod through the `mod:copy-mode` section of
 `keys.json`; without it Esc would close the bar before the mod saw it.

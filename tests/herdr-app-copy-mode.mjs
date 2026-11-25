@@ -9,6 +9,10 @@ const root = new URL('../home/.config/herdr-app/', import.meta.url);
 const keys = JSON.parse(readFileSync(new URL('keys.json', root)));
 assert.equal(keys.global['ctrl-g ['], 'mod.open:copy-mode', 'Ctrl+G [ opens copy mode, like the TUI');
 assert.equal(keys['mod:copy-mode']?.escape, 'copy-mode.escape', 'Esc reaches copy mode instead of closing its popup');
+// The command palette lists it (Herdr 0.1.18 skips a mod.open entry whose mod has no main.js).
+const copyManifest = JSON.parse(readFileSync(new URL('mods/copy-mode/mod.json', root)));
+assert.deepEqual(copyManifest.palette.map((e) => [e.title, e.command, e.args]), [['Copy mode', 'mod.open', { name: 'copy-mode' }]]);
+readFileSync(new URL('mods/copy-mode/main.js', root));
 const { createCopyMode, keyName } = await import(new URL('mods/copy-mode/copy.js', root));
 
 // A terminal's grid: total rows (history and screen), cols, a view of len rows from offset.

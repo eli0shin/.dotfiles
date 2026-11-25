@@ -1,1 +1,20 @@
-{ "place": "none", "title": "Copy mode", "overlay": { "kind": "popup", "at": "top", "offset": 6, "width": 420 } }
+{
+  "place": "none",
+  "title": "Copy mode",
+  "overlay": {
+    "kind": "popup",
+    "at": "top",
+    "offset": 6,
+    "width": 420
+  },
+  "palette": [
+    {
+      "title": "Copy mode",
+      "command": "mod.open",
+      "args": {
+        "name": "copy-mode"
+      },
+      "words": "select yank keyboard selection visual"
+    }
+  ]
+}

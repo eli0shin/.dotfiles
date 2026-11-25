@@ -3,8 +3,9 @@
 //
 // Locally, Herdr resolves the clicked text before the handler sees it: a
 // relative path against the live folder of what runs in the clicked pane, `~/`
-// and `$HOME`, and a `:42` or `:42:7` place in the file, which it drops from
-// `path` but keeps in `raw`. `path` is null when no such file exists here.
+// and `$HOME`. `path` is null when no such file exists here. A `:42`, `:42:7`,
+// `:10-20` or `#L42` after the path becomes `link.line` and `link.column`
+// (Herdr 0.1.18), even when `path` is null.
 //
 // In a pane on another machine `path` is always null, so the mod resolves the
 // same spellings there itself (remoteLookup), against the folder the core
@@ -29,19 +30,37 @@ export function isNeovimFile(path) {
   return dot < 0 || NEOVIM_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
-/** `raw` without a sentence's period and a `:42` or `:42:7` place, and that place (or null). */
-export function splitPlace(raw) {
-  const text = raw.endsWith(".") ? raw.slice(0, -1) : raw;
-  const m = text.match(/:(\d+)(?::(\d+))?$/);
-  if (!m) return { bare: text, place: null };
-  return { bare: text.slice(0, -m[0].length), place: { line: Number(m[1]), ...(m[2] ? { col: Number(m[2]) } : {}) } };
+// `5`, `5-12` or `5-L12`, as Herdr reads a line range (links::line_range):
+// the start parses as a Rust NonZeroU32 (an optional `+`, 1 to 4294967295),
+// the end is digits after an optional `L`.
+function isLineRange(text) {
+  const dash = text.indexOf("-");
+  const start = dash < 0 ? text : text.slice(0, dash);
+  const end = dash < 0 ? "1" : text.slice(dash + 1).replace(/^L/, "");
+  if (!/^\d+$/.test(end) || !/^\+?\d+$/.test(start)) return false;
+  const n = Number(start.replace(/^\+/, ""));
+  return n >= 1 && n <= 4294967295;
 }
 
-/** The place `raw` names in the file at `path`, or null when it's part of the file's name. */
-export function placeIn(raw, path) {
-  const { bare, place } = splitPlace(raw);
-  if (!place || path.endsWith(raw.slice(bare.length).replace(/\.$/, ""))) return null;
-  return place;
+/** `raw` without the place after the path, as Herdr strips it for a remote click (links::without_suffix). */
+export function bareSpelling(raw) {
+  const text = raw.endsWith(".") ? raw.slice(0, -1) : raw;
+  const anchor = text.lastIndexOf("#L");
+  if (anchor >= 0 && isLineRange(text.slice(anchor + 2))) return text.slice(0, anchor);
+  const colon = text.lastIndexOf(":");
+  if (colon >= 0 && text.slice(colon + 1).includes("-") && isLineRange(text.slice(colon + 1))) return text.slice(0, colon);
+  let bare = text;
+  for (let i = 0; i < 2; i++) {
+    const m = bare.match(/:(\d+)$/);
+    if (!m) break;
+    bare = bare.slice(0, -m[0].length);
+  }
+  return bare;
+}
+
+/** The place Herdr read from the click, or null. */
+function placeOf(link) {
+  return link.line ? { line: link.line, ...(link.column ? { col: link.column } : {}) } : null;
 }
 
 function plan(path, place, pane) {
@@ -53,7 +72,7 @@ function plan(path, place, pane) {
 /** `{path, pane, argv}` to open a local click in Neovim beside the clicked pane, or null to let Herdr open it. */
 export function planOpen({ link, source }) {
   if (link.kind !== "file" || source.machine || !link.path) return null;
-  return plan(link.path, placeIn(link.raw, link.path), source.pane);
+  return plan(link.path, placeOf(link), source.pane);
 }
 
 // Resolves each spelling as Herdr does locally and prints the first regular
@@ -91,12 +110,13 @@ export function remoteLookup({ link, source }) {
     const path = fileUriPath(link.raw);
     return path && { machine: source.machine, args: ["-c", FIND, "sh", source.cwd ?? "", path], candidates: [null] };
   }
-  const { bare, place } = splitPlace(link.raw);
+  // The literal spelling first: a file really named `notes:42` wins.
+  const bare = bareSpelling(link.raw);
   const spellings = [link.raw];
   const places = [null];
   if (bare !== link.raw) {
     spellings.push(bare);
-    places.push(place);
+    places.push(placeOf(link));
   }
   return { machine: source.machine, args: ["-c", FIND, "sh", source.cwd ?? "", ...spellings], candidates: places };
 }
