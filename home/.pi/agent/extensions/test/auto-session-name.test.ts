@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -305,14 +305,20 @@ else {
 `;
 
 type Calls = (count?: number) => Promise<string[]>;
-async function withFakeHerdrApp(tabs: unknown[], run: (calls: Calls) => Promise<void>) {
+// Only the selected frontend's CLI is installed, so a call to the other one fails.
+async function withFakeHerdrApp(tabs: unknown[], run: (calls: Calls) => Promise<void>, frontend = "herdr-app") {
   const root = await mkdtemp(join(tmpdir(), "auto-session-name-"));
-  const app = join(root, "herdr-app");
+  const app = join(root, frontend);
   await writeFile(`${app}.json`, JSON.stringify({ spaces: [{ id: "sp1", tabs }] }));
   await writeFile(app, FAKE_HERDR_APP);
   await chmod(app, 0o755);
-  const path = process.env.PATH;
+  if (frontend !== "herdr-app") {
+    await mkdir(join(root, "herdr"));
+    await writeFile(join(root, "herdr", "frontend"), `${frontend}\n`);
+  }
+  const path = process.env.PATH, config = process.env.XDG_CONFIG_HOME;
   process.env.PATH = `${root}:${path}`;
+  process.env.XDG_CONFIG_HOME = root;
   process.env.HC_TERMINAL_ID = "t7";
   try {
     const read = async () => (await readFile(`${app}.calls`, "utf8").catch(() => "")).split("\n").filter(Boolean);
@@ -323,6 +329,8 @@ async function withFakeHerdrApp(tabs: unknown[], run: (calls: Calls) => Promise<
     });
   } finally {
     process.env.PATH = path;
+    if (config === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = config;
     delete process.env.HC_TERMINAL_ID;
     await rm(root, { recursive: true, force: true });
   }
@@ -342,6 +350,15 @@ test("Pi writes the Herdr app tab name on every name change, replacing the tab's
     assert.deepEqual((await calls(2)).slice(1), [rename("tb2", "Deploy Hotfix")], "manual names reach the tab too");
     await h.emit("session_shutdown");
   });
+});
+
+test("Pi names the tab through herdr-frontend when ~/.config/herdr/frontend selects it", async () => {
+  await withFakeHerdrApp([tab("tb1", "1", ["t7", "pi"])], async (calls) => {
+    const h = harness(); await h.start();
+    await h.user("Fix login redirects");
+    assert.deepEqual(await calls(1), [rename("tb1", "Fix Login Redirects")]);
+    await h.emit("session_shutdown");
+  }, "herdr-frontend");
 });
 
 test("a resumed session names its new tab", async () => {

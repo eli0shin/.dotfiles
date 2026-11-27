@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -84,16 +87,30 @@ export function cleanTitle(value: string): string | undefined {
 const run = promisify(execFile);
 type HerdrTab = { id: string; name: string; terminals: { terminal: string; app: string | null }[] };
 
+// The window over herdr-core is Herdr app's (herdr-app), or herdr-frontend's when
+// ~/.config/herdr/frontend says so. Both CLIs take the same arguments.
+export function herdrFrontend(): "herdr-app" | "herdr-frontend" {
+  const config = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  try {
+    // ASCII whitespace only, as spawn-worker and agent-status trim (trim() also drops a BOM).
+    const selected = readFileSync(join(config, "herdr", "frontend"), "utf8").replace(/^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g, "");
+    return selected === "herdr-frontend" ? "herdr-frontend" : "herdr-app";
+  } catch {
+    return "herdr-app";
+  }
+}
+
 // The Herdr app shows Pi's terminal title only on unnamed tabs, so Pi writes the
 // tab's real name itself, replacing whatever name the tab has.
 export async function nameHerdrTab(terminal: string, name: string): Promise<void> {
-  const { stdout } = await run("herdr-app", ["ls"], { timeout: 5000 });
+  const app = herdrFrontend();
+  const { stdout } = await run(app, ["ls"], { timeout: 5000 });
   const tabs: HerdrTab[] = JSON.parse(stdout).spaces.flatMap((space: { tabs: HerdrTab[] }) => space.tabs);
   const tab = tabs.find(t => t.terminals.some(x => x.terminal === terminal));
   // A split tab follows its first Pi pane, so other Pis in it don't fight over the name.
   const lead = tab?.terminals.find(x => x.app === "pi")?.terminal ?? terminal;
   if (!tab || lead !== terminal || tab.name === name) return;
-  await run("herdr-app", ["do", "tab.rename", JSON.stringify({ id: tab.id, name })], { timeout: 5000 });
+  await run(app, ["do", "tab.rename", JSON.stringify({ id: tab.id, name })], { timeout: 5000 });
 }
 
 export default function autoSessionName(pi: ExtensionAPI): void {

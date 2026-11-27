@@ -3,6 +3,9 @@ set -euo pipefail
 
 # Apply only portable preferences; shared.json also holds machine-local mod state.
 # Do not use the normal *.base.json merger here: it would discard that state.
+# This configures Herdr app's home whichever app ~/.config/herdr/frontend
+# selects, so switching back finds it configured. herdr-frontend has nothing
+# here to apply: no layout.switch target, no navigator-status.set-shared.
 config_dir="${1:?Usage: configure-herdr-app.sh <herdr-app config directory>}"
 defaults="$config_dir/shared.defaults.json"
 state="$config_dir/shared.json"

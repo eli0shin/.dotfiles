@@ -7,7 +7,7 @@ The answer is a **triage**: what Eli must do, what to push, and what to close. T
 
 ## 1. Gather
 
-Run [`scripts/agent-status --signals`](scripts/agent-status) for per-agent JSON and `scripts/agent-status` for the table. It covers legacy herdr (`manager: herdr`) when its server is running, and the Herdr app's local spaces (`manager: herdr-app`) when its window is open or you run inside it. Fields that need reading:
+Run [`scripts/agent-status --signals`](scripts/agent-status) for per-agent JSON and `scripts/agent-status` for the table. It covers legacy herdr (`manager: herdr`) when its server is running, and the Herdr app's local spaces when its window is open or you run inside it. Their `manager` is the window's CLI: `herdr-app`, or `herdr-frontend` when `~/.config/herdr/frontend` says so. Fields that need reading:
 
 - `herdr_status: done` means the agent finished a turn Eli hasn't viewed yet.
 - `last_turn_reaches_orchestrator: false` means the orchestrator never learns that this worker stopped. PR Watch forwards a worker's finished turn only when the worker watches no PR, and failed CI and conflicts go only to the worker.

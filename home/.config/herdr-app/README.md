@@ -100,7 +100,8 @@ Cmd+P picker still lists agents' tabs. Check with
 Pi's `auto-session-name.ts` extension generates the session name and
 reassesses it after the second and third user prompts. Whenever Pi's name
 changes (automatic or `/name`), and when a named session starts or resumes, the
-extension writes it as the real tab name with `herdr-app do tab.rename`,
+extension writes it as the real tab name with `herdr-app do tab.rename`
+(or `herdr-frontend do tab.rename`, see “Herdr app or herdr-frontend”),
 replacing whatever name the tab has. It writes only from interactive Pi and only
 from a tab's first Pi pane, and does nothing when Pi's machine has no reachable
 app.
@@ -155,6 +156,27 @@ These behaviors are verified against Herdr app 0.1.13's source:
 and [startup layout selection](https://github.com/herdrdev/herdr-app/blob/v0.1.13/src/window.rs#L567-L572).
 There is no separate default-layout setting in this version; startup reads
 `shared.json`, which is why stow needs the small preference adapter.
+
+## Herdr app or herdr-frontend
+
+`~/.config/herdr/frontend` (`$XDG_CONFIG_HOME/herdr/frontend` when that is
+set) names the window the tools drive: `herdr-app` or `herdr-frontend`. A
+missing or unreadable file, or any other text, means `herdr-app`. Switching is
+one edit, and each tool reads the file on every run:
+
+```sh
+echo herdr-frontend > ~/.config/herdr/frontend   # back: rm ~/.config/herdr/frontend
+```
+
+`spawn-worker`, `agent-status` and Pi's `auto-session-name.ts` call the
+selected app's CLI directly (`herdr-frontend ls | do` takes the same arguments
+and prints the same JSON as `herdr-app`, per herdr-frontend's `docs/cli.md`).
+Both apps adopt terminals labeled `herdr.space`/`herdr.tab`, so `hc run` opens
+worker and resumed tabs in either. `dot stow` configures Herdr app's home
+whichever app is selected: herdr-frontend keeps its settings in its own home,
+has no layout to switch and serves no `navigator-status` commands. The PR review
+notification's click (`scripts/open-herdr-review.sh`) still opens Herdr app's
+review pane; herdr-frontend serves no command for it.
 
 ## Resuming Pi after a reboot
 
