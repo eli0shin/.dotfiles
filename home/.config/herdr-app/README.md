@@ -162,7 +162,8 @@ There is no separate default-layout setting in this version; startup reads
 `~/.config/herdr/frontend` (`$XDG_CONFIG_HOME/herdr/frontend` when that is
 set) names the window the tools drive: `herdr-app` or `herdr-frontend`. A
 missing or unreadable file, or any other text, means `herdr-app`. Switching is
-one edit, and each tool reads the file on every run:
+one edit and needs no restart: each tool reads the file on every call, Pi's
+extension on every tab rename.
 
 ```sh
 echo herdr-frontend > ~/.config/herdr/frontend   # back: rm ~/.config/herdr/frontend
@@ -172,9 +173,10 @@ echo herdr-frontend > ~/.config/herdr/frontend   # back: rm ~/.config/herdr/fron
 selected app's CLI directly (`herdr-frontend ls | do` takes the same arguments
 and prints the same JSON as `herdr-app`, per herdr-frontend's `docs/cli.md`).
 Both apps adopt terminals labeled `herdr.space`/`herdr.tab`, so `hc run` opens
-worker and resumed tabs in either. `dot stow` configures Herdr app's home
-whichever app is selected: herdr-frontend keeps its settings in its own home,
-has no layout to switch and serves no `navigator-status` commands. The PR review
+worker and resumed tabs in either. With herdr-frontend selected, `dot stow`
+skips Herdr app's setup: herdr-frontend never reads this home, keeps its
+settings in its own, has no layout to switch and serves no `navigator-status`
+commands. After switching back, run `dot stow` once more. The PR review
 notification's click (`scripts/open-herdr-review.sh`) still opens Herdr app's
 review pane; herdr-frontend serves no command for it.
 
