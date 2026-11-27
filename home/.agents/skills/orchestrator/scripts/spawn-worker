@@ -165,11 +165,19 @@ if [[ -n $ticket ]]; then
   tickets show "$ticket" || exit
 fi
 
+# The window over herdr-core is Herdr app (herdr-app), or herdr-frontend when
+# ~/.config/herdr/frontend says so; missing or unreadable means herdr-app.
+# Both CLIs take the same ls and do arguments and print the same JSON.
+frontend=herdr-app
+if [[ $(cat -- "${XDG_CONFIG_HOME:-$HOME/.config}/herdr/frontend" 2>/dev/null) =~ ^[[:space:]]*herdr-frontend[[:space:]]*$ ]]; then
+  frontend=herdr-frontend
+fi
+
 # herdr-core also runs terminals on machines the app reaches over SSH, with
 # the same markers, so this computer's open window must show this terminal.
 herdr_app_shows_terminal() {
-  [[ -n ${HC_TERMINAL_ID:-} ]] && command -v herdr-app >/dev/null &&
-    herdr-app ls 2>/dev/null | python3 -c '
+  [[ -n ${HC_TERMINAL_ID:-} ]] && command -v "$frontend" >/dev/null &&
+    "$frontend" ls 2>/dev/null | python3 -c '
 import json, sys
 terminal = sys.argv[1]
 shown = any(
@@ -181,6 +189,7 @@ sys.exit(0 if shown else 1)
 }
 
 # The innermost manager wins: legacy Herdr, then tmux, then the Herdr app.
+# workspace_manager=herdr-app means either frontend's window ($frontend).
 # Under the Herdr app, repos creates only the worktree (--no-tmux) and this
 # script opens the worker's space; `repos clean` later closes it by its folder.
 workspace_manager=tmux
@@ -235,7 +244,7 @@ print(panes[0])
 ' "$worker_identity") || exit
 elif [[ $workspace_manager == herdr-app ]]; then
   # A recovered worker reuses its space; otherwise it gets a new one.
-  space_id=$(herdr-app ls | python3 -c '
+  space_id=$("$frontend" ls | python3 -c '
 import json, sys
 label = sys.argv[1]
 ids = [s["id"] for s in json.load(sys.stdin)["spaces"] if s["name"] == label and not s.get("machine")]
@@ -316,11 +325,11 @@ elif [[ $workspace_manager == herdr-app ]]; then
   if [[ $launch_status -eq 0 && -n $new_space ]]; then
     renamed=
     for _ in {1..50}; do
-      if herdr-app ls | python3 -c '
+      if "$frontend" ls | python3 -c '
 import json, sys
 sys.exit(0 if any(s["id"] == sys.argv[1] for s in json.load(sys.stdin)["spaces"]) else 1)
 ' "$space_id" 2>/dev/null; then
-        herdr-app do space.rename --id "$space_id" --name "$worker_identity" >/dev/null && renamed=1
+        "$frontend" do space.rename --id "$space_id" --name "$worker_identity" >/dev/null && renamed=1
         break
       fi
       sleep 0.1

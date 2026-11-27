@@ -6,7 +6,8 @@
 
 Legacy herdr (the TUI) is read when its server is running. The Herdr app is
 read when its window is open or this runs inside herdr-core; only local
-spaces are read. Neither check starts a server.
+spaces are read. Neither check starts a server. The window is Herdr app's
+(herdr-app), or herdr-frontend's when ~/.config/herdr/frontend says so.
 
 PR watch state is the newest `pr-watch-state` entry on the session's active
 branch, the entry the pr-watch extension restores on resume.
@@ -62,6 +63,17 @@ def herdr_agents():
     return agents
 
 
+def herdr_frontend():
+    """The CLI of the window over herdr-core: herdr-app unless the file names herdr-frontend."""
+    path = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr", "frontend")
+    try:
+        with open(path) as f:
+            selected = f.read().strip(" \t\r\n\f\v")
+    except (OSError, UnicodeDecodeError):
+        return "herdr-app"
+    return "herdr-frontend" if selected == "herdr-frontend" else "herdr-app"
+
+
 def hc_terminal(address):
     # A terminal can end between listing and this read.
     try:
@@ -74,9 +86,10 @@ def herdr_app_agents():
     """Herdr app terminals running an agent, in local spaces and tabs."""
     if not shutil.which("hc"):
         return []
+    frontend = herdr_frontend()
     window = None
-    if shutil.which("herdr-app"):
-        listed = subprocess.run(["herdr-app", "ls"], capture_output=True, text=True)
+    if shutil.which(frontend):
+        listed = subprocess.run([frontend, "ls"], capture_output=True, text=True)
         if listed.returncode == 0:
             window = json.loads(listed.stdout)
     # Without a window, only a herdr-core terminal knows its core is running;
@@ -112,7 +125,7 @@ def herdr_app_agents():
         if window is None and status == "done" and labels.get("herdr.seen") == str(detail.get("turn")):
             status = "idle"
         agents.append({
-            "manager": "herdr-app",
+            "manager": frontend,
             "ids": {"terminal": term["terminal"], **ids},
             "workspace": space,
             "tab_label": tab,
@@ -204,7 +217,7 @@ def collect():
     rows = []
     for agent in herdr_agents() + herdr_app_agents():
         # This session started before hc-session-label loaded still knows itself.
-        if agent["manager"] == "herdr-app" and agent["ids"]["terminal"] == this_terminal and this_session:
+        if agent["manager"] != "herdr" and agent["ids"]["terminal"] == this_terminal and this_session:
             agent["session_file"] = agent["session_file"] or this_session
         session_file = agent["session_file"]
         session = load_session(session_file) if agent["agent"] == "pi" and session_file else {}
@@ -279,7 +292,7 @@ def print_table(rows):
             role = r["role"] or "—"
         if r["agent"]["agent"] == "pi" and not r["agent"]["session_file"]:
             role = "session unknown"
-        herdr_kind = "app" if r["agent"]["manager"] == "herdr-app" else "TUI"
+        herdr_kind = {"herdr": "TUI", "herdr-app": "app"}.get(r["agent"]["manager"], "frontend")
         print(f"| {herdr_kind} | {r['workspace']} | {tab} | {watched} | {role} |")
 
 

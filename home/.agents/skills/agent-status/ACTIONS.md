@@ -17,12 +17,12 @@ Take the session's `manager`, IDs, cwd, and session file from a fresh `scripts/a
   3. The resume is complete when `herdr agent get <pane_id>` reports that same session file.
 - **Close when done:** run `herdr agent wait <pane_id> --until idle --until done --until blocked --timeout 600000`, then confirm the result with `herdr agent read <pane_id>`, then close the pane. If the read shows a question or a failure, report it to Eli and leave the pane open.
 
-## Herdr app (`manager: herdr-app`)
+## Herdr app (`manager: herdr-app` or `herdr-frontend`)
 
-The app arranges spaces and tabs; herdr-core (`hc`) talks to the terminals.
+The app arranges spaces and tabs; herdr-core (`hc`) talks to the terminals. `<manager>` below is the app's CLI, `herdr-app` or `herdr-frontend`: both take the same arguments.
 
-- **Close:** `herdr-app do pane.close --pane <pane_id>`.
-- **Focus:** `herdr-app do agent.focus --terminal <terminal>`.
+- **Close:** `<manager> do pane.close --pane <pane_id>`.
+- **Focus:** `<manager> do agent.focus --terminal <terminal>`.
 - **Reply:** `hc send <terminal> "<reply>"`.
 - **Check on worker:** as above, prompt only the idle orchestrator:
   ```bash
@@ -30,6 +30,6 @@ The app arranges spaces and tabs; herdr-core (`hc`) talks to the terminals.
   ```
 - **Resume** a closed session:
   1. Pick a new tab ID, `tb` followed by 32 hex characters (`tb$(uuidgen | tr -d - | tr A-F a-f)`), and run `hc run --bg --keep --no-parent --cwd <cwd> --label herdr.space=<space_id> --label herdr.tab=<tab_id> -- fish -lic 'pi --session <session-uuid>; exec fish -li'`. The app adds the tab to that space without focusing it, and the login shell gives Pi the environment the app's own tabs get. The new terminal is `address` in the reply.
-  2. Once `herdr-app ls` lists the tab, run `herdr-app do tab.rename --id <tab_id> --name "<old tab label>"`.
+  2. Once `<manager> ls` lists the tab, run `<manager> do tab.rename --id <tab_id> --name "<old tab label>"`.
   3. The resume is complete when `hc get <terminal>` has the label `dotfiles.pi_session` set to that same session file.
 - **Close when done:** run `hc wait <terminal> --timeout 600`, then confirm the result with `hc read <terminal> --lines 100`, then close the pane. If the read shows a question or a failure, report it to Eli and leave the pane open.

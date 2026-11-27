@@ -4,6 +4,14 @@ set -euo pipefail
 # Apply only portable preferences; shared.json also holds machine-local mod state.
 # Do not use the normal *.base.json merger here: it would discard that state.
 config_dir="${1:?Usage: configure-herdr-app.sh <herdr-app config directory>}"
+
+# This configures Herdr app's home, which herdr-frontend never reads, and
+# herdr-frontend serves neither layout.switch nor navigator-status.set-shared.
+# So when ~/.config/herdr/frontend selects herdr-frontend, there is nothing to do.
+if [[ $(cat -- "${XDG_CONFIG_HOME:-$HOME/.config}/herdr/frontend" 2>/dev/null) =~ ^[[:space:]]*herdr-frontend[[:space:]]*$ ]]; then
+    echo 'Skipped Herdr app setup: ~/.config/herdr/frontend selects herdr-frontend.'
+    exit 0
+fi
 defaults="$config_dir/shared.defaults.json"
 state="$config_dir/shared.json"
 

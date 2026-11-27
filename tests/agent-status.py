@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run with python3 tests/agent-status.py (fake herdr, herdr-app and hc)."""
+"""Run with python3 tests/agent-status.py (fake herdr, herdr-app, herdr-frontend and hc)."""
 
 import json
 import os
@@ -23,7 +23,7 @@ esac
 """
 
 HERDR_APP = """#!/bin/sh
-printf 'herdr-app %s\\n' "$*" >> "$CALLS"
+printf '%s %s\\n' "${0##*/}" "$*" >> "$CALLS"
 [ -n "$APP_WINDOW" ] || exit 1
 cat <<'EOF'
 {"spaces":[
@@ -52,7 +52,7 @@ class AgentStatusTests(unittest.TestCase):
         self.root = tempfile.TemporaryDirectory()
         root = Path(self.root.name)
         (root / "bin").mkdir()
-        for name, body in {"herdr": HERDR, "herdr-app": HERDR_APP, "hc": HC}.items():
+        for name, body in {"herdr": HERDR, "herdr-app": HERDR_APP, "herdr-frontend": HERDR_APP, "hc": HC}.items():
             path = root / "bin" / name
             path.write_text(body)
             path.chmod(0o755)
@@ -94,6 +94,21 @@ class AgentStatusTests(unittest.TestCase):
         self.assertEqual(app["last_assistant"]["text"], "Done.")
         self.assertNotIn("hc ls", self.calls.read_text())
 
+    def test_reads_the_window_of_the_selected_frontend(self):
+        config = Path(self.root.name) / "xdg"
+        (config / "herdr").mkdir(parents=True)
+        (config / "herdr" / "frontend").write_text("herdr-frontend\n")
+        tui, app = self.signals(XDG_CONFIG_HOME=str(config))
+        self.assertEqual((app["manager"], app["terminal"], app["space_id"]), ("herdr-frontend", "t3", "sp1"))
+        self.assertIn("herdr-frontend ls", self.calls.read_text())
+        self.assertNotIn("herdr-app", self.calls.read_text())
+
+        # Anything else, or no file, is Herdr app.
+        (config / "herdr" / "frontend").write_text("herdr-frontends\n")
+        self.assertEqual(self.signals(XDG_CONFIG_HOME=str(config))[1]["manager"], "herdr-app")
+        (config / "herdr" / "frontend").unlink()
+        self.assertEqual(self.signals(XDG_CONFIG_HOME=str(config))[1]["manager"], "herdr-app")
+
     def test_never_asks_hc_without_evidence_of_a_running_core(self):
         # hc starts a core when none is running.
         self.assertEqual(self.signals(HERDR_RUNNING="false", APP_WINDOW=""), [])
@@ -116,6 +131,17 @@ class AgentStatusTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("| app | repo@fix | pi (this session) | — | — |", result.stdout)
+
+    def test_the_table_names_herdr_frontend_rows(self):
+        (Path(self.root.name) / ".config/herdr").mkdir(parents=True)
+        (Path(self.root.name) / ".config/herdr/frontend").write_text("herdr-frontend")
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)], capture_output=True, text=True,
+            env={**self.env, "HERDR_RUNNING": "false", "SESSION": "", "HC_TERMINAL_ID": "t3",
+                 "PI_SESSION_FILE": str(self.session)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("| frontend | repo@fix | pi (this session) | — | — |", result.stdout)
 
 
 if __name__ == "__main__":

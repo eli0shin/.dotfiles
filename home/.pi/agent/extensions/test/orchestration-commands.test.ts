@@ -415,8 +415,9 @@ done
 printf '\\n' >> ${JSON.stringify(calls)}
 exit "\${FAIL_DISPATCH:-0}"
 `);
-  await executable(join(fakeBin, "herdr-app"), `#!/bin/sh
-printf 'herdr-app' >> ${JSON.stringify(calls)}
+  // Both frontends' CLIs: ~/.config/herdr/frontend picks the one called.
+  for (const frontend of ["herdr-app", "herdr-frontend"]) await executable(join(fakeBin, frontend), `#!/bin/sh
+printf '%s' "\${0##*/}" >> ${JSON.stringify(calls)}
 for arg in "$@"; do printf ' <%s>' "$arg" >> ${JSON.stringify(calls)}; done
 printf '\\n' >> ${JSON.stringify(calls)}
 case "$1 $2" in
@@ -444,6 +445,7 @@ printf '%s' "$1" > ${JSON.stringify(received)}
     PATH: `${fakeBin}:${process.env.PATH}`,
     TMPDIR: root,
     SHELL: "/usr/local/bin/fish",
+    XDG_CONFIG_HOME: root,
     HC_TERMINAL_ID: "t4",
     PI_ORCHESTRATION_SESSION_ID: "session-123",
   };
@@ -533,6 +535,25 @@ printf '%s' "$1" > ${JSON.stringify(received)}
     const tmuxLauncher = log.match(/bash (\/tmp\/pi-worker\.[A-Za-z0-9]+)/);
     assert.ok(tmuxLauncher, log);
     await rm(tmuxLauncher[1]);
+
+    // With herdr-frontend selected, the same flow drives herdr-frontend's CLI.
+    await rm(calls);
+    await rm(existingSpace);
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(join(root, "herdr")));
+    await writeFile(join(root, "herdr", "frontend"), "herdr-frontend\n");
+    const viaFrontend = spawnSync(spawnWorker, ["042-implement-widget"], { encoding: "utf8", env, input: "" });
+    assert.equal(viaFrontend.status, 0, viaFrontend.stderr);
+    log = await readFile(calls, "utf8");
+    assert.equal(
+      normalize(log),
+      "herdr-frontend <ls>\n" +
+        "repos stack --no-tmux 042-implement-widget\n" +
+        "herdr-frontend <ls>\n" +
+        launch("SPACE") +
+        "herdr-frontend <ls>\n" +
+        "herdr-frontend <do> <space.rename> <--id> <SPACE> <--name> <repo@042-implement-widget>\n",
+    );
+    await rm(launcherOf(log));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
