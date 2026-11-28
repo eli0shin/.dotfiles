@@ -25,6 +25,12 @@ on-window-detected = [
         if = "test %{app-bundle-id} = com.apple.systempreferences",
         run = "layout tiling",
     },
+    # herdr-frontend draws a borderless window without a full-screen button.
+    # AeroSpace floats such windows unless the app is on its built-in list.
+    {
+        if = "test %{app-bundle-id} = dev.herdr.frontend",
+        run = "layout tiling",
+    },
 ]
 
 # Keep the layout tree predictable as windows open and close.
