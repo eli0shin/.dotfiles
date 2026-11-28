@@ -9,7 +9,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, closeOverlay, props, window, layout } from "herdr";
 import { tabNames } from "./names.js";
-import { piWatch, watchText, orchestrations } from "./watch.js";
+import { piWatch, watchText, orchestrations, edgeStatus } from "./watch.js";
 import { JUMP_KEY, jumpLabels, jumping } from "./jump.js";
 import { SPACE_COLORS_KEY, assignSpaceColors, spaceTextColor } from "./colors.js";
 
@@ -405,9 +405,12 @@ export default class Agents extends View {
       const when = this.since(a);
       // Live rows (working, needs you, done) read brightest, with a left edge and
       // their time in the status color; idle rows stay readable a step dimmer.
-      // No bold: brightness and the edge carry it.
+      // No bold: brightness and the edge carry it. An orchestrator's edge is its
+      // section's, lifted by its workers; a worker under it has no edge.
       const live = a.status !== "idle";
       const tone = live ? t[a.status] ?? t.dim : null;
+      const edge = edgeStatus(a.status, { worker: Boolean(line), orchestrator: ws.length > 0, section: SECTION_STATUS[rankOf(a)] });
+      const edgeColor = edge ? t[edge] ?? t.dim : null;
       const isPinned = a.pinned;
       // Two lines: the tab's title gets the first to itself, up to the status and
       // number. The second holds the space (in its color), the orchestration's
@@ -459,7 +462,7 @@ export default class Agents extends View {
         .when(a.focused, (el) => el.bg(t.working + "12"))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .when(Boolean(tone), (el) => el.child(div().absolute().left(0).top(8).bottom(8).w(2.5).rounded(2).bg(tone)))
+        .when(Boolean(edgeColor), (el) => el.child(div().absolute().left(0).top(8).bottom(8).w(2.5).rounded(2).bg(edgeColor)))
         .on_click(() => run("pane.focus", { pane: a.pane }))
         .when(Boolean(line), (el) => el.child(treeLine(line)))
         .child(body);
