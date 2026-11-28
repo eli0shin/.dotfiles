@@ -50,10 +50,12 @@ function tool(name = "bash", error = false, running = false) {
 function setup(children: Container["children"], expanded = false) {
   const chat = new Container();
   chat.children = children;
-  let globalExpanded = expanded;
+  let nativeExpanded = false;
   let redraws = 0;
-  const installed = installActivityView(chat, () => { redraws++; }, (text) => text, () => globalExpanded);
-  return { chat, ...installed, setExpanded: (value: boolean) => { globalExpanded = value; }, redraws: () => redraws };
+  const installed = installActivityView(chat, () => { redraws++; }, (text) => text, () => nativeExpanded);
+  if (expanded) installed.view.resetExpansion(true);
+  return { chat, ...installed, setExpanded: (value: boolean) => installed.view.resetExpansion(value),
+    setNativeExpanded: (value: boolean) => { nativeExpanded = value; }, redraws: () => redraws };
 }
 function lines(component: Container, width = 80) { return component.render(width).map((line) => stripTerminalSequences(line).trimEnd()); }
 function click(y: number, height: number): TuiMouseEvent {
@@ -167,7 +169,7 @@ test("bottom collapse clicks ignore blank space on either side of the label", ()
 test("label hit areas follow ANSI-styled text and truncation after resizing", () => {
   const group = new ActivityGroup(() => {}, (text) => `\x1b[90m${text}\x1b[0m`);
   const detail = new Text("DETAIL", 0, 0);
-  group.update([{ key: detail, component: detail, kind: "command" }], false);
+  group.update([{ key: detail, component: detail, kind: "command" }]);
   for (const width of [80, 8, 80]) {
     let output = lines(group, width);
     const summaryWidth = visibleWidth(output[1]);
@@ -203,7 +205,8 @@ test("the bottom collapse control closes only its own group when multiple groups
 test("bottom collapse remains clickable after expanded contents change height", () => {
   const details = new Text("one", 0, 0);
   const group = new ActivityGroup(() => {}, (text) => text);
-  group.update([{ key: details, component: details, kind: "command" }], true);
+  group.update([{ key: details, component: details, kind: "command" }]);
+  group.setExpanded(true);
   lines(group);
   details.setText("one\ntwo\nthree\nfour");
   const output = lines(group);
@@ -211,7 +214,28 @@ test("bottom collapse remains clickable after expanded contents change height", 
   assert.deepEqual(lines(group), ["", " + 1 command"]);
 });
 
-test("thought-only groups stay silent until global expansion and can collapse locally", () => {
+test("Pi's native expansion flag never opens or closes an activity section", () => {
+  const first = tool();
+  const { chat, view, setNativeExpanded } = setup([first]);
+  assert.deepEqual(lines(chat), ["", " + 1 command"]);
+  setNativeExpanded(true);
+  first.setExpanded(true); // native Ctrl+O also expands tool rows directly
+  assert.deepEqual(lines(chat), ["", " + 1 command"]);
+
+  chat.children.push(new Text("NEXT USER MESSAGE", 0, 0), thought("NEW THOUGHT"), tool("read"));
+  const output = lines(chat).join("\n");
+  assert.match(output, /\+ 1 command[\s\S]*NEXT USER MESSAGE[\s\S]*\+ 1 read/);
+  assert.doesNotMatch(output, /NEW THOUGHT|FILE CONTENT/);
+
+  view.resetExpansion(true);
+  setNativeExpanded(false);
+  first.setExpanded(false);
+  assert.match(lines(chat).join("\n"), /− 1 command[\s\S]*− 1 read[\s\S]*NEW THOUGHT/);
+  chat.children.push(new Text("NEWER USER MESSAGE", 0, 0), tool("edit"));
+  assert.match(lines(chat).join("\n"), /NEWER USER MESSAGE[\s\S]*\+ 1 edit/);
+});
+
+test("thought-only groups stay silent until explicit expansion and can collapse locally", () => {
   const { chat, setExpanded } = setup([thought("DETAIL")]);
   assert.deepEqual(lines(chat), []);
   setExpanded(true);
@@ -381,7 +405,8 @@ test("compact/full switching and cleanup restore the exact original methods", ()
 
 test("groups respect narrow widths and wide characters", () => {
   const group = new ActivityGroup(() => {}, (text) => text);
-  group.update([{ key: new Text(""), component: thought("读文件"), kind: "thought" }], true);
+  group.update([{ key: new Text(""), component: thought("读文件"), kind: "thought" }]);
+  group.setExpanded(true);
   for (const width of [2, 8, 20, 80]) {
     for (const line of group.render(width)) assert.ok(visibleWidth(line) <= width, `width ${width}: ${line}`);
   }
@@ -457,17 +482,17 @@ test("shortcut peeks auto-collapse across activity and PR notification boundarie
   assert.match(lines(chat).join("\n"), /THIRD PR DETAILS/);
 });
 
-test("global expansion and explicit collapse take ownership of PR notification peeks", () => {
+test("native expansion still owns PR notification peeks without opening activity groups", () => {
   const notice = notification();
-  const { chat, view, setExpanded } = setup([notice]);
+  const { chat, view, setNativeExpanded } = setup([notice]);
   view.toggleLatestGroup();
   assert.match(lines(chat).join("\n"), /PR DETAILS/);
-  setExpanded(true);
+  setNativeExpanded(true);
   notice.setExpanded(true); // native Ctrl+O updates all expandable chat children
   chat.addChild(tool()); // even when no render occurs between Ctrl+O and new activity
-  assert.match(lines(chat).join("\n"), /PR DETAILS[\s\S]*− 1 command/);
+  assert.match(lines(chat).join("\n"), /PR DETAILS[\s\S]*\+ 1 command/);
 
-  setExpanded(false);
+  setNativeExpanded(false);
   notice.setExpanded(false);
   view.resetExpansion(false);
   chat.children = [notice];
@@ -565,15 +590,15 @@ test("mouse-opened groups remain independent when a newer group appears", () => 
   }
 });
 
-test("global expansion takes ownership away from a shortcut peek", () => {
-  const { chat, view, setExpanded } = setup([tool()]);
+test("native expansion does not take ownership of a shortcut-opened activity group", () => {
+  const { chat, view, setNativeExpanded } = setup([tool()]);
   view.toggleLatestGroup();
-  lines(chat);
-  setExpanded(true);
-  lines(chat);
+  assert.match(lines(chat).join("\n"), /− 1 command/);
+  setNativeExpanded(true);
+  assert.match(lines(chat).join("\n"), /− 1 command/);
   chat.addChild(assistant([{ type: "text", text: "PROGRESS" }]));
   chat.addChild(tool("read"));
-  assert.match(lines(chat).join("\n"), /− 1 command[\s\S]*PROGRESS[\s\S]*− 1 read/);
+  assert.match(lines(chat).join("\n"), /\+ 1 command[\s\S]*PROGRESS[\s\S]*\+ 1 read/);
 });
 
 test("latest-group toggle is silent with no groups or in full mode", () => {

@@ -45,8 +45,6 @@ test("tracing records expansion causes, identity, and global state without trans
   const created = h.events.find((event) => event.event === "group-state")!;
   assert.equal(created.reason, "create");
   assert.equal(created.expanded, false);
-  assert.equal(created.globalExpanded, false);
-  assert.equal(created.override, null);
   const count = h.events.length;
   h.render(); h.chat.invalidate(); h.render();
   assert.equal(h.events.length, count, "unchanged redraws must not spam the log");
@@ -57,16 +55,13 @@ test("tracing records expansion causes, identity, and global state without trans
   assert.equal(opened.group, created.group);
   assert.equal(opened.before, false);
   assert.equal(opened.expanded, true);
-  assert.equal(opened.globalExpanded, false);
-  assert.equal(opened.override, true);
   assert.equal(h.events.find((event) => event.event === "group-mouse")?.screenY, 1);
 
   h.chat.handleMouse(click(output.length - 1, output.length)); h.render();
   assert.equal(h.events.find((event) => event.reason === "mouse-collapse")?.expanded, false);
   h.setGlobal(true); h.render();
-  const global = h.events.find((event) => event.reason === "global-change")!;
-  assert.equal(global.expanded, true);
-  assert.equal(global.override, null);
+  assert.ok(h.events.some((event) => event.event === "view-render" && event.globalExpanded));
+  assert.ok(h.events.filter((event) => event.event === "group-state").at(-1)?.expanded === false);
   assert.doesNotMatch(JSON.stringify(h.events), /PRIVATE|\/private\/path/);
 });
 

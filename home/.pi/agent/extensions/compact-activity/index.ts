@@ -146,8 +146,6 @@ function assistantState(component: AssistantMessageComponent): AssistantState | 
 export class ActivityGroup extends Container {
   members: Activity[] = [];
   expanded = false;
-  private override?: boolean;
-  private globalExpanded = false;
   private shortcutPeek = false;
   private previews = new ImageGrid();
   private summaryWidth = 0;
@@ -166,8 +164,8 @@ export class ActivityGroup extends Container {
 
   private recordState(reason: string, before = this.expanded, onlyIfChanged = false): void {
     if (!this.trace?.enabled) return;
-    const state = { group: this.trace.id(this), expanded: this.expanded, globalExpanded: this.globalExpanded,
-      override: this.override ?? null, shortcutPeek: this.shortcutPeek, members: this.members.length,
+    const state = { group: this.trace.id(this), expanded: this.expanded,
+      shortcutPeek: this.shortcutPeek, members: this.members.length,
       first: this.members[0] ? this.trace.id(this.members[0].key) : null,
       last: this.members.at(-1) ? this.trace.id(this.members.at(-1)!.key) : null,
       expandedTools: this.members.filter((member) => member.key instanceof ToolExecutionComponent &&
@@ -188,17 +186,16 @@ export class ActivityGroup extends Container {
       width: event.width, height: event.height, clickCount: event.clickCount });
   }
 
-  update(members: Activity[], globalExpanded: boolean): void {
-    const before = this.expanded;
-    const globalChanged = this.globalExpanded !== globalExpanded;
-    if (globalChanged) {
-      this.override = undefined;
-      this.shortcutPeek = false;
-    }
-    this.globalExpanded = globalExpanded;
+  update(members: Activity[]): void {
     this.members = members;
-    this.expanded = this.override ?? globalExpanded;
-    this.recordState(globalChanged ? "global-change" : "update", before, true);
+    this.recordState("update", this.expanded, true);
+  }
+
+  setExpanded(expanded: boolean): void {
+    const before = this.expanded;
+    this.shortcutPeek = false;
+    this.expanded = expanded;
+    this.recordState("activity-command", before);
   }
 
   render(width: number): string[] {
@@ -252,7 +249,6 @@ export class ActivityGroup extends Container {
     if (!this.shortcutPeek) return;
     const before = this.expanded;
     this.shortcutPeek = false;
-    this.override = false;
     this.expanded = false;
     this.recordState("newer-block", before);
     // Called while the view is rebuilding for the current render; no extra
@@ -261,7 +257,6 @@ export class ActivityGroup extends Container {
 
   private setLocalExpansion(expanded: boolean, reason: "shortcut" | "mouse-summary" | "mouse-collapse"): void {
     const before = this.expanded;
-    this.override = expanded;
     this.expanded = expanded;
     this.shortcutPeek = expanded && reason === "shortcut";
     this.recordState(reason, before);
@@ -290,7 +285,7 @@ export class ActivityView extends Container {
   private toolViews = new WeakMap<ToolExecutionComponent, CompactToolView>();
   private hiddenNotices = new WeakSet<Component>();
   private shortcutBlock?: ActivityGroup | CustomMessageComponent;
-  private shortcutGlobalExpanded = false;
+  private notificationPeekNativeExpanded = false;
   private trace?: ActivityTrace;
   private notificationStates = new WeakMap<Component, boolean>();
   private notificationViews = new WeakMap<CustomMessageComponent, PrNotificationView>();
@@ -324,10 +319,12 @@ export class ActivityView extends Container {
 
   resetExpansion(expanded: boolean): void {
     this.trace?.record("expansion-reset", { expanded, globalExpanded: this.getExpanded() });
+    this.updateGroups();
     this.shortcutBlock = undefined;
-    this.groups = new WeakMap();
-    // Pi skips setToolsExpanded when the global value is unchanged. Explicit
-    // commands must still undo per-group clicks, notification peeks, and tool toggles.
+    for (const child of this.children) {
+      if (child instanceof ActivityGroup) child.setExpanded(expanded);
+    }
+    // Only touch rendered transcript entries, not Pi's global tool preference.
     for (const child of this.source.children) {
       if (child instanceof ToolExecutionComponent ||
           (child instanceof CustomMessageComponent && prNotificationState(child))) child.setExpanded(expanded);
@@ -411,7 +408,7 @@ export class ActivityView extends Container {
         group = new ActivityGroup(this.redraw, this.style, this.trace);
         this.groups.set(key, group);
       }
-      group.update(members, this.getExpanded());
+      group.update(members);
       this.children.push(group);
       members = [];
     };
@@ -477,8 +474,10 @@ export class ActivityView extends Container {
       }
     }
     flush();
-    // Global expansion takes ownership; otherwise a newer block ends the peek.
-    if (this.shortcutGlobalExpanded !== this.getExpanded()) this.shortcutBlock = undefined;
+    // Native Ctrl+O still owns PR notifications. It never affects activity groups.
+    if (this.shortcutBlock instanceof CustomMessageComponent && this.notificationPeekNativeExpanded !== this.getExpanded()) {
+      this.shortcutBlock = undefined;
+    }
     if (this.shortcutBlock && this.shortcutBlock !== this.latestBlock()) {
       if (this.shortcutBlock instanceof ActivityGroup) this.shortcutBlock.collapseShortcutPeek();
       else {
@@ -536,12 +535,12 @@ export class ActivityView extends Container {
       expanded = latest.expanded;
     } else {
       expanded = !prNotificationState(latest)!._expanded;
+      this.notificationPeekNativeExpanded = this.getExpanded();
       latest.setExpanded(expanded);
       this.trace?.record("notification-expansion", { notification: this.trace.id(latest), reason: "shortcut", expanded });
       this.redraw();
     }
     this.shortcutBlock = expanded ? latest : undefined;
-    this.shortcutGlobalExpanded = this.getExpanded();
   }
 }
 
@@ -680,8 +679,8 @@ export default function compactActivity(pi: ExtensionAPI): void {
       switch (command) {
         case "compact": installed.view.enabled = true; break;
         case "full": installed.view.enabled = false; break;
-        case "expand": ctx.ui.setToolsExpanded(true); installed.view.resetExpansion(true); break;
-        case "collapse": ctx.ui.setToolsExpanded(false); installed.view.resetExpansion(false); break;
+        case "expand": installed.view.resetExpansion(true); break;
+        case "collapse": installed.view.resetExpansion(false); break;
         case "trace":
           installed.view.traceSnapshot();
           ctx.ui.notify(`Compact activity trace ${trace?.enabled ? "on" : "off"}: ${trace?.path}`, "info");

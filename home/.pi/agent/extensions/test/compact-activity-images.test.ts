@@ -22,9 +22,8 @@ function tool(name: string, images = 0) {
 function setup(children: Component[], styleError: (text: string) => string = (text) => text) {
   const chat = new Container();
   chat.children = children;
-  let expanded = false;
-  const installed = installActivityView(chat, () => {}, (text) => text, () => expanded, styleError);
-  return { chat, ...installed, expand: (value: boolean) => { expanded = value; } };
+  const installed = installActivityView(chat, () => {}, (text) => text, () => false, styleError);
+  return { chat, ...installed, expand: (value: boolean) => installed.view.resetExpansion(value) };
 }
 function withImages(protocol: "kitty" | "iterm2", run: () => void) {
   const original = getCapabilities();
