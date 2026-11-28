@@ -88,18 +88,41 @@ reset([space('split', '/w/split')], [term('t1', 'split', '/w/split'), term('t2',
 await sweepTwice();
 assert.deepEqual(closed, []);
 
-// An agent, a reported status or a program in front keeps the space, and nothing is checked.
-for (const extra of [{ program: pi }, { status: 'idle' }, { report: { status: 'idle' } }, { program: { key: 'nvim', shell: false } }]) {
+// Only working prevents closure; blocked and unreported agents do not.
+for (const extra of [
+  ...['done', 'idle', 'blocked'].map((status) => ({ program: pi, status, report: { state: status } })),
+  { program: pi },
+  { program: { key: 'nvim', shell: false } },
+]) {
+  reset([space('deleted-checkout', '/w/deleted')], [term('t1', 'deleted-checkout', '/w/deleted', extra)]);
+  await deadSpaces.sweep();
+  assert.deepEqual(closed, [], 'Not on the first sweep');
+  await deadSpaces.sweep();
+  assert.deepEqual(closed, ['deleted-checkout'], `Closed with ${JSON.stringify(extra)}`);
+}
+
+// A working agent keeps the space open, including a status from the core report.
+for (const extra of [{ status: 'working' }, { report: { state: 'working' } }]) {
   reset([space('busy', '/w/busy')], [term('t1', 'busy', '/w/busy', extra)]);
   await sweepTwice();
   assert.deepEqual(closed, [], `Kept with ${JSON.stringify(extra)}`);
   assert.equal(execs, 0);
 }
 
-// A dead-folder shell beside an agent's terminal keeps the space.
-reset([space('mixed', '/w/mixed')], [term('t1', 'mixed', '/w/mixed'), term('t2', 'mixed', '/w/mixed', { program: pi })]);
+// One busy agent keeps the whole space open, even next to an idle shell.
+reset([space('mixed', '/w/mixed')], [
+  term('t1', 'mixed', '/w/mixed'), term('t2', 'mixed', '/w/mixed', { program: pi, status: 'working' }),
+]);
 await sweepTwice();
 assert.deepEqual(closed, []);
+
+// An idle agent in a folder that still exists keeps the space, too.
+reset([space('mixed', '/w/mixed')], [
+  term('t1', 'mixed', '/w/mixed'), term('t2', 'mixed', '/w/other', { program: pi, status: 'idle' }),
+], ['/w/other']);
+await sweepTwice();
+assert.deepEqual(closed, []);
+assert.equal(execs, 2);
 
 // The shown space, another machine's space and a space with no live terminals are left alone.
 reset(
@@ -126,16 +149,31 @@ execFails = true;
 await sweepTwice();
 assert.deepEqual(closed, []);
 
-// A program starting between sweeps keeps the space.
+// Changing to another missing folder restarts the two-sweep confirmation.
 reset([space('late', '/w/late')], [term('t1', 'late', '/w/late')]);
 await deadSpaces.sweep();
-model.terminals = [term('t1', 'late', '/w/late', { program: pi })];
+model.terminals = [term('t1', 'late', '/w/other')];
 await deadSpaces.sweep();
 assert.deepEqual(closed, []);
+await deadSpaces.sweep();
+assert.deepEqual(closed, ['late']);
 
-// A program starting, or the space being shown, while the check runs keeps the space.
+// Recheck after the folder probe: an agent may have started working in the meantime.
+reset([space('woken', '/w/woken')], [term('t1', 'woken', '/w/woken', { program: pi, status: 'idle' })]);
+await deadSpaces.sweep();
+duringExec = () => { model.terminals[0].status = 'working'; };
+await deadSpaces.sweep();
+assert.deepEqual(closed, []);
+duringExec = null;
+model.terminals[0].status = 'done';
+await deadSpaces.sweep();
+assert.deepEqual(closed, [], 'Requires two new sweeps after the agent settles');
+await deadSpaces.sweep();
+assert.deepEqual(closed, ['woken']);
+
+// A terminal changing folders, or the space being shown, during the check keeps the space.
 for (const change of [
-  () => { model.terminals = [term('t1', 'race', '/w/race', { program: pi })]; },
+  () => { model.terminals = [term('t1', 'race', '/w/other')]; },
   () => { model.spaces = [space('race', '/w/race', { active: true })]; },
 ]) {
   reset([space('race', '/w/race')], [term('t1', 'race', '/w/race')]);

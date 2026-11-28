@@ -1,11 +1,9 @@
 // Closes spaces whose checkout was deleted. `gh pr merge --delete-branch`, a
 // plain `git worktree remove` or `rm -rf` take a worktree away without telling
-// Herdr, so its space lingers with a shell in a folder that no longer exists.
+// Herdr, so its space lingers with terminals in a folder that no longer exists.
 //
-// A space is dead when every folder it knows is gone: the folder it was made
-// in and each of its terminals' live folders. Only spaces on this computer,
-// not the shown one, whose terminals are all plain shells (no agent, editor or
-// other program in front) qualify, so closing one ends nothing but idle shells.
+// A local background space is dead when its original folder and every live
+// terminal's folder are gone and no agent is working.
 // A space must be found dead on two sweeps in a row, so a folder that is only
 // briefly missing keeps its space.
 
@@ -25,7 +23,7 @@ export function createDeadSpaces({ spaces, terminals, exec, run, notify, home })
     // A space with no folder of its own starts its terminals at home.
     const folders = new Set([space.folder || home()]);
     for (const t of list) {
-      if (!t.program?.shell || t.report || t.status) return null;
+      if ((t.status ?? t.report?.state) === 'working') return null;
       const cwd = t.foreground?.cwd ?? t.cwd;
       if (!cwd) return null;
       folders.add(cwd);
@@ -71,8 +69,8 @@ export function createDeadSpaces({ spaces, terminals, exec, run, notify, home })
       if (result.code !== 0 || answers.length !== paths.length) return;
       const exists = new Map(paths.map((p, i) => [p, answers[i] === '1']));
 
-      // The model may have changed while the check ran (a program started, the
-      // space was shown): only spaces that still qualify with the same folders.
+      // Recheck in case an agent woke, a terminal moved, or the space was shown
+      // while the folder probe ran.
       const after = candidates();
       const next = new Map();
       for (const { space, folders, key } of before.values()) {
