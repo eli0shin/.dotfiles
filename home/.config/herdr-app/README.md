@@ -419,6 +419,9 @@ whole list (with `· paused` when the watch is paused, and the chip italic) on
 hover. Workers nest under their orchestrator with tree lines and take labels right after
 it, shown only while the orchestrator or one of its workers is focused (no
 fold button; the narrow rail shows them all). Workers leave out the space.
+An orchestrator's left edge is its section's, so a working worker gives an
+idle orchestrator the working edge; workers under it have no edge, only their
+status mark.
 The orchestrator's second line names the Jira ticket its worker branches
 share and counts its workers in a chip, and its PR chip covers every PR it
 watches, even ones a worker also shows. A worker whose orchestrator isn't listed is

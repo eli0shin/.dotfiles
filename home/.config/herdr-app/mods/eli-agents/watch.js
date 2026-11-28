@@ -41,3 +41,14 @@ export function orchestrations(list, watchOf) {
   }
   return { workers, nested };
 }
+
+// The status a row's left edge shows, or null for none. A worker under its
+// orchestrator has none: its status mark says enough. An orchestrator takes
+// its section's (`section`: its own or a worker's most urgent state), so an
+// idle one with a working worker has the working edge. Any other row shows its
+// own state, idle having none.
+export function edgeStatus(status, { worker = false, orchestrator = false, section = null } = {}) {
+  if (worker) return null;
+  if (orchestrator) return section ?? null;
+  return status === "idle" ? null : status;
+}
