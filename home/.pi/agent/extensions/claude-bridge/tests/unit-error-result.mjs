@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { QueryContext } from "../src/query-state.js";
+import { subscriptionLimit } from "../src/rate-limit.js";
 
 const { __test } = await import("../src/index.js");
 
@@ -89,6 +90,28 @@ describe("a rate-limited failure", () => {
 		assert.doesNotMatch(c.turnOutput.errorMessage, TOOL_FAILURE_PREFIX);
 		assert.ok(c.turnOutput.errorMessage.includes(limitResult.result), "keeps Claude Code's own wording");
 		assert.ok(c.turnOutput.errorMessage.includes("five_hour"));
+		assert.deepEqual(subscriptionLimit(c.turnOutput), { window: "five_hour", resetAt: 1786141800000 });
+	});
+
+	it("does not record a resumable limit when overage works, the reset is unknown, or the result is not a 429", async () => {
+		for (const overrides of [
+			{ isUsingOverage: true }, { overageInUse: true }, { overageStatus: "allowed" },
+			{ resetsAt: undefined }, { rateLimitType: "overage" },
+		]) {
+			const c = makeCtx();
+			await consume(c, [{ ...rejection, rate_limit_info: { ...rejection.rate_limit_info, ...overrides } }, limitResult]);
+			assert.equal(subscriptionLimit(c.turnOutput), undefined, JSON.stringify(overrides));
+		}
+		const c = makeCtx();
+		await consume(c, [rejection, { ...limitResult, api_error_status: 503 }]);
+		assert.equal(subscriptionLimit(c.turnOutput), undefined);
+	});
+
+	it("does not attribute a later failure to a rejection that was cleared", async () => {
+		const c = makeCtx();
+		await consume(c, [rejection, { ...rejection, rate_limit_info: { status: "allowed" } }, errorResult]);
+		assert.equal(subscriptionLimit(c.turnOutput), undefined);
+		assert.equal(c.turnOutput.errorMessage, errorResult.result);
 	});
 
 	it("labels only the failure it caused, not a later one", async () => {

@@ -35,7 +35,7 @@ import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, reso
 import { nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { forgetSessionCwd, rememberSessionCwd, rememberSummarySession, sessionCwdFor, summarySessionFor } from "./session-cwd.js";
 import { updateUsage, type SdkUsage } from "./usage.js";
-import { rateLimitResponse } from "./rate-limit.js";
+import { rateLimitResponse, recordSubscriptionLimit } from "./rate-limit.js";
 import { bridgeRevision, packageVersion, setTraceNotifier, traceAssertReady, traceEvent, traceId, traceInput, traceQueryStart, traceSignalId, traceSnapshot, traceStrict } from "./cache-trace.js";
 
 // --- Debug logging ---
@@ -1634,14 +1634,15 @@ async function consumeQuery(
 			if (resultError !== undefined) {
 				// Consume the rejection alongside the failure it caused, so a later
 				// unrelated failure on this query doesn't inherit the label.
-				if (queryCtx.rateLimitRejection) {
-					resultError = describeRateLimitFailure(queryCtx.rateLimitRejection, resultError);
-					queryCtx.rateLimitRejection = null;
-				}
+				const rejection = queryCtx.rateLimitRejection;
+				queryCtx.rateLimitRejection = null;
+				if (rejection) resultError = describeRateLimitFailure(rejection, resultError);
 				debug(`consumeQuery: error result, subtype=${message.subtype}, error=${resultError}`);
 				if (queryCtx.turnOutput && queryCtx.currentPiStream) {
 					queryCtx.turnOutput.stopReason = "error";
 					queryCtx.turnOutput.errorMessage = resultError;
+					const status = (message as { api_error_status?: number }).api_error_status;
+					if (rejection && (status === undefined || status === 429)) recordSubscriptionLimit(queryCtx.turnOutput, rejection);
 				}
 				// The failure ends the query. Closing stdin does not: Claude Code still
 				// runs a steer it had queued, and that turn's stop reason would overwrite
@@ -1656,9 +1657,9 @@ async function consumeQuery(
 			if (info) queryCtx.heldRateLimit = info;
 			await reportHeldRateLimit(queryCtx, model);
 			if (wasAborted() || queryCtx.discarded || abandonedQueries.has(sdkQuery)) break;
+			// A later allowed reading invalidates the previous rejection.
+			queryCtx.rateLimitRejection = info?.status === "rejected" ? info : null;
 			if (info?.status === "rejected") {
-				// Held so the failure Claude Code sends next can be named as a rate limit.
-				queryCtx.rateLimitRejection = info;
 				// The "rate limit reached" notice below supersedes warnings; re-arm so the next
 				// window's warnings fire even if it opens straight into allowed_warning.
 				queryCtx.lastRateLimitWarnStep = null;

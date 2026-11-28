@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { CustomMessageComponent, initTheme, SessionManager, type MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { Container, Text, TuiAltScreen, stripTerminalSequences, visibleWidth, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { installActivityView } from "../compact-activity/index.ts";
+import { CONTINUATION_TYPE, STATE_TYPE, planQuotaWait } from "../usage-limit-resume/state.ts";
 
 import prWatch, {
   commandDirectory,
@@ -1414,6 +1415,67 @@ async function withOrchestrator(
     else process.env.PI_ORCHESTRATION_SESSION_ID = original;
   }
 }
+
+test("a quota-paused worker is not reported stopped and its parent hears when it resumes", async () => {
+  await withWorker(async (worker) => {
+    const model = { provider: "claude-bridge", id: "claude-test" };
+    const resetAt = Date.now() + 3_600_000;
+    const wait = planQuotaWait("limited", { window: "five_hour", resetAt }, undefined, Date.now(), 0)!;
+    Object.assign(worker.ctx, { model });
+    const failure = { type: "message", id: "limited", message: {
+      role: "assistant", provider: model.provider, model: model.id, stopReason: "error", errorMessage: "Usage limited",
+      content: [], diagnostics: [{ type: "claude_bridge_subscription_limit", details: { window: "five_hour", resetAt } }],
+    } };
+    worker.setBranchEntries([failure, { type: "custom", customType: STATE_TYPE, data: wait }]);
+    await worker.settleAgent();
+    const paused = await worker.readWorkerSnapshot("session-123", "worker-session");
+    assert.deepEqual(paused.quotaWait, { failureId: wait.failureId, dueAt: wait.dueAt });
+    assert.equal(paused.latestSettlement, undefined);
+
+    await withOrchestrator(async (parent) => {
+      assert.equal(parent.sentMessages.length, 1);
+      assert.match(parent.sentMessages[0]!, /Worker ticket-one is paused.*scheduled to resume.*Do not restart it/);
+      assert.doesNotMatch(parent.sentMessages[0]!, /stopped without/);
+      await parent.runPoll();
+      assert.equal(parent.sentMessages.length, 1);
+
+      worker.setBranchEntries([failure, { type: "custom", customType: STATE_TYPE, data: null },
+        { type: "custom_message", customType: CONTINUATION_TYPE, id: "continued", content: "Continue.", details: wait }]);
+      await worker.startAgent();
+      await worker.runPoll();
+      await parent.runPoll();
+      assert.match(parent.sentMessages[1]!, /Worker ticket-one automatically resumed/);
+      assert.doesNotMatch(parent.sentMessages[1]!, /stopped without/);
+      await parent.runPoll();
+      assert.equal(parent.sentMessages.length, 2);
+    }, { stateRoot: worker.stateRoot });
+  });
+});
+
+test("an orchestrator message wakes a worker before its quota reset", async () => {
+  await withWorker(async (worker) => {
+    const model = { provider: "claude-bridge", id: "claude-test" };
+    const resetAt = Date.now() + 3_600_000;
+    const wait = planQuotaWait("limited", { window: "five_hour", resetAt }, undefined, Date.now(), 0)!;
+    Object.assign(worker.ctx, { model });
+    worker.setBranchEntries([
+      { type: "message", id: "limited", message: {
+        role: "assistant", provider: model.provider, model: model.id, stopReason: "error",
+        diagnostics: [{ type: "claude_bridge_subscription_limit", details: { window: "five_hour", resetAt } }],
+      } },
+      { type: "custom", customType: STATE_TYPE, data: wait },
+    ]);
+    const inbox = worker.workerInbox("session-123", "worker-session");
+    await mkdir(inbox, { recursive: true });
+    await writeFile(join(inbox, "pending.json"), JSON.stringify({ version: 1, id: "pending", text: "Continue." }));
+
+    await worker.runInboxPoll();
+
+    assert.equal(worker.sentMessages.length, 1);
+    assert.match(worker.sentMessages[0]!, /Message from the orchestrator:\n\nContinue\./);
+    assert.deepEqual(worker.sentMessageOptions[0], { triggerTurn: true });
+  });
+});
 
 function parentInbox(harness: ReturnType<typeof createHarness>): string {
   return join(harness.stateRoot, "session-123", "orchestrator-inbox");

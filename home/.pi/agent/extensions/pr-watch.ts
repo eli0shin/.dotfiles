@@ -8,6 +8,7 @@ import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@ear
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { orchestratorInstructions } from "./orchestrator.ts";
+import { latestQuotaContinuation, pendingQuotaWait } from "./usage-limit-resume/state.ts";
 
 type WatchedPr = {
   repo: string;
@@ -68,6 +69,7 @@ type WorkerSettlement = {
   assistantEntryId: string;
   response: string;
   hadWatchedPr: boolean;
+  pausedForQuota?: true;
 };
 
 type PendingWorkerSettlement = {
@@ -75,6 +77,7 @@ type PendingWorkerSettlement = {
   assistantEntryId: string;
   branch: string;
   response: string;
+  kind?: "quota-paused" | "quota-resumed";
 };
 
 type CoordinationMessage = {
@@ -113,6 +116,8 @@ type WorkerWatchSnapshot = {
   gitCommonDir?: string;
   watchedPrs: Array<Pick<WatchedPr, "repo" | "number" | "url">>;
   latestSettlement?: WorkerSettlement;
+  quotaWait?: { failureId: string; dueAt: number };
+  quotaContinuationId?: string;
 };
 
 type WatchState = {
@@ -478,7 +483,11 @@ function isWorkerWatchSnapshot(value: unknown): value is WorkerWatchSnapshot {
     typeof value.branch === "string" &&
     Boolean(value.branch) &&
     (value.gitCommonDir === undefined || typeof value.gitCommonDir === "string") &&
-    (value.latestSettlement === undefined || isWorkerSettlement(value.latestSettlement))
+    (value.latestSettlement === undefined || isWorkerSettlement(value.latestSettlement)) &&
+    (value.quotaContinuationId === undefined || typeof value.quotaContinuationId === "string") &&
+    (value.quotaWait === undefined || (isObject(value.quotaWait) && typeof value.quotaWait.failureId === "string" &&
+      typeof value.quotaWait.dueAt === "number" && Number.isSafeInteger(value.quotaWait.dueAt) &&
+      value.quotaWait.dueAt > 0 && value.quotaWait.dueAt <= 8.64e15))
   );
 }
 
@@ -1106,12 +1115,20 @@ export default function prWatch(pi: ExtensionAPI): void {
       .join("\n");
   }
 
-  async function publishWorkerSnapshot(ctx: ExtensionContext, force = false): Promise<void> {
+  async function publishWorkerSnapshot(ctx: ExtensionContext, force = false, stopping = false): Promise<void> {
     snapshotPublishQueue = snapshotPublishQueue.then(async () => {
       const orchestrationId = state.workerOrchestrationSessionId;
       if (!orchestrationId) return;
 
-      const fingerprint = membershipFingerprint();
+      const quotaWait = stopping ? undefined : pendingQuotaWait(ctx);
+      const continuation = latestQuotaContinuation(ctx);
+      const settlement = state.latestWorkerSettlement;
+      // Keep the failure in local state so canceling a wait can report a stop.
+      // Once the worker is running again, never publish the old failure as new.
+      const superseded = settlement?.pausedForQuota &&
+        (!ctx.isIdle() || settlement.assistantEntryId === continuation?.failureId);
+      const latestSettlement = quotaWait || superseded ? undefined : settlement;
+      const fingerprint = JSON.stringify([membershipFingerprint(), latestSettlement?.assistantEntryId, quotaWait?.failureId, continuation?.id]);
       if (!force && fingerprint === lastPublishedMembership) return;
 
       const workerSessionId = ctx.sessionManager.getSessionId();
@@ -1134,7 +1151,9 @@ export default function prWatch(pi: ExtensionAPI): void {
           number: pr.number,
           url: pr.url,
         })),
-        latestSettlement: state.latestWorkerSettlement,
+        latestSettlement,
+        quotaWait: quotaWait && { failureId: quotaWait.failureId, dueAt: quotaWait.dueAt },
+        quotaContinuationId: continuation?.id,
       };
 
       try {
@@ -1189,7 +1208,7 @@ export default function prWatch(pi: ExtensionAPI): void {
     await discover(ctx, branch, { ignoreUnresolved: true, owned: true, cached: true });
   }
 
-  async function captureWorkerSettlement(ctx: ExtensionContext): Promise<void> {
+  async function captureWorkerSettlement(ctx: ExtensionContext, aborted: boolean): Promise<void> {
     if (!state.workerOrchestrationSessionId || !(await refreshWorkerBranch())) return;
 
     const entry = [...ctx.sessionManager.getBranch()].reverse().find(
@@ -1207,6 +1226,7 @@ export default function prWatch(pi: ExtensionAPI): void {
       assistantEntryId: entry.id,
       response,
       hadWatchedPr: state.watchedPrs.length > 0,
+      ...(!aborted && pendingQuotaWait(ctx) && { pausedForQuota: true }),
     };
     save();
   }
@@ -1321,23 +1341,29 @@ export default function prWatch(pi: ExtensionAPI): void {
     const resolved = new Set(state.resolvedWorkerSettlementIds ?? []);
 
     for (const [workerSessionId, snapshot] of Object.entries(snapshots)) {
-      const latest = snapshot.latestSettlement;
-      const latestId = latest
-        ? workerSettlementIdentity({ workerSessionId, assistantEntryId: latest.assistantEntryId })
-        : undefined;
-
-      state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
-        (pending) => pending.workerSessionId !== workerSessionId || workerSettlementIdentity(pending) === latestId,
-      );
-      if (!latest || latest.hadWatchedPr || !snapshot.branch || !latestId || resolved.has(latestId)) continue;
-      if (state.pendingWorkerSettlements.some((pending) => workerSettlementIdentity(pending) === latestId)) continue;
-
-      state.pendingWorkerSettlements.push({
-        workerSessionId,
-        assistantEntryId: latest.assistantEntryId,
-        branch: snapshot.branch,
-        response: latest.response,
+      const { branch, latestSettlement, quotaWait, quotaContinuationId } = snapshot;
+      const notices: PendingWorkerSettlement[] = [];
+      if (quotaContinuationId) notices.push({
+        workerSessionId, branch, assistantEntryId: `quota-resumed:${quotaContinuationId}`, kind: "quota-resumed",
+        response: `Worker ${branch} automatically resumed after its Claude usage limit reset.`,
       });
+      if (quotaWait) notices.push({
+        workerSessionId, branch, assistantEntryId: `quota-paused:${quotaWait.failureId}`, kind: "quota-paused",
+        response: `Worker ${branch} is paused at its Claude usage limit and scheduled to resume at ${new Date(quotaWait.dueAt).toISOString()}. Do not restart it.`,
+      });
+      else if (latestSettlement && !latestSettlement.hadWatchedPr) notices.push({
+        workerSessionId, branch, assistantEntryId: latestSettlement.assistantEntryId, response: latestSettlement.response,
+      });
+
+      const currentIds = new Set(notices.map(workerSettlementIdentity));
+      state.pendingWorkerSettlements = state.pendingWorkerSettlements.filter(
+        (pending) => pending.workerSessionId !== workerSessionId || currentIds.has(workerSettlementIdentity(pending)),
+      );
+      const queued = new Set(state.pendingWorkerSettlements.map(workerSettlementIdentity));
+      state.pendingWorkerSettlements.push(...notices.filter((notice) => {
+        const id = workerSettlementIdentity(notice);
+        return !resolved.has(id) && !queued.has(id);
+      }));
     }
   }
 
@@ -2269,6 +2295,7 @@ export default function prWatch(pi: ExtensionAPI): void {
   }
 
   function buildWorkerSettlementMessage(settlement: PendingWorkerSettlement): string {
+    if (settlement.kind) return settlement.response;
     return `worker ${settlement.branch} stopped without opening a pr and responded with the following message:\n\n${settlement.response}`;
   }
 
@@ -3011,11 +3038,14 @@ export default function prWatch(pi: ExtensionAPI): void {
     await pruneDeliveredMessages(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event, ctx) => {
     disposed = true;
     sessionGeneration += 1;
     stopPolling();
     stopInboxPolling();
+    if (event.reason !== "reload" && state.workerOrchestrationSessionId && pendingQuotaWait(ctx)) {
+      await publishWorkerSnapshot(ctx, true, true);
+    }
     if (orchestrationEnvironmentAtStart === undefined) delete process.env.PI_ORCHESTRATION_SESSION_ID;
     else process.env.PI_ORCHESTRATION_SESSION_ID = orchestrationEnvironmentAtStart;
   });
@@ -3030,13 +3060,13 @@ export default function prWatch(pi: ExtensionAPI): void {
     flushPending(ctx);
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
     agentRunning = false;
     reconcileSteers(ctx, true);
     if (state.workerOrchestrationSessionId) {
       await discoverWorkerPr(ctx);
-      await captureWorkerSettlement(ctx);
-      await publishWorkerSnapshot(ctx, true);
+      await captureWorkerSettlement(ctx, event.aborted);
+      await publishWorkerSnapshot(ctx, true, event.aborted);
       await receiveMessages(ctx);
     }
     reconcileDelivery(ctx);
